@@ -8,6 +8,7 @@ import (
 	"database/sql"
 	"fmt"
 	"strings"
+	"time"
 
 	"sqlite2pg/internal/config"
 	"sqlite2pg/internal/profiler"
@@ -73,7 +74,7 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 			if len(findings) == 0 {
 				cc = config.ColumnConfig{
 					DeclaredType: col.DeclaredType,
-					TargetType:   fallbackType(col.DeclaredType),
+					TargetType:   fallbackTypeFor(col.DeclaredType, samples),
 					Confidence:   0.99,
 					Source:       "heuristic:default_passthrough",
 					Rationale:    "no heuristic had an opinion; passed through via SQLite type affinity",
@@ -110,22 +111,48 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 	return &ProfileResult{Config: cfg, Unresolved: unresolved}, nil
 }
 
-// fallbackType implements SQLite's own type-affinity rules
-// (https://www.sqlite.org/datatype3.html#determination_of_column_affinity)
-// to map a declared type with no heuristic opinion to a reasonable default
-// Postgres type.
-func fallbackType(declared string) string {
+// fallbackTypeFor maps a column with no heuristic opinion to a Postgres
+// type, preferring the actual runtime type of its sampled values over the
+// declared type name. This matters because a Go SQLite driver's scanned
+// value type does not always match what the declared type name implies:
+// modernc.org/sqlite returns float64 for a NUMERIC(10,2)-declared column
+// (chinook.db's invoice_items.UnitPrice) and time.Time for a
+// DATETIME-declared column (chinook.db's employees.BirthDate) — trusting
+// the declared type name for either would produce a target type that
+// can't actually hold the value pgx receives at COPY time. Only when no
+// non-NULL sample is available (an empty table, or an all-NULL column) does
+// this fall back to SQLite's declared-type affinity rules
+// (https://www.sqlite.org/datatype3.html#determination_of_column_affinity),
+// defaulting unmatched declared types to "text" since it's the one target
+// that can never fail to hold an unknown value.
+func fallbackTypeFor(declared string, samples []profiler.Value) string {
+	for _, v := range samples {
+		switch v.(type) {
+		case int64, int:
+			return "integer"
+		case float64, float32:
+			return "double precision"
+		case time.Time:
+			return "timestamptz"
+		case []byte:
+			return "bytea"
+		case string:
+			return "text"
+		}
+	}
+	return fallbackTypeFromDeclared(declared)
+}
+
+func fallbackTypeFromDeclared(declared string) string {
 	d := strings.ToUpper(declared)
 	switch {
 	case strings.Contains(d, "INT"):
 		return "integer"
-	case strings.Contains(d, "CHAR"), strings.Contains(d, "CLOB"), strings.Contains(d, "TEXT"):
-		return "text"
-	case strings.Contains(d, "BLOB"), d == "":
+	case strings.Contains(d, "BLOB"):
 		return "bytea"
 	case strings.Contains(d, "REAL"), strings.Contains(d, "FLOA"), strings.Contains(d, "DOUB"):
 		return "double precision"
 	default:
-		return "numeric"
+		return "text"
 	}
 }
