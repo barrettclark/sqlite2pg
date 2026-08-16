@@ -18,9 +18,13 @@ type UnresolvedCase struct {
 }
 
 // Resolution is the outcome of escalating an UnresolvedCase, regardless of
-// which Resolver implementation produced it.
+// which Resolver implementation produced it. Transform must be supplied
+// explicitly alongside Type (empty means passthrough) — callers must not
+// implicitly carry over whatever transform the original heuristic guess
+// implied, since it may no longer make sense for the new Type.
 type Resolution struct {
 	Type       string
+	Transform  string
 	Rationale  string
 	Confidence float64
 	Source     string // "human" now; "llm:<model>" reserved for a future resolver

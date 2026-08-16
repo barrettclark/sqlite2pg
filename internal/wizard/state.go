@@ -70,6 +70,7 @@ func (s *State) ApplyDecision(table, column string, req DecisionRequest) error {
 		}
 	}
 	col.TargetType = req.TargetType
+	col.Transform = req.Transform
 	col.Rationale = req.Rationale
 	col.Source = "human_override"
 	col.Reviewed = true

@@ -13,7 +13,7 @@ func sampleConfig() *config.MigrationConfig {
 				ColumnOrder: []string{"bike_id", "is_installed"},
 				Columns: map[string]config.ColumnConfig{
 					"bike_id":      {TargetType: "integer", Confidence: 0.99, Source: "heuristic:default_passthrough"},
-					"is_installed": {TargetType: "boolean", Confidence: 0.55, Source: "heuristic:boolean01"},
+					"is_installed": {TargetType: "boolean", Transform: "int_to_bool", Confidence: 0.55, Source: "heuristic:boolean01"},
 				},
 			},
 		},

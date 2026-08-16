@@ -272,6 +272,7 @@ func runResolve(args []string) error {
 		}
 		col.OriginalSuggestion = &config.Suggestion{TargetType: col.TargetType, Confidence: col.Confidence, Source: col.Source}
 		col.TargetType = res.Type
+		col.Transform = res.Transform
 		col.Rationale = res.Rationale
 		col.Confidence = res.Confidence
 		col.Source = res.Source

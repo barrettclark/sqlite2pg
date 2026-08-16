@@ -1,8 +1,12 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
+
+	"sqlite2pg/internal/config"
 )
 
 func TestRun_NoArgsReturnsUsageError(t *testing.T) {
@@ -36,5 +40,50 @@ func TestRun_LoadRequiresAConfigPath(t *testing.T) {
 	err := run([]string{"load"})
 	if err == nil {
 		t.Fatal("expected an error when no config path is given to load")
+	}
+}
+
+func TestRunResolve_OverridingTargetTypeClearsAStaleTransform(t *testing.T) {
+	// Regression: applying a human resolution that changes a column from
+	// boolean (transform int_to_bool) to integer must not leave the old
+	// transform in place — otherwise the COPY pipeline would try to encode
+	// a Go bool into an integer column and fail. Found via dogfooding
+	// against chinook.db's invoice_items.Quantity.
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		Tables: map[string]config.TableConfig{
+			"invoice_items": {
+				ColumnOrder: []string{"Quantity"},
+				Columns: map[string]config.ColumnConfig{
+					"Quantity": {TargetType: "boolean", Transform: "int_to_bool", Confidence: 0.55, Source: "heuristic:boolean01"},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, configPath); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	resolutionsPath := filepath.Join(dir, "resolutions.yaml")
+	resolutionsYAML := "invoice_items.Quantity:\n  type: integer\n  transform: \"\"\n  confidence: 0.95\n  source: human\n  rationale: clearly a count\n"
+	if err := os.WriteFile(resolutionsPath, []byte(resolutionsYAML), 0o644); err != nil {
+		t.Fatalf("writing resolutions: %v", err)
+	}
+
+	if err := run([]string{"resolve", "--apply", resolutionsPath, configPath}); err != nil {
+		t.Fatalf("run resolve: %v", err)
+	}
+
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["invoice_items"].Columns["Quantity"]
+	if col.TargetType != "integer" {
+		t.Errorf("expected target_type integer, got %q", col.TargetType)
+	}
+	if col.Transform != "" {
+		t.Errorf("expected the stale int_to_bool transform to be cleared, got %q", col.Transform)
 	}
 }

@@ -57,7 +57,11 @@ function render(summary) {
       await fetch(`/api/columns/${table}/${column}/decision`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ target_type: input.value, rationale: "human confirmed via wizard" }),
+        // transform is intentionally left blank (passthrough): a manual
+        // override doesn't carry over whatever transform the original
+        // heuristic guess implied (e.g. int_to_bool no longer applies once
+        // the target type is changed away from boolean).
+        body: JSON.stringify({ target_type: input.value, transform: "", rationale: "human confirmed via wizard" }),
       });
       loadSummary();
     });

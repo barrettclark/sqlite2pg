@@ -74,6 +74,34 @@ func TestHandleDecision_UpdatesAndPersistsTheConfigImmediately(t *testing.T) {
 	}
 }
 
+func TestHandleDecision_OverridingTargetTypeAlsoUpdatesTheTransform(t *testing.T) {
+	// Regression: overriding a boolean-guess column (transform int_to_bool)
+	// to a plain integer must not leave the stale int_to_bool transform in
+	// place — that would encode a Go bool into an integer column at load
+	// time and fail. Found via dogfooding against chinook.db's
+	// invoice_items.Quantity, ambiguous as boolean01 but really a count.
+	st, path := newTestState(t)
+	mux := NewMux(st)
+
+	body, _ := json.Marshal(DecisionRequest{TargetType: "integer", Transform: "", Rationale: "clearly a count, not a flag"})
+	req := httptest.NewRequest(http.MethodPost, "/api/columns/bikes/is_installed/decision", bytes.NewReader(body))
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["bikes"].Columns["is_installed"]
+	if col.Transform != "" {
+		t.Errorf("expected the stale int_to_bool transform to be cleared, got %q", col.Transform)
+	}
+}
+
 func TestHandleFinish_MarksRemainingColumnsReviewedAndSignalsDone(t *testing.T) {
 	st, path := newTestState(t)
 	mux := NewMux(st)
