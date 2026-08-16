@@ -7,6 +7,7 @@ package pipeline
 import (
 	"database/sql"
 	"fmt"
+	"math"
 	"strings"
 	"time"
 
@@ -126,10 +127,15 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 // defaulting unmatched declared types to "text" since it's the one target
 // that can never fail to hold an unknown value.
 func fallbackTypeFor(declared string, samples []profiler.Value) string {
-	var sawInt, sawFloat, sawTime, sawBytes, sawString bool
+	var sawInt, sawFloat, sawTime, sawBytes, sawString, sawOutOfInt4Range bool
 	for _, v := range samples {
-		switch v.(type) {
-		case int64, int:
+		switch n := v.(type) {
+		case int64:
+			sawInt = true
+			if n < math.MinInt32 || n > math.MaxInt32 {
+				sawOutOfInt4Range = true
+			}
+		case int:
 			sawInt = true
 		case float64, float32:
 			sawFloat = true
@@ -150,6 +156,12 @@ func fallbackTypeFor(declared string, samples []profiler.Value) string {
 	// whole numbers.
 	case sawFloat:
 		return "double precision"
+	case sawInt && sawOutOfInt4Range:
+		// SQLite INTEGER holds the full 8-byte int64 range; Postgres
+		// "integer" is only 4 bytes. A value outside int4 range (found via
+		// dogfooding against sample-types.sqlite: -9007199254740992) fails
+		// at COPY time with "integer" but fits "bigint".
+		return "bigint"
 	case sawInt:
 		return "integer"
 	case sawTime:

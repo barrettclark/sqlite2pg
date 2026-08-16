@@ -50,6 +50,28 @@ func TestFallbackTypeFor_PrefersDoublePrecisionWhenSamplesMixIntAndFloatStorageC
 	}
 }
 
+func TestFallbackTypeFor_UsesBigintWhenAnIntegerSampleExceedsInt4Range(t *testing.T) {
+	// Regression: found via dogfooding against sample-types.sqlite.
+	// SQLite INTEGER columns hold the full 8-byte int64 range, but
+	// Postgres "integer" is only 4 bytes (±2147483647). A value like
+	// -9007199254740992 (well within int64, far outside int4) previously
+	// mapped straight to "integer" and failed at COPY time with "less than
+	// minimum value for int4".
+	samples := []profiler.Value{int64(42), int64(-9007199254740992), int64(0)}
+	got := fallbackTypeFor("INTEGER", samples)
+	if got != "bigint" {
+		t.Errorf("fallbackTypeFor(INTEGER, out-of-int4-range samples) = %q, want bigint", got)
+	}
+}
+
+func TestFallbackTypeFor_UsesIntegerWhenAllValuesFitInInt4Range(t *testing.T) {
+	samples := []profiler.Value{int64(42), int64(-100), int64(2147483647)}
+	got := fallbackTypeFor("INTEGER", samples)
+	if got != "integer" {
+		t.Errorf("fallbackTypeFor(INTEGER, in-range samples) = %q, want integer", got)
+	}
+}
+
 func TestFallbackTypeFor_FallsBackToDeclaredTypeWhenNoSamplesAreAvailable(t *testing.T) {
 	// An empty table (or an all-NULL column) gives no runtime evidence —
 	// fall back to a safe declared-type guess, defaulting to text for
