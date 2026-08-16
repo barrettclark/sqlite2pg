@@ -70,7 +70,13 @@ function render(summary) {
 
 document.getElementById("finish").addEventListener("click", async () => {
   await fetch("/api/finish", { method: "POST" });
-  document.body.innerHTML = "<h1>Review complete. You can close this tab.</h1>";
+  document.body.innerHTML = "<h1>Confirmed. You can close this tab.</h1>";
+});
+
+document.getElementById("cancel").addEventListener("click", async () => {
+  if (!confirm("Cancel this import? Nothing will be loaded into Postgres.")) return;
+  await fetch("/api/cancel", { method: "POST" });
+  document.body.innerHTML = "<h1>Cancelled. Nothing was imported. You can close this tab.</h1>";
 });
 
 loadSummary();

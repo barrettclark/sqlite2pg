@@ -10,7 +10,10 @@ architecture proposal) and
 [`../PGLOADER_REWRITE_PLAN_V2.md`](../PGLOADER_REWRITE_PLAN_V2.md) (this
 implementation's plan — wizard, resolver, test strategy). Per-database import
 notes from the original hand-written `pgloader` migrations, which this tool's
-heuristics encode, are in [`../IMPORT_NOTES.md`](../IMPORT_NOTES.md).
+heuristics encode, are in [`../IMPORT_NOTES.md`](../IMPORT_NOTES.md). The
+sample databases the test suite exercises live in `testdata/fixtures/`
+within this project, so the tests don't depend on the surrounding directory
+layout.
 
 ## Why
 
@@ -26,21 +29,43 @@ to only take those two values?).
 
 ## How it works
 
+The common case — a human at the terminal, watching it happen — is one command:
+
+```
+migrate run <source.db> --pg <postgres-url>
+```
+
+This profiles the source, opens a browser at the review wizard showing every
+column's best-guess mapping (editable inline), and waits. Click **Confirm &
+Import** to generate the DDL and stream every table into Postgres via COPY;
+click **Cancel** to abort — nothing touches Postgres and the draft config is
+deleted. The wizard binds to `127.0.0.1` only.
+
+For scripted or staged use — profile now, review later, load in CI — the
+same steps are available as three separate commands:
+
 ```
 migrate profile  <source.db>   # sample + profile every column, write a draft config
 migrate review   <config.yaml>  # open a local web wizard to approve/override ambiguous columns
 migrate load     <config.yaml> --pg <postgres-url>   # generate DDL, stream rows via COPY
 ```
 
+- **`run`** is `profile` + `review` + `load` collapsed into one command, with
+  a Confirm/Cancel gate in the wizard controlling whether `load` runs at all.
+  `--keep-config` keeps the generated `<source>.migration.yaml` afterward
+  instead of deleting it (useful for inspecting exactly what was loaded, or
+  for a later `--resume`).
 - **`profile`** never touches Postgres. It reads the SQLite schema, samples
   rows per column, runs every registered heuristic, and writes a draft
   `*.migration.yaml` config. Columns below the confidence threshold (default
   0.9) are written to an `unresolved_report.yaml` alongside it, and `profile`
   exits non-zero pointing at it.
 - **`review`** starts an HTTP server bound to `127.0.0.1` only, opens your
-  browser, and blocks until you click "Finish Review". Every approve/override
-  click writes straight through to the config file on disk — closing the tab
-  never loses progress.
+  browser, and blocks until you click "Confirm & Import" or "Cancel". Every
+  approve/override click writes straight through to the config file on disk
+  — closing the tab never loses progress. (For standalone `review`, "Confirm
+  & Import" just finishes the review and unblocks the CLI — the actual load
+  is a separate `migrate load` step; only `run` loads immediately after.)
 - **`load`** refuses to run if unreviewed columns remain above the confidence
   gate (override with `--force`), or if the source file has changed since the
   config was generated (schema drift, detected via a SHA-256 hash). Use
@@ -99,7 +124,7 @@ opt-in via the `integration` build tag — it's not part of the default
 ## Package layout
 
 ```
-cmd/migrate/          CLI entrypoint (profile, review, load, resolve subcommands)
+cmd/migrate/          CLI entrypoint (run, profile, review, load, resolve subcommands)
 internal/
   sqlitereader/        schema + streaming row reading (modernc.org/sqlite, no CGO)
   profiler/            heuristic interface + registry

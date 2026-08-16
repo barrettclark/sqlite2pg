@@ -39,6 +39,8 @@ func run(args []string) error {
 	}
 
 	switch args[0] {
+	case "run":
+		return runRun(args[1:])
 	case "profile":
 		return runProfile(args[1:])
 	case "review":
@@ -48,8 +50,87 @@ func run(args []string) error {
 	case "resolve":
 		return runResolve(args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (expected profile, review, load, or resolve)", args[0])
+		return fmt.Errorf("unknown command %q (expected run, profile, review, load, or resolve)", args[0])
 	}
+}
+
+// --- run -------------------------------------------------------------------
+
+// runRun is the single-shot path: profile the source, open the review
+// wizard, and — only if the human clicks "Confirm & Import" rather than
+// "Cancel" — load the result into Postgres. This is `profile` + `review` +
+// `load` collapsed into one command for the common case where a human is
+// sitting at the terminal watching it happen, as opposed to the scriptable
+// three-command flow (profile now, review later, load in CI, etc.).
+func runRun(args []string) error {
+	fs := flag.NewFlagSet("run", flag.ContinueOnError)
+	pgURL := fs.String("pg", "", "Postgres connection string, e.g. postgres://user@localhost/dbname (required)")
+	sampleSize := fs.Int("sample-size", 500, "rows to sample per column")
+	threshold := fs.Float64("threshold", 0.9, "confidence below which a column is highlighted as needing review")
+	port := fs.Int("port", 0, "port to bind for the review wizard (0 = pick a free port)")
+	keepConfig := fs.Bool("keep-config", false, "keep the generated <source>.migration.yaml after the run instead of deleting it")
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	if fs.NArg() != 1 {
+		return errors.New("usage: migrate run --pg url [--sample-size N] [--threshold F] [--port P] <source.db>")
+	}
+	if *pgURL == "" {
+		return errors.New("--pg is required (use `migrate profile` + `migrate review` separately if you don't have a target yet)")
+	}
+	sourcePath := fs.Arg(0)
+
+	db, err := sql.Open("sqlite", sourcePath)
+	if err != nil {
+		return fmt.Errorf("opening %s: %w", sourcePath, err)
+	}
+	defer db.Close()
+
+	result, err := pipeline.ProfileDatabase(db, sourcePath, *sampleSize, *threshold)
+	if err != nil {
+		return err
+	}
+
+	configPath := sourcePath + ".migration.yaml"
+	if err := config.Save(result.Config, configPath); err != nil {
+		return err
+	}
+	if !*keepConfig {
+		defer os.Remove(configPath)
+	}
+	fmt.Printf("profiled %s: %d table(s), %d column(s) need review\n", sourcePath, len(result.Config.Tables), len(result.Unresolved))
+
+	st, err := wizard.NewState(configPath, *threshold)
+	if err != nil {
+		return err
+	}
+	ln, err := wizard.Listen(*port)
+	if err != nil {
+		return err
+	}
+	url := fmt.Sprintf("http://%s/", ln.Addr().String())
+	fmt.Printf("review at %s — Confirm & Import to load, Cancel to abort\n", url)
+	openBrowser(url)
+
+	if err := wizard.Run(context.Background(), ln, st); err != nil {
+		return err
+	}
+
+	switch st.Outcome() {
+	case wizard.OutcomeCancelled:
+		fmt.Println("cancelled — nothing was imported")
+		return nil
+	case wizard.OutcomeConfirmed:
+		// fall through to load below
+	default:
+		return errors.New("review session ended without a decision")
+	}
+
+	cfg, err := config.Load(configPath)
+	if err != nil {
+		return err
+	}
+	return executeLoad(cfg, *pgURL, false, configPath+".state.json")
 }
 
 // --- profile ---------------------------------------------------------------
@@ -188,6 +269,13 @@ func runLoad(args []string) error {
 		return errors.New("--pg is required unless --dry-run is set")
 	}
 
+	return executeLoad(cfg, *pgURL, *resume, configPath+".state.json")
+}
+
+// executeLoad connects to Postgres and, for every included table, creates
+// it and streams its rows via COPY. Shared by `load` and the load step of
+// the single-shot `run` command.
+func executeLoad(cfg *config.MigrationConfig, pgURL string, resume bool, statePath string) error {
 	sourceDB, err := sql.Open("sqlite", cfg.Source.Path)
 	if err != nil {
 		return fmt.Errorf("opening source %s: %w", cfg.Source.Path, err)
@@ -195,15 +283,14 @@ func runLoad(args []string) error {
 	defer sourceDB.Close()
 
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, *pgURL)
+	conn, err := pgx.Connect(ctx, pgURL)
 	if err != nil {
 		return fmt.Errorf("connecting to Postgres: %w", err)
 	}
 	defer conn.Close(ctx)
 
-	statePath := configPath + ".state.json"
 	completed := map[string]bool{}
-	if *resume {
+	if resume {
 		completed, err = loadCompletedTables(statePath)
 		if err != nil {
 			return err
@@ -214,7 +301,7 @@ func runLoad(args []string) error {
 		if !tc.Include {
 			continue
 		}
-		if *resume && completed[tableName] {
+		if resume && completed[tableName] {
 			fmt.Printf("%s: skipping (already completed)\n", tableName)
 			continue
 		}

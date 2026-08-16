@@ -12,7 +12,9 @@
   .confidence { font-variant-numeric: tabular-nums; }
   select, input[type=text] { font-size: 0.85rem; }
   button { font-size: 0.85rem; padding: 0.3rem 0.7rem; cursor: pointer; }
-  #finish { margin-top: 1rem; font-size: 1rem; padding: 0.6rem 1.2rem; }
+  #actions { margin-top: 1rem; }
+  #finish, #cancel { font-size: 1rem; padding: 0.6rem 1.2rem; }
+  #cancel { margin-left: 0.5rem; background: #fff; border: 1px solid #c33; color: #c33; }
   .rationale { color: #666; font-size: 0.8rem; }
 </style>
 </head>
@@ -20,7 +22,10 @@
   <h1>Review column mappings</h1>
   <p id="counts"></p>
   <div id="tables"></div>
-  <button id="finish">Finish Review</button>
+  <div id="actions">
+    <button id="finish">Confirm &amp; Import</button>
+    <button id="cancel">Cancel</button>
+  </div>
   <script src="/static/app.js"></script>
 </body>
 </html>

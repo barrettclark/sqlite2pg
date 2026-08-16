@@ -43,6 +43,23 @@ func TestRun_LoadRequiresAConfigPath(t *testing.T) {
 	}
 }
 
+func TestRun_RunRequiresASourcePath(t *testing.T) {
+	err := run([]string{"run", "--pg", "postgres://localhost/x"})
+	if err == nil {
+		t.Fatal("expected an error when no source database is given to run")
+	}
+}
+
+func TestRun_RunRequiresThePgFlag(t *testing.T) {
+	err := run([]string{"run", "nonexistent.db"})
+	if err == nil {
+		t.Fatal("expected an error when --pg is not given to run")
+	}
+	if !strings.Contains(err.Error(), "--pg") {
+		t.Errorf("expected the error to mention --pg, got %q", err.Error())
+	}
+}
+
 func TestRunResolve_OverridingTargetTypeClearsAStaleTransform(t *testing.T) {
 	// Regression: applying a human resolution that changes a column from
 	// boolean (transform int_to_bool) to integer must not leave the old
