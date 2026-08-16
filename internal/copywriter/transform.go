@@ -61,10 +61,14 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		if !ok {
 			return raw, nil
 		}
-		for _, layout := range []string{time.RFC3339Nano, time.RFC3339} {
-			if tm, err := time.Parse(layout, s); err == nil {
-				return tm, nil
-			}
+		// Shares profiler.ParseTimestamp with the iso8601_timestamp
+		// heuristic that assigns this transform — using a separate,
+		// independently-maintained layout list here previously let the
+		// heuristic accept a format (e.g. date-only "1980-12-08") this
+		// transform didn't know how to convert, failing at COPY time on a
+		// column the profiler had already promised was a timestamp.
+		if tm, ok := profiler.ParseTimestamp(s); ok {
+			return tm, nil
 		}
 		return nil, fmt.Errorf("iso8601_to_timestamptz: cannot parse %q", s)
 

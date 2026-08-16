@@ -7,17 +7,6 @@ import (
 	"sqlite2pg/internal/profiler"
 )
 
-var iso8601Layouts = []string{
-	time.RFC3339Nano,
-	time.RFC3339,
-	"2006-01-02T15:04:05",
-	// SQLite's own datetime()/CURRENT_TIMESTAMP canonical format: space
-	// separator, no 'T', no timezone offset. Distinct from RFC3339 but
-	// very common in practice (e.g. chinook.db's employees table).
-	"2006-01-02 15:04:05",
-	"2006-01-02",
-}
-
 // ISO8601 detects columns storing ISO 8601 or SQLite-canonical datetime
 // strings.
 type ISO8601 struct{}
@@ -47,7 +36,7 @@ func (ISO8601) Evaluate(meta profiler.ColumnMeta, samples []profiler.Value) (pro
 			continue
 		}
 		total++
-		if parseISO8601(s) {
+		if _, ok := profiler.ParseTimestamp(s); ok {
 			matched++
 		}
 	}
@@ -60,15 +49,6 @@ func (ISO8601) Evaluate(meta profiler.ColumnMeta, samples []profiler.Value) (pro
 		Rationale:     "all sampled values parse as ISO 8601 timestamps",
 		TransformExpr: "iso8601_to_timestamptz",
 	}, true
-}
-
-func parseISO8601(s string) bool {
-	for _, layout := range iso8601Layouts {
-		if _, err := time.Parse(layout, s); err == nil {
-			return true
-		}
-	}
-	return false
 }
 
 func init() { profiler.Register(ISO8601{}) }
