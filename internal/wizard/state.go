@@ -7,10 +7,28 @@ import (
 	"sqlite2pg/internal/config"
 )
 
+// Outcome is how a review session ended.
+type Outcome int
+
+const (
+	// OutcomePending means the session hasn't ended yet.
+	OutcomePending Outcome = iota
+	// OutcomeConfirmed means the human clicked "Finish Review" / "Confirm
+	// & Import" — callers should proceed (e.g. `migrate run` continues to
+	// the load step).
+	OutcomeConfirmed
+	// OutcomeCancelled means the human clicked "Cancel" — callers must not
+	// proceed to load. Any per-column edits already applied remain saved
+	// (each decision persists immediately), but no bulk "accept the rest"
+	// happens.
+	OutcomeCancelled
+)
+
 // State holds the in-progress review session: the config being reviewed,
 // where it's persisted, and the signal that fires once the human clicks
-// "Finish Review" — the mechanism `migrate review` uses to unblock and
-// return control to the CLI.
+// "Finish Review"/"Confirm & Import" or "Cancel" — the mechanism
+// `migrate review` and `migrate run` use to unblock and return control to
+// the CLI.
 type State struct {
 	mu        sync.Mutex
 	path      string
@@ -18,6 +36,7 @@ type State struct {
 	threshold float64
 	done      chan struct{}
 	doneOnce  sync.Once
+	outcome   Outcome
 }
 
 // NewState loads the config at path for review.
@@ -34,9 +53,18 @@ func NewState(path string, threshold float64) (*State, error) {
 	}, nil
 }
 
-// Done is closed once the review session is finished (via /api/finish).
+// Done is closed once the review session ends, however it ended — check
+// Outcome() to see which.
 func (s *State) Done() <-chan struct{} {
 	return s.done
+}
+
+// Outcome reports how the session ended. Only meaningful after Done() has
+// fired; returns OutcomePending before that.
+func (s *State) Outcome() Outcome {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.outcome
 }
 
 // Summary returns the current ReviewSummary for the config as it stands.
@@ -82,7 +110,8 @@ func (s *State) ApplyDecision(table, column string, req DecisionRequest) error {
 }
 
 // Finish marks every remaining unreviewed column reviewed (the bulk
-// "accept everything else as-is" action), persists, and signals Done.
+// "accept everything else as-is" action), persists, records
+// OutcomeConfirmed, and signals Done.
 func (s *State) Finish() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -101,6 +130,23 @@ func (s *State) Finish() error {
 		return err
 	}
 
-	s.doneOnce.Do(func() { close(s.done) })
+	s.doneOnce.Do(func() {
+		s.outcome = OutcomeConfirmed
+		close(s.done)
+	})
 	return nil
+}
+
+// Cancel aborts the session: records OutcomeCancelled and signals Done,
+// without the bulk "accept everything else" Finish does. Callers (notably
+// `migrate run`) must not proceed to load when Outcome() is
+// OutcomeCancelled.
+func (s *State) Cancel() {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.doneOnce.Do(func() {
+		s.outcome = OutcomeCancelled
+		close(s.done)
+	})
 }

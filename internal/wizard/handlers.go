@@ -45,6 +45,11 @@ func NewMux(st *State) *http.ServeMux {
 		writeJSON(w, http.StatusOK, map[string]bool{"done": true})
 	})
 
+	mux.HandleFunc("POST /api/cancel", func(w http.ResponseWriter, r *http.Request) {
+		st.Cancel()
+		writeJSON(w, http.StatusOK, map[string]bool{"done": true})
+	})
+
 	registerStaticRoutes(mux)
 
 	return mux

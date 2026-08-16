@@ -131,4 +131,42 @@ func TestHandleFinish_MarksRemainingColumnsReviewedAndSignalsDone(t *testing.T) 
 	default:
 		t.Error("expected Finish to signal Done()")
 	}
+
+	if st.Outcome() != OutcomeConfirmed {
+		t.Errorf("expected outcome OutcomeConfirmed after Finish, got %v", st.Outcome())
+	}
+}
+
+func TestHandleCancel_SignalsDoneWithoutMarkingColumnsReviewed(t *testing.T) {
+	// Cancel must abort the run without the bulk "accept everything else
+	// as-is" that Finish does — a column no human looked at should stay
+	// unreviewed, since the caller (`migrate run`) will not proceed to load
+	// at all when cancelled.
+	st, path := newTestState(t)
+	mux := NewMux(st)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/cancel", nil)
+	rec := httptest.NewRecorder()
+	mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d: %s", rec.Code, rec.Body.String())
+	}
+
+	select {
+	case <-st.Done():
+	default:
+		t.Fatal("expected Cancel to signal Done()")
+	}
+	if st.Outcome() != OutcomeCancelled {
+		t.Errorf("expected outcome OutcomeCancelled after Cancel, got %v", st.Outcome())
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if loaded.Tables["bikes"].Columns["is_installed"].Reviewed {
+		t.Error("expected Cancel to leave an untouched column reviewed=false")
+	}
 }
