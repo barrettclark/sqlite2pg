@@ -1,12 +1,15 @@
 package pipeline
 
 // Tier 2: golden-fixture tests against the real, already-migrated
-// databases documented in IMPORT_NOTES.md (one directory up from the
-// sqlite2pg module). Rather than a full hand-authored per-column YAML diff
-// for every table (atomic_database.db alone has 12 tables), these assert
-// the specific decision points IMPORT_NOTES.md records as having required
-// non-default handling — the cases that actually matter as regression
-// coverage for the heuristic set. No Postgres connection is used.
+// databases documented in IMPORT_NOTES.md. The fixtures live in
+// testdata/fixtures/ within this module (see internal/pipeline's own
+// nesting: two levels up from here), so the tests aren't sensitive to
+// wherever the surrounding project directory happens to sit. Rather than a
+// full hand-authored per-column YAML diff for every table
+// (atomic_database.db alone has 12 tables), these assert the specific
+// decision points IMPORT_NOTES.md records as having required non-default
+// handling — the cases that actually matter as regression coverage for the
+// heuristic set. No Postgres connection is used.
 
 import (
 	"database/sql"
@@ -19,29 +22,18 @@ import (
 	_ "sqlite2pg/internal/profiler/heuristics"
 )
 
-// fixturesDir is the directory containing the real .db/.geodatabase files.
-// It's normally a "databases" subdirectory next to the sqlite2pg module
-// root, but tries the module root itself too for layouts where the
-// fixtures sit directly alongside it. Override with SQLITE2PG_FIXTURES_DIR
-// if the surrounding project layout moves again.
+// fixturesDir is testdata/fixtures/ at the sqlite2pg module root.
+// Overridable with SQLITE2PG_FIXTURES_DIR for local experimentation.
 func fixturesDir(t *testing.T) string {
 	t.Helper()
 	if dir := os.Getenv("SQLITE2PG_FIXTURES_DIR"); dir != "" {
 		return dir
 	}
-	moduleParent, err := filepath.Abs("../../..")
+	dir, err := filepath.Abs("../../testdata/fixtures")
 	if err != nil {
 		t.Fatalf("resolving fixtures dir: %v", err)
 	}
-	for _, candidate := range []string{
-		filepath.Join(moduleParent, "databases"),
-		moduleParent,
-	} {
-		if _, err := os.Stat(filepath.Join(candidate, "bikes.db")); err == nil {
-			return candidate
-		}
-	}
-	return moduleParent
+	return dir
 }
 
 func openFixture(t *testing.T, name string) (*sql.DB, string) {
