@@ -36,6 +36,20 @@ func TestFallbackTypeFor_PrefersTheActualRuntimeValueTypeOverDeclaredType(t *tes
 	}
 }
 
+func TestFallbackTypeFor_PrefersDoublePrecisionWhenSamplesMixIntAndFloatStorageClasses(t *testing.T) {
+	// Regression: found via dogfooding against northwind_small.sqlite.
+	// SQLite's dynamic typing lets a single DECIMAL-declared column store
+	// some rows as INTEGER storage class (18) and others as REAL (21.35).
+	// Looking only at the first sample previously locked the column to
+	// "integer" whenever a whole-number row happened to come first,
+	// silently truncating any later fractional value at COPY time.
+	samples := []profiler.Value{int64(18), int64(19), int64(10), float64(21.35), int64(25)}
+	got := fallbackTypeFor("DECIMAL", samples)
+	if got != "double precision" {
+		t.Errorf("fallbackTypeFor(DECIMAL, mixed int/float samples) = %q, want double precision", got)
+	}
+}
+
 func TestFallbackTypeFor_FallsBackToDeclaredTypeWhenNoSamplesAreAvailable(t *testing.T) {
 	// An empty table (or an all-NULL column) gives no runtime evidence —
 	// fall back to a safe declared-type guess, defaulting to text for

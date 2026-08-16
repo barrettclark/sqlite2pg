@@ -126,21 +126,41 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 // defaulting unmatched declared types to "text" since it's the one target
 // that can never fail to hold an unknown value.
 func fallbackTypeFor(declared string, samples []profiler.Value) string {
+	var sawInt, sawFloat, sawTime, sawBytes, sawString bool
 	for _, v := range samples {
 		switch v.(type) {
 		case int64, int:
-			return "integer"
+			sawInt = true
 		case float64, float32:
-			return "double precision"
+			sawFloat = true
 		case time.Time:
-			return "timestamptz"
+			sawTime = true
 		case []byte:
-			return "bytea"
+			sawBytes = true
 		case string:
-			return "text"
+			sawString = true
 		}
 	}
-	return fallbackTypeFromDeclared(declared)
+
+	switch {
+	// SQLite's dynamic typing lets a single NUMERIC/DECIMAL-declared
+	// column store some rows as INTEGER storage class and others as REAL
+	// (e.g. 18 alongside 21.35) — if any sample was fractional, the whole
+	// column needs double precision, not just the rows that happened to be
+	// whole numbers.
+	case sawFloat:
+		return "double precision"
+	case sawInt:
+		return "integer"
+	case sawTime:
+		return "timestamptz"
+	case sawBytes:
+		return "bytea"
+	case sawString:
+		return "text"
+	default:
+		return fallbackTypeFromDeclared(declared)
+	}
 }
 
 func fallbackTypeFromDeclared(declared string) string {
