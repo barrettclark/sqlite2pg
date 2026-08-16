@@ -10,6 +10,7 @@ package pipeline
 
 import (
 	"database/sql"
+	"os"
 	"path/filepath"
 	"testing"
 
@@ -18,15 +19,29 @@ import (
 	_ "sqlite2pg/internal/profiler/heuristics"
 )
 
-// fixturesDir is the databases/ directory containing the real .db/.geodatabase
-// files, one level above the sqlite2pg module root.
+// fixturesDir is the directory containing the real .db/.geodatabase files.
+// It's normally a "databases" subdirectory next to the sqlite2pg module
+// root, but tries the module root itself too for layouts where the
+// fixtures sit directly alongside it. Override with SQLITE2PG_FIXTURES_DIR
+// if the surrounding project layout moves again.
 func fixturesDir(t *testing.T) string {
 	t.Helper()
-	dir, err := filepath.Abs("../../..")
+	if dir := os.Getenv("SQLITE2PG_FIXTURES_DIR"); dir != "" {
+		return dir
+	}
+	moduleParent, err := filepath.Abs("../../..")
 	if err != nil {
 		t.Fatalf("resolving fixtures dir: %v", err)
 	}
-	return dir
+	for _, candidate := range []string{
+		filepath.Join(moduleParent, "databases"),
+		moduleParent,
+	} {
+		if _, err := os.Stat(filepath.Join(candidate, "bikes.db")); err == nil {
+			return candidate
+		}
+	}
+	return moduleParent
 }
 
 func openFixture(t *testing.T, name string) (*sql.DB, string) {
