@@ -14,6 +14,10 @@ import (
 // user at ReportPath.
 var ErrUnresolvedCases = errors.New("unresolved cases require review")
 
+// maxDistinctSamplesShown caps how many distinct sample values the
+// unresolved report shows per column, collapsing repeats into a count.
+const maxDistinctSamplesShown = 10
+
 // FileResolver is the first Resolver implementation: it writes every
 // UnresolvedCase to a human-readable YAML report and returns immediately,
 // resolving nothing inline. A human (or a Claude Code session) edits a
@@ -51,9 +55,7 @@ func (fr FileResolver) Resolve(ctx context.Context, cases []UnresolvedCase) (map
 			DeclaredType: c.DeclaredType,
 			Reason:       c.Reason,
 		}
-		for _, s := range c.Samples {
-			rc.Samples = append(rc.Samples, fmt.Sprintf("%v", s))
-		}
+		rc.Samples = summarizeSamples(c.Samples, maxDistinctSamplesShown)
 		for _, f := range c.Findings {
 			rc.Findings = append(rc.Findings, struct {
 				Heuristic     string  `yaml:"heuristic"`

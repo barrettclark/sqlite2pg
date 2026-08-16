@@ -48,6 +48,36 @@ func TestFileResolver_WritesUnresolvedReportAndReturnsSentinelError(t *testing.T
 	}
 }
 
+func TestFileResolver_SummarizesRepeatedSamplesInsteadOfDumpingThemAll(t *testing.T) {
+	reportPath := filepath.Join(t.TempDir(), "unresolved_report.yaml")
+	fr := FileResolver{ReportPath: reportPath}
+
+	samples := make([]profiler.Value, 3148)
+	for i := range samples {
+		samples[i] = int64(1)
+	}
+	cases := []UnresolvedCase{
+		{Table: "invoice_items", Column: "Quantity", DeclaredType: "INTEGER", Samples: samples, Reason: "ambiguous"},
+	}
+
+	_, err := fr.Resolve(context.Background(), cases)
+	if err == nil {
+		t.Fatal("expected an error signaling unresolved cases")
+	}
+
+	data, readErr := os.ReadFile(reportPath)
+	if readErr != nil {
+		t.Fatalf("reading report: %v", readErr)
+	}
+	content := string(data)
+	if strings.Count(content, "\"1\"") > 5 {
+		t.Errorf("expected repeated sample values to be summarized, not dumped %d times; report:\n%s", strings.Count(content, "\"1\""), content)
+	}
+	if !strings.Contains(content, "3148") {
+		t.Errorf("expected the summary to show the repeat count, got:\n%s", content)
+	}
+}
+
 func TestFileResolver_NoOpWhenNoUnresolvedCases(t *testing.T) {
 	reportPath := filepath.Join(t.TempDir(), "unresolved_report.yaml")
 	fr := FileResolver{ReportPath: reportPath}
