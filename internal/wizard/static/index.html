@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>sqlite2pg — review migration</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; color: #1a1a1a; }
+  h1 { font-size: 1.3rem; }
+  table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
+  th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
+  tr.needs-review { background: #fff6e5; }
+  .confidence { font-variant-numeric: tabular-nums; }
+  select, input[type=text] { font-size: 0.85rem; }
+  button { font-size: 0.85rem; padding: 0.3rem 0.7rem; cursor: pointer; }
+  #finish { margin-top: 1rem; font-size: 1rem; padding: 0.6rem 1.2rem; }
+  .rationale { color: #666; font-size: 0.8rem; }
+</style>
+</head>
+<body>
+  <h1>Review column mappings</h1>
+  <p id="counts"></p>
+  <div id="tables"></div>
+  <button id="finish">Finish Review</button>
+  <script src="/static/app.js"></script>
+</body>
+</html>
