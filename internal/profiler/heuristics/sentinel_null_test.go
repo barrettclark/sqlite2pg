@@ -40,6 +40,31 @@ func TestSentinelNull_DetectsSentinelMixedWithNativeIntegerValues(t *testing.T) 
 	}
 }
 
+func TestSentinelNull_SuggestsDoublePrecisionForFloatValuesMixedWithSentinel(t *testing.T) {
+	// Regression: found via dogfooding against neh-grants.db. Latitude/
+	// Longitude are declared REAL with genuine float64 values, and a few
+	// rows use "Unknown" as a sentinel for missing coordinates — the
+	// heuristic must not hardcode "integer" for numeric-plus-sentinel
+	// columns regardless of what kind of number they actually are.
+	h := SentinelNull{}
+	meta := profiler.ColumnMeta{Table: "neh_grants", Name: "Latitude", DeclaredType: "REAL"}
+	if !h.AppliesTo(meta) {
+		t.Fatal("expected AppliesTo to return true for a REAL column")
+	}
+
+	samples := []profiler.Value{33.38353, -91.05397, "Unknown", 40.71864}
+	finding, ok := h.Evaluate(meta, samples)
+	if !ok {
+		t.Fatal("expected a finding for float values mixed with a sentinel token")
+	}
+	if finding.SuggestedType != "double precision" {
+		t.Errorf("expected suggested type double precision, got %q", finding.SuggestedType)
+	}
+	if finding.TransformExpr != "nullif_sentinels" {
+		t.Errorf("expected transform nullif_sentinels, got %q", finding.TransformExpr)
+	}
+}
+
 func TestSentinelNull_NoOpinionWhenAllValuesAreNumeric(t *testing.T) {
 	h := SentinelNull{}
 	samples := []profiler.Value{"1001", "1003", "1005"}

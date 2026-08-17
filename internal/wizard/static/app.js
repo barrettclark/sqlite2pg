@@ -142,7 +142,22 @@ function renderHeaderCell(tableName, col) {
         rationale: "human confirmed via wizard",
       }),
     });
-    loadSummary();
+    // loadSummary() tears down and rebuilds every table's .gridwrap (the
+    // element that actually scrolls horizontally, per-table), which resets
+    // scroll position — restore it so reviewing a wide table doesn't jump
+    // back to the start after every single decision.
+    const windowScrollY = window.scrollY;
+    const gridScrolls = Array.from(document.querySelectorAll(".gridwrap")).map((el) => ({
+      scrollLeft: el.scrollLeft,
+      scrollTop: el.scrollTop,
+    }));
+    await loadSummary();
+    window.scrollTo(window.scrollX, windowScrollY);
+    document.querySelectorAll(".gridwrap").forEach((el, i) => {
+      if (!gridScrolls[i]) return;
+      el.scrollLeft = gridScrolls[i].scrollLeft;
+      el.scrollTop = gridScrolls[i].scrollTop;
+    });
   });
   box.appendChild(select);
 

@@ -33,7 +33,7 @@ func (SentinelNull) AppliesTo(meta profiler.ColumnMeta) bool {
 }
 
 func (SentinelNull) Evaluate(meta profiler.ColumnMeta, samples []profiler.Value) (profiler.Finding, bool) {
-	sawNumeric, sawSentinel := false, false
+	sawNumeric, sawFloat, sawSentinel := false, false, false
 	for _, v := range samples {
 		if v == nil {
 			continue
@@ -47,6 +47,7 @@ func (SentinelNull) Evaluate(meta profiler.ColumnMeta, samples []profiler.Value)
 		}
 		if _, ok := asFloat64(v); ok {
 			sawNumeric = true
+			sawFloat = true
 			continue
 		}
 		s, ok := v.(string)
@@ -54,8 +55,13 @@ func (SentinelNull) Evaluate(meta profiler.ColumnMeta, samples []profiler.Value)
 			continue
 		}
 		switch {
-		case commaNumberPattern.MatchString(s), plainNumberPattern.MatchString(s):
+		case commaNumberPattern.MatchString(s):
 			sawNumeric = true
+		case plainNumberPattern.MatchString(s):
+			sawNumeric = true
+			if strings.Contains(s, ".") {
+				sawFloat = true
+			}
 		case sentinelTokens[strings.ToLower(s)]:
 			sawSentinel = true
 		default:
@@ -66,8 +72,12 @@ func (SentinelNull) Evaluate(meta profiler.ColumnMeta, samples []profiler.Value)
 	if !sawNumeric || !sawSentinel {
 		return profiler.Finding{}, false
 	}
+	suggestedType := "integer"
+	if sawFloat {
+		suggestedType = "double precision"
+	}
 	return profiler.Finding{
-		SuggestedType: "integer",
+		SuggestedType: suggestedType,
 		Confidence:    0.85,
 		Rationale:     "numeric values mixed with a recognized sentinel token (e.g. \"Unknown\") likely marking an aggregate/catch-all row",
 		TransformExpr: "nullif_sentinels",
