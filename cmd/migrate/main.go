@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	_ "modernc.org/sqlite"
@@ -64,7 +65,7 @@ func run(args []string) error {
 // three-command flow (profile now, review later, load in CI, etc.).
 func runRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
-	pgURL := fs.String("pg", "", "Postgres connection string, e.g. postgres://user@localhost/dbname (required)")
+	pgURL := fs.String("pg", "", "Postgres server URL, e.g. postgres://user@localhost:5432/?sslmode=disable (required; no database name — a fresh one is created per run)")
 	sampleSize := fs.Int("sample-size", 500, "rows to sample per column")
 	threshold := fs.Float64("threshold", 0.9, "confidence below which a column is highlighted as needing review")
 	port := fs.Int("port", 0, "port to bind for the review wizard (0 = pick a free port)")
@@ -130,7 +131,15 @@ func runRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	return executeLoad(cfg, *pgURL, false, configPath+".state.json")
+
+	dbName := deriveDatabaseName(sourcePath, time.Now())
+	connCfg, err := provisionDatabase(context.Background(), *pgURL, dbName)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("created database %s\n", dbName)
+
+	return executeLoad(cfg, connCfg, false, configPath+".state.json")
 }
 
 // --- profile ---------------------------------------------------------------
@@ -222,7 +231,7 @@ func openBrowser(url string) {
 
 func runLoad(args []string) error {
 	fs := flag.NewFlagSet("load", flag.ContinueOnError)
-	pgURL := fs.String("pg", "", "Postgres connection string, e.g. postgres://user@localhost/dbname")
+	pgURL := fs.String("pg", "", "Postgres server URL, e.g. postgres://user@localhost:5432/?sslmode=disable (no database name — a fresh one is created per run)")
 	dryRun := fs.Bool("dry-run", false, "print generated DDL without connecting to Postgres")
 	force := fs.Bool("force", false, "proceed even with unreviewed columns above the confidence gate")
 	resume := fs.Bool("resume", false, "skip tables already completed in a prior run, per <config>.state.json")
@@ -269,13 +278,20 @@ func runLoad(args []string) error {
 		return errors.New("--pg is required unless --dry-run is set")
 	}
 
-	return executeLoad(cfg, *pgURL, *resume, configPath+".state.json")
+	dbName := deriveDatabaseName(cfg.Source.Path, time.Now())
+	connCfg, err := provisionDatabase(context.Background(), *pgURL, dbName)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("created database %s\n", dbName)
+
+	return executeLoad(cfg, connCfg, *resume, configPath+".state.json")
 }
 
 // executeLoad connects to Postgres and, for every included table, creates
 // it and streams its rows via COPY. Shared by `load` and the load step of
 // the single-shot `run` command.
-func executeLoad(cfg *config.MigrationConfig, pgURL string, resume bool, statePath string) error {
+func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bool, statePath string) error {
 	sourceDB, err := sql.Open("sqlite", cfg.Source.Path)
 	if err != nil {
 		return fmt.Errorf("opening source %s: %w", cfg.Source.Path, err)
@@ -283,7 +299,7 @@ func executeLoad(cfg *config.MigrationConfig, pgURL string, resume bool, statePa
 	defer sourceDB.Close()
 
 	ctx := context.Background()
-	conn, err := pgx.Connect(ctx, pgURL)
+	conn, err := pgx.ConnectConfig(ctx, connCfg)
 	if err != nil {
 		return fmt.Errorf("connecting to Postgres: %w", err)
 	}
