@@ -334,6 +334,13 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		}
 		fmt.Printf("%s: loaded %d row(s)\n", tableName, n)
 	}
+
+	// Every included table made it through, so nothing is left to resume —
+	// the state file (and, for a `run`-generated config, the config file
+	// itself, per --keep-config) has no further purpose.
+	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing state file %s: %w", statePath, err)
+	}
 	return nil
 }
 
