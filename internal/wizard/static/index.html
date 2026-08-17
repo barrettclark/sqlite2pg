@@ -4,27 +4,81 @@
 <meta charset="utf-8">
 <title>sqlite2pg — review migration</title>
 <style>
-  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 2rem auto; color: #1a1a1a; }
-  h1 { font-size: 1.3rem; }
-  table { width: 100%; border-collapse: collapse; margin-bottom: 1.5rem; }
-  th, td { text-align: left; padding: 0.4rem 0.6rem; border-bottom: 1px solid #ddd; font-size: 0.9rem; }
-  tr.needs-review { background: #fff6e5; }
-  .confidence { font-variant-numeric: tabular-nums; }
-  select, input[type=text] { font-size: 0.85rem; }
-  button { font-size: 0.85rem; padding: 0.3rem 0.7rem; cursor: pointer; }
-  #actions { margin-top: 1rem; }
-  #finish, #cancel { font-size: 1rem; padding: 0.6rem 1.2rem; }
-  #cancel { margin-left: 0.5rem; background: #fff; border: 1px solid #c33; color: #c33; }
-  .rationale { color: #666; font-size: 0.8rem; }
+  :root {
+    --ink: #14202a; --ink-soft: #58707d; --paper: #eef1f2; --surface: #ffffff;
+    --line: #d7dde0; --accent: #1f6f78; --accent-soft: #e3f1f0;
+    --warn-stripe: #e0a92e; --good-stripe: #3fae74;
+    --grid-head: #e4e8ea; --grid-stripe: #f6f8f9; --shadow: 0 1px 2px rgba(20,32,42,.06);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink: #e8edf0; --ink-soft: #93a7ae; --paper: #0f171b; --surface: #161f24;
+      --line: #283238; --accent: #4fb8bf; --accent-soft: #163333;
+      --warn-stripe: #e0b23a; --good-stripe: #2f8f61;
+      --grid-head: #1c262c; --grid-stripe: #131b20; --shadow: 0 1px 2px rgba(0,0,0,.35);
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink: #e8edf0; --ink-soft: #93a7ae; --paper: #0f171b; --surface: #161f24;
+    --line: #283238; --accent: #4fb8bf; --accent-soft: #163333;
+    --warn-stripe: #e0b23a; --good-stripe: #2f8f61;
+    --grid-head: #1c262c; --grid-stripe: #131b20; --shadow: 0 1px 2px rgba(0,0,0,.35);
+  }
+  :root[data-theme="light"] {
+    --ink: #14202a; --ink-soft: #58707d; --paper: #eef1f2; --surface: #ffffff;
+    --line: #d7dde0; --accent: #1f6f78; --accent-soft: #e3f1f0;
+    --warn-stripe: #e0a92e; --good-stripe: #3fae74;
+    --grid-head: #e4e8ea; --grid-stripe: #f6f8f9; --shadow: 0 1px 2px rgba(20,32,42,.06);
+  }
+
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--paper); color: var(--ink); font-family: ui-sans-serif, -apple-system, "Segoe UI", Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 2.25rem 1.5rem 5rem; }
+  h1 { font-size: 1.4rem; margin: 0 0 .3rem; letter-spacing: -.01em; }
+  #counts { color: var(--ink-soft); margin: 0 0 1.5rem; font-size: .9rem; }
+
+  .panel { background: var(--surface); border: 1px solid var(--line); border-radius: 10px; box-shadow: var(--shadow); overflow: hidden; margin-bottom: 1.75rem; }
+  .toolbar { display: flex; align-items: center; justify-content: space-between; padding: .7rem 1rem; border-bottom: 1px solid var(--line); background: var(--grid-head); }
+  .toolbar .title { font-weight: 700; font-size: .88rem; }
+  .toolbar .path { font-weight: 400; color: var(--ink-soft); font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .78rem; }
+  .toolbar .counts { font-size: .78rem; color: var(--ink-soft); white-space: nowrap; }
+
+  .gridwrap { overflow: auto; max-width: 100%; }
+  table.grid { border-collapse: separate; border-spacing: 0; font-size: .82rem; white-space: nowrap; width: 100%; }
+  table.grid td, table.grid th { padding: .4rem .65rem; border-bottom: 1px solid var(--line); border-right: 1px solid var(--line); }
+  table.grid td:last-child, table.grid th:last-child { border-right: none; }
+  table.grid tbody tr:last-child td { border-bottom: none; }
+  table.grid tbody tr:nth-child(even) td { background: var(--grid-stripe); }
+  .rownum { color: var(--ink-soft); text-align: right; background: var(--grid-head); font-variant-numeric: tabular-nums; font-size: .75rem; position: sticky; left: 0; }
+  td.cell { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; color: var(--ink); }
+
+  th.colhead { background: var(--grid-head); padding: 0; position: sticky; top: 0; z-index: 2; }
+  th.colhead.needs-review { box-shadow: inset 0 3px 0 var(--warn-stripe); }
+  th.colhead.auto { box-shadow: inset 0 3px 0 var(--good-stripe); }
+  th.rownum-head { position: sticky; left: 0; top: 0; z-index: 3; background: var(--grid-head); }
+  .headbtn { padding: .5rem .6rem; }
+  .headbtn .name { font-weight: 700; font-size: .82rem; display: block; }
+  .headbtn .declared { font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace; font-size: .66rem; color: var(--ink-soft); display: block; margin: .2rem 0 .35rem; }
+  .headbtn select { font: inherit; font-size: .78rem; padding: .2rem .35rem; border-radius: 5px; border: 1px solid var(--line); background: var(--surface); color: var(--ink); width: 100%; }
+  .headbtn select:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+
+  .empty { padding: 1.5rem; color: var(--ink-soft); font-size: .85rem; text-align: center; }
+
+  #actions { margin-top: .5rem; }
+  #finish, #cancel { font-size: 1rem; padding: .6rem 1.2rem; border-radius: 8px; cursor: pointer; font-family: inherit; }
+  #finish { background: var(--accent); border: 1px solid var(--accent); color: #fff; font-weight: 600; }
+  #cancel { margin-left: .5rem; background: var(--surface); border: 1px solid var(--line); color: var(--ink-soft); }
 </style>
 </head>
 <body>
-  <h1>Review column mappings</h1>
-  <p id="counts"></p>
-  <div id="tables"></div>
-  <div id="actions">
-    <button id="finish">Confirm &amp; Import</button>
-    <button id="cancel">Cancel</button>
+  <div class="wrap">
+    <h1>Review column mappings</h1>
+    <p id="counts"></p>
+    <div id="tables"></div>
+    <div id="actions">
+      <button id="finish">Confirm &amp; Import</button>
+      <button id="cancel">Cancel</button>
+    </div>
   </div>
   <script src="/static/app.js"></script>
 </body>

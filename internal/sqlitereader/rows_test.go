@@ -41,6 +41,66 @@ func TestSampleColumn_ReturnsFewerThanLimitWhenTableIsSmaller(t *testing.T) {
 	}
 }
 
+func TestSampleRows_ReturnsUpToLimitCompleteRowsInColumnOrder(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE bikes (bike_id INTEGER PRIMARY KEY, station_id TEXT, last_reported INTEGER);`)
+	for i := 1; i <= 10; i++ {
+		if _, err := db.Exec(`INSERT INTO bikes (station_id, last_reported) VALUES (?, ?)`, "s"+string(rune('0'+i%10)), 1620000000+i); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	rows, err := SampleRows(db, "bikes", []string{"station_id", "last_reported"}, 3)
+	if err != nil {
+		t.Fatalf("SampleRows: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(rows))
+	}
+	for _, row := range rows {
+		if len(row) != 2 {
+			t.Fatalf("expected 2 columns per row, got %d: %v", len(row), row)
+		}
+		if _, ok := row[0].(string); !ok {
+			t.Errorf("expected column 0 (station_id) to be a string, got %T", row[0])
+		}
+		if _, ok := row[1].(int64); !ok {
+			t.Errorf("expected column 1 (last_reported) to be an int64, got %T", row[1])
+		}
+	}
+}
+
+func TestSampleRows_ReturnsFewerThanLimitWhenTableIsSmaller(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE bikes (bike_id INTEGER PRIMARY KEY, station_id TEXT);`)
+	if _, err := db.Exec(`INSERT INTO bikes (station_id) VALUES ('only-row')`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	rows, err := SampleRows(db, "bikes", []string{"station_id"}, 10)
+	if err != nil {
+		t.Fatalf("SampleRows: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(rows))
+	}
+}
+
+func TestCountRows_ReturnsTheTableRowCount(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE bikes (bike_id INTEGER PRIMARY KEY);`)
+	for i := 0; i < 7; i++ {
+		if _, err := db.Exec(`INSERT INTO bikes DEFAULT VALUES`); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	n, err := CountRows(db, "bikes")
+	if err != nil {
+		t.Fatalf("CountRows: %v", err)
+	}
+	if n != 7 {
+		t.Errorf("expected 7, got %d", n)
+	}
+}
+
 func TestStreamTable_YieldsEveryRowWithoutBufferingTheWholeTable(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE bikes (bike_id INTEGER PRIMARY KEY, last_reported INTEGER);`)
 	const rowCount = 50

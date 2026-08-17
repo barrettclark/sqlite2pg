@@ -28,6 +28,54 @@ func SampleColumn(db *sql.DB, table, column string, limit int) ([]profiler.Value
 	return samples, rows.Err()
 }
 
+// SampleRows returns up to limit complete rows (all requested columns
+// together, in order) via a single bounded LIMIT query — unlike
+// SampleColumn, which samples one column independently of the others, this
+// gives synchronized rows suitable for a data-preview grid where each row
+// must show values that actually belong together.
+func SampleRows(db *sql.DB, table string, columns []string, limit int) ([][]profiler.Value, error) {
+	colList := ""
+	for i, c := range columns {
+		if i > 0 {
+			colList += ", "
+		}
+		colList += fmt.Sprintf("%q", c)
+	}
+
+	rows, err := db.Query(fmt.Sprintf(`SELECT %s FROM %q LIMIT ?`, colList, table), limit)
+	if err != nil {
+		return nil, fmt.Errorf("sampling rows from %s: %w", table, err)
+	}
+	defer rows.Close()
+
+	dest := make([]any, len(columns))
+	ptrs := make([]any, len(columns))
+	for i := range dest {
+		ptrs[i] = &dest[i]
+	}
+
+	var result [][]profiler.Value
+	for rows.Next() {
+		if err := rows.Scan(ptrs...); err != nil {
+			return nil, err
+		}
+		row := make([]profiler.Value, len(dest))
+		copy(row, dest)
+		result = append(result, row)
+	}
+	return result, rows.Err()
+}
+
+// CountRows returns table's total row count.
+func CountRows(db *sql.DB, table string) (int, error) {
+	var n int
+	err := db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %q`, table)).Scan(&n)
+	if err != nil {
+		return 0, fmt.Errorf("counting rows in %s: %w", table, err)
+	}
+	return n, nil
+}
+
 // StreamTable calls fn once per row of table, restricted to columns, via a
 // single forward cursor. It never buffers the full table in memory — this
 // is the direct fix for the pre-processing script's cur.fetchall() pattern,

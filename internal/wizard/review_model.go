@@ -7,6 +7,7 @@ import (
 	"sort"
 
 	"sqlite2pg/internal/config"
+	"sqlite2pg/internal/ddl"
 )
 
 // ColumnView is one column's decision, ready for the review UI.
@@ -23,10 +24,26 @@ type ColumnView struct {
 	NeedsReview  bool
 }
 
-// TableView is one table's columns, in declared order.
+// TablePreview is a table's real-data preview: a handful of complete rows
+// (aligned to TableView.Columns order) and the source table's total row
+// count, so the review grid can show "this many rows, this many need
+// review" the way a spreadsheet import preview does.
+type TablePreview struct {
+	Rows     [][]string
+	RowCount int
+}
+
+// GridData is table -> its preview, used to show real rows in the review
+// grid alongside each column's decision.
+type GridData map[string]TablePreview
+
+// TableView is one table's columns (declared order, dropped columns
+// excluded) plus its data preview.
 type TableView struct {
-	Name    string
-	Columns []ColumnView
+	Name     string
+	Columns  []ColumnView
+	Rows     [][]string
+	RowCount int
 }
 
 // ReviewSummary is the full draft config split into what needs a human's
@@ -40,7 +57,11 @@ type ReviewSummary struct {
 // BuildReviewSummary classifies every column against threshold: below it,
 // NeedsReview is true and the column is surfaced prominently in the wizard;
 // at or above it, the column is still shown but collapsed by default.
-func BuildReviewSummary(cfg *config.MigrationConfig, threshold float64) ReviewSummary {
+// Columns dropped from the load (target type __drop__, e.g. Esri SHAPE
+// blobs) are excluded entirely — they're never part of what gets loaded, so
+// there's nothing to review. grid may be nil (no preview data attached,
+// e.g. if the source file couldn't be re-read for display purposes).
+func BuildReviewSummary(cfg *config.MigrationConfig, threshold float64, grid GridData) ReviewSummary {
 	var summary ReviewSummary
 
 	tableNames := make([]string, 0, len(cfg.Tables))
@@ -52,7 +73,7 @@ func BuildReviewSummary(cfg *config.MigrationConfig, threshold float64) ReviewSu
 	for _, tableName := range tableNames {
 		tc := cfg.Tables[tableName]
 		tv := TableView{Name: tableName}
-		for _, colName := range tc.ColumnOrder {
+		for _, colName := range ddl.IncludedColumns(tc) {
 			col, ok := tc.Columns[colName]
 			if !ok {
 				continue
@@ -75,6 +96,10 @@ func BuildReviewSummary(cfg *config.MigrationConfig, threshold float64) ReviewSu
 				Reviewed:     col.Reviewed,
 				NeedsReview:  needsReview,
 			})
+		}
+		if preview, ok := grid[tableName]; ok {
+			tv.Rows = preview.Rows
+			tv.RowCount = preview.RowCount
 		}
 		summary.Tables = append(summary.Tables, tv)
 	}
