@@ -62,6 +62,8 @@ type Model struct {
 func New(st *review.State, width, height int) Model {
 	m := Model{st: st, summary: st.Summary(), width: width, height: height}
 	m.tableList = newTableList(m.summary, width, height-footerLines)
+	m.columnList = list.New(nil, list.NewDefaultDelegate(), width, height-footerLines)
+	m.typeList = list.New(nil, list.NewDefaultDelegate(), width, height-footerLines)
 	return m
 }
 
@@ -73,6 +75,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.tableList.SetSize(msg.Width, msg.Height-footerLines)
 		m.columnList.SetSize(msg.Width, msg.Height-footerLines)
+		m.typeList.SetSize(msg.Width, msg.Height-footerLines)
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
