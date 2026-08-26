@@ -11,6 +11,16 @@ import (
 	"sqlite2pg/internal/ddl"
 )
 
+// TypeOptions is the ordered list of target Postgres types a human can pick
+// from when overriding a column's decision. Kept as a plain, small, curated
+// list rather than every Postgres type — these are the ones the profiler's
+// heuristics and DDL generator actually understand.
+var TypeOptions = []string{
+	"text", "integer", "bigint", "smallint", "boolean",
+	"double precision", "real", "numeric",
+	"date", "timestamptz", "jsonb", "bytea",
+}
+
 // ColumnView is one column's decision, ready for the review UI.
 type ColumnView struct {
 	Table        string

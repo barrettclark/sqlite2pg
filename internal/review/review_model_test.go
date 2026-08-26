@@ -108,3 +108,19 @@ func TestBuildReviewSummary_NilGridDataProducesNoPanic(t *testing.T) {
 		t.Errorf("expected RowCount 0, got %d", summary.Tables[0].RowCount)
 	}
 }
+
+func TestTypeOptions_ContainsTheCommonPostgresTypes(t *testing.T) {
+	want := []string{
+		"text", "integer", "bigint", "smallint", "boolean",
+		"double precision", "real", "numeric",
+		"date", "timestamptz", "jsonb", "bytea",
+	}
+	if len(TypeOptions) != len(want) {
+		t.Fatalf("expected %d type options, got %d: %v", len(want), len(TypeOptions), TypeOptions)
+	}
+	for i, w := range want {
+		if TypeOptions[i] != w {
+			t.Errorf("TypeOptions[%d] = %q, want %q", i, TypeOptions[i], w)
+		}
+	}
+}
