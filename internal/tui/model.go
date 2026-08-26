@@ -21,6 +21,7 @@ const (
 	screenTableList screen = iota
 	screenColumnDetail
 	screenTypePicker
+	screenPreview
 )
 
 // footerLines is how much vertical space the key-hint footer takes, so the
@@ -51,6 +52,11 @@ type Model struct {
 
 	confirming    bool
 	confirmAction confirmAction
+
+	previewOrigin    screen
+	previewTable     review.TableView
+	previewRowOffset int
+	previewColOffset int
 
 	width, height int
 
@@ -95,6 +101,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleColumnDetailKey(msg)
 	case screenTypePicker:
 		return m.handleTypePickerKey(msg)
+	case screenPreview:
+		return m.handlePreviewKey(msg)
 	}
 	return m, nil
 }
@@ -118,6 +126,11 @@ func (m Model) handleTableListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			tv := findTable(m.summary, item.name)
 			m.columnList = newColumnList(tv, m.width, m.height-footerLines)
 			m.screen = screenColumnDetail
+		}
+		return m, nil
+	case "v":
+		if item, ok := m.tableList.SelectedItem().(tableItem); ok {
+			m.openPreview(item.name, screenTableList)
 		}
 		return m, nil
 	}
@@ -156,10 +169,23 @@ func (m Model) handleColumnDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.screen = screenTypePicker
 		}
 		return m, nil
+	case "v":
+		m.openPreview(m.selectedTable, screenColumnDetail)
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.columnList, cmd = m.columnList.Update(msg)
 	return m, cmd
+}
+
+// openPreview switches to the preview screen for tableName, remembering
+// origin so esc returns to whichever screen the preview was opened from.
+func (m *Model) openPreview(tableName string, origin screen) {
+	m.previewTable = findTable(m.summary, tableName)
+	m.previewOrigin = origin
+	m.previewRowOffset = 0
+	m.previewColOffset = 0
+	m.screen = screenPreview
 }
 
 func (m Model) handleTypePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -202,11 +228,13 @@ func (m Model) View() string {
 	var body string
 	switch m.screen {
 	case screenColumnDetail:
-		body = m.columnList.View() + "\nesc: back to tables  enter: change type\n"
+		body = m.columnList.View() + "\nesc: back to tables  enter: change type  v: preview data\n"
 	case screenTypePicker:
 		body = m.typeList.View() + "\nenter: select  esc: cancel\n"
+	case screenPreview:
+		body = m.renderPreview() + "\n←/→ scroll columns  ↑/↓ scroll rows  esc: back\n"
 	default:
-		body = m.tableList.View() + "\nenter: open table  f: finish  c: cancel\n"
+		body = m.tableList.View() + "\nenter: open table  v: preview data  f: finish  c: cancel\n"
 		if m.confirming {
 			verb := "Confirm & Import"
 			if m.confirmAction == confirmCancel {
