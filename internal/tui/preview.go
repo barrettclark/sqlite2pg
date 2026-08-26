@@ -111,4 +111,3 @@ func padOrTruncate(s string, width int) string {
 	}
 	return s + strings.Repeat(" ", width-len(s))
 }
-
