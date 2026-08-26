@@ -1,0 +1,30 @@
+# Planning
+TODO.md
+
+# Compiled binaries
+/migrate
+migrate/migrate
+*.exe
+*.test
+
+# Go build/test artifacts
+*.out
+
+# Editor/OS cruft
+.DS_Store
+*.swp
+
+# Local env / secrets
+.env
+.env.*
+
+# Draft migration configs produced by `migrate profile`
+*.migration.yaml
+
+# Local sqlite/geodatabase sources dropped in for testing (e.g. beets library)
+*.db
+*.sqlite
+*.geodatabase
+!testdata/fixtures/*.db
+!testdata/fixtures/*.sqlite
+!testdata/fixtures/*.geodatabase
