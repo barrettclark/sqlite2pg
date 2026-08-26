@@ -4,12 +4,66 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
+
 	tea "github.com/charmbracelet/bubbletea"
+
+	"sqlite2pg/internal/review"
 )
 
 // previewColWidth is the fixed display width of each column in the
 // preview grid; longer values are truncated with an ellipsis.
 const previewColWidth = 16
+
+// columnSampleValues extracts one column's sample values (in row order)
+// from tv's preview grid, for display alongside the type picker.
+func columnSampleValues(tv review.TableView, columnName string) []string {
+	idx := -1
+	for i, c := range tv.Columns {
+		if c.Column == columnName {
+			idx = i
+			break
+		}
+	}
+	if idx == -1 {
+		return nil
+	}
+	values := make([]string, 0, len(tv.Rows))
+	for _, row := range tv.Rows {
+		if idx < len(row) {
+			values = append(values, row[idx])
+		}
+	}
+	return values
+}
+
+// renderTypePicker renders the type-picker screen: the type list on the
+// left, and the selected column's real sample values on the right, so a
+// human can see actual data while choosing a target type.
+func (m Model) renderTypePicker() string {
+	leftWidth := pickerListWidth(m.width)
+	rightWidth := m.width - leftWidth
+
+	var right strings.Builder
+	right.WriteString(padOrTruncate(m.selectedColumn+" — sample values", rightWidth))
+	right.WriteString("\n")
+	right.WriteString(strings.Repeat("─", rightWidth))
+	right.WriteString("\n")
+
+	visibleRows := m.height - footerLines - 2
+	if visibleRows < 0 {
+		visibleRows = 0
+	}
+	for i, v := range m.pickerColumnValues {
+		if i >= visibleRows {
+			break
+		}
+		right.WriteString(padOrTruncate(v, rightWidth))
+		right.WriteString("\n")
+	}
+
+	return lipgloss.JoinHorizontal(lipgloss.Top, m.typeList.View(), right.String())
+}
 
 func (m Model) handlePreviewKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {

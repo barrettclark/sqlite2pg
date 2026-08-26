@@ -50,6 +50,8 @@ type Model struct {
 	selectedTable  string
 	selectedColumn string
 
+	pickerColumnValues []string
+
 	confirming    bool
 	confirmAction confirmAction
 
@@ -71,10 +73,17 @@ func New(st *review.State, width, height int) Model {
 	m.columnList = list.New(nil, list.NewDefaultDelegate(), width, height-footerLines)
 	m.columnList.DisableQuitKeybindings()
 	m.columnList.SetFilteringEnabled(false)
-	m.typeList = list.New(nil, list.NewDefaultDelegate(), width, height-footerLines)
+	m.typeList = list.New(nil, list.NewDefaultDelegate(), pickerListWidth(width), height-footerLines)
 	m.typeList.DisableQuitKeybindings()
 	m.typeList.SetFilteringEnabled(false)
 	return m
+}
+
+// pickerListWidth is how wide the type list is on the type-picker screen —
+// half the terminal, leaving the other half for that column's sample
+// values panel.
+func pickerListWidth(width int) int {
+	return width / 2
 }
 
 func (m Model) Init() tea.Cmd { return nil }
@@ -85,7 +94,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.width, m.height = msg.Width, msg.Height
 		m.tableList.SetSize(msg.Width, msg.Height-footerLines)
 		m.columnList.SetSize(msg.Width, msg.Height-footerLines)
-		m.typeList.SetSize(msg.Width, msg.Height-footerLines)
+		m.typeList.SetSize(pickerListWidth(msg.Width), msg.Height-footerLines)
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(msg)
@@ -165,7 +174,8 @@ func (m Model) handleColumnDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "enter":
 		if item, ok := m.columnList.SelectedItem().(columnItem); ok {
 			m.selectedColumn = item.col.Column
-			m.typeList = newTypeList(item.col.TargetType, m.width, m.height-footerLines)
+			m.typeList = newTypeList(item.col.TargetType, pickerListWidth(m.width), m.height-footerLines)
+			m.pickerColumnValues = columnSampleValues(findTable(m.summary, m.selectedTable), m.selectedColumn)
 			m.screen = screenTypePicker
 		}
 		return m, nil
@@ -230,7 +240,7 @@ func (m Model) View() string {
 	case screenColumnDetail:
 		body = m.columnList.View() + "\nesc: back to tables  enter: change type  v: preview data\n"
 	case screenTypePicker:
-		body = m.typeList.View() + "\nenter: select  esc: cancel\n"
+		body = m.renderTypePicker() + "\nenter: select  esc: cancel\n"
 	case screenPreview:
 		body = m.renderPreview() + "\n←/→ scroll columns  ↑/↓ scroll rows  esc: back\n"
 	default:

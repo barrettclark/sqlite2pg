@@ -89,6 +89,29 @@ func TestModel_PreviewRowAndColumnOffsetsClampAtBounds(t *testing.T) {
 	}
 }
 
+func TestModel_TypePickerShowsSampleValuesForTheSelectedColumn(t *testing.T) {
+	m := New(newTestStateWithSource(t), 80, 24)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // drill into bikes
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // open picker for bike_id
+	m = updated.(Model)
+
+	if m.selectedColumn != "bike_id" {
+		t.Fatalf("expected selectedColumn bike_id, got %q", m.selectedColumn)
+	}
+	if len(m.pickerColumnValues) == 0 {
+		t.Fatal("expected sample values captured for the picker's column")
+	}
+
+	view := m.View()
+	if !strings.Contains(view, "bike_id") {
+		t.Errorf("expected the column name in the picker view, got:\n%s", view)
+	}
+	if !strings.Contains(view, m.pickerColumnValues[0]) {
+		t.Errorf("expected the first sample value (%q) in the picker view, got:\n%s", m.pickerColumnValues[0], view)
+	}
+}
+
 func TestModel_PreviewViewRendersRealSampleValues(t *testing.T) {
 	m := New(newTestStateWithSource(t), 80, 24)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})
