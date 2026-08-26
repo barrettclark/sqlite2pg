@@ -154,6 +154,27 @@ func TestModel_TypePickerFlagsValuesInvalidForHighlightedType(t *testing.T) {
 	}
 }
 
+func TestPreviewValueForType_CoercesNumericValuesRatherThanJustFlagging(t *testing.T) {
+	cases := []struct {
+		value, targetType, wantDisplay string
+		wantValid                      bool
+	}{
+		{"3.7", "integer", "3", true},          // truncated, not flagged invalid
+		{"3", "double precision", "3.0", true}, // shown with a decimal
+		{"3.5", "double precision", "3.5", true},
+		{"-2.9", "bigint", "-2", true},
+		{"not-a-number", "integer", "not-a-number", false},
+		{"NULL", "integer", "NULL", true},
+	}
+	for _, c := range cases {
+		display, valid := previewValueForType(c.value, c.targetType)
+		if display != c.wantDisplay || valid != c.wantValid {
+			t.Errorf("previewValueForType(%q, %q) = (%q, %v), want (%q, %v)",
+				c.value, c.targetType, display, valid, c.wantDisplay, c.wantValid)
+		}
+	}
+}
+
 func TestModel_PreviewViewRendersRealSampleValues(t *testing.T) {
 	m := New(newTestStateWithSource(t), 80, 24)
 	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'v'}})

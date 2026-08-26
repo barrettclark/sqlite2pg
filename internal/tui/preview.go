@@ -21,38 +21,54 @@ var dateLayouts = []string{
 	"2006-01-02",
 }
 
-// validForType reports whether value would load successfully into a column
-// of targetType with no transform applied — i.e. whether the raw text
-// parses as that Postgres type. "NULL" (formatSampleValue's placeholder for
-// a nil value) is always valid, since NULL is valid for any nullable
-// column.
-func validForType(value, targetType string) bool {
+// previewValueForType returns what value would look like under targetType:
+// for numeric target types, the actual coerced number (truncated for
+// integer types, decimal-formatted for floating-point types) rather than a
+// bare valid/invalid flag, so a human can see e.g. what "3.7" becomes under
+// "integer" or what "3" becomes under "double precision". For non-numeric
+// target types it falls back to a validity check — whether the raw text
+// would parse as that Postgres type with no transform applied — since
+// there's no meaningful "conversion" to preview for e.g. a UUID string
+// under "boolean". "NULL" (formatSampleValue's placeholder for a nil
+// value) always displays as-is and is always valid, since NULL is valid
+// for any nullable column.
+func previewValueForType(value, targetType string) (display string, valid bool) {
 	if value == "NULL" {
-		return true
+		return value, true
 	}
 	switch targetType {
 	case "integer", "bigint", "smallint":
-		_, err := strconv.ParseInt(value, 10, 64)
-		return err == nil
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return value, false
+		}
+		return strconv.FormatInt(int64(f), 10), true
 	case "real", "double precision", "numeric":
-		_, err := strconv.ParseFloat(value, 64)
-		return err == nil
+		f, err := strconv.ParseFloat(value, 64)
+		if err != nil {
+			return value, false
+		}
+		formatted := strconv.FormatFloat(f, 'f', -1, 64)
+		if !strings.Contains(formatted, ".") {
+			formatted += ".0"
+		}
+		return formatted, true
 	case "boolean":
 		switch strings.ToLower(value) {
 		case "0", "1", "true", "false", "t", "f":
-			return true
+			return value, true
 		}
-		return false
+		return value, false
 	case "date", "timestamptz":
 		for _, layout := range dateLayouts {
 			if _, err := time.Parse(layout, value); err == nil {
-				return true
+				return value, true
 			}
 		}
-		return false
+		return value, false
 	default:
-		// text, jsonb, bytea: any string is valid.
-		return true
+		// text, jsonb, bytea: any string is valid, displayed as-is.
+		return value, true
 	}
 }
 
@@ -108,9 +124,10 @@ func (m Model) renderTypePicker() string {
 		if i >= visibleRows {
 			break
 		}
-		line := v
-		if !validForType(v, highlighted) {
-			line = "⚠ " + v
+		display, valid := previewValueForType(v, highlighted)
+		line := display
+		if !valid {
+			line = "⚠ " + display
 		}
 		right.WriteString(padOrTruncate(line, rightWidth))
 		right.WriteString("\n")
