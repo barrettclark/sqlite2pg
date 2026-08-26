@@ -11,8 +11,6 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
-	"runtime"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -25,6 +23,7 @@ import (
 	_ "sqlite2pg/internal/profiler/heuristics"
 	"sqlite2pg/internal/resolver"
 	"sqlite2pg/internal/review"
+	"sqlite2pg/internal/tui"
 )
 
 func main() {
@@ -68,13 +67,12 @@ func runRun(args []string) error {
 	pgURL := fs.String("pg", "", "Postgres server URL, e.g. postgres://user@localhost:5432/?sslmode=disable (required; no database name — a fresh one is created per run)")
 	sampleSize := fs.Int("sample-size", 500, "rows to sample per column")
 	threshold := fs.Float64("threshold", 0.9, "confidence below which a column is highlighted as needing review")
-	port := fs.Int("port", 0, "port to bind for the review wizard (0 = pick a free port)")
 	keepConfig := fs.Bool("keep-config", false, "keep the generated <source>.migration.yaml after the run instead of deleting it")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: migrate run --pg url [--sample-size N] [--threshold F] [--port P] <source.db>")
+		return errors.New("usage: migrate run --pg url [--sample-size N] [--threshold F] <source.db>")
 	}
 	if *pgURL == "" {
 		return errors.New("--pg is required (use `migrate profile` + `migrate review` separately if you don't have a target yet)")
@@ -105,15 +103,8 @@ func runRun(args []string) error {
 	if err != nil {
 		return err
 	}
-	ln, err := review.Listen(*port)
-	if err != nil {
-		return err
-	}
-	url := fmt.Sprintf("http://%s/", ln.Addr().String())
-	fmt.Printf("review at %s — Confirm & Import to load, Cancel to abort\n", url)
-	openBrowser(url)
-
-	if err := review.Run(context.Background(), ln, st); err != nil {
+	fmt.Println("opening review — f: finish & import, c: cancel")
+	if err := tui.Run(context.Background(), st); err != nil {
 		return err
 	}
 
@@ -190,7 +181,6 @@ func runProfile(args []string) error {
 func runReview(args []string) error {
 	fs := flag.NewFlagSet("review", flag.ContinueOnError)
 	threshold := fs.Float64("threshold", 0.9, "confidence below which a column is highlighted as needing review")
-	port := fs.Int("port", 0, "port to bind (0 = pick a free port)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
@@ -203,28 +193,7 @@ func runReview(args []string) error {
 	if err != nil {
 		return err
 	}
-	ln, err := review.Listen(*port)
-	if err != nil {
-		return err
-	}
-	url := fmt.Sprintf("http://%s/", ln.Addr().String())
-	fmt.Printf("review server listening at %s (waiting for Finish Review)\n", url)
-	openBrowser(url)
-
-	return review.Run(context.Background(), ln, st)
-}
-
-func openBrowser(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("cmd", "/c", "start", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
-	}
-	_ = cmd.Start()
+	return tui.Run(context.Background(), st)
 }
 
 // --- load ----------------------------------------------------------------
