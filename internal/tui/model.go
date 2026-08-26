@@ -27,6 +27,14 @@ const (
 // embedded list.Model is sized to leave room for it.
 const footerLines = 2
 
+type confirmAction int
+
+const (
+	confirmNone confirmAction = iota
+	confirmFinish
+	confirmCancel
+)
+
 // Model is the Bubble Tea model driving the review TUI.
 type Model struct {
 	st      *review.State
@@ -40,6 +48,9 @@ type Model struct {
 
 	selectedTable  string
 	selectedColumn string
+
+	confirming    bool
+	confirmAction confirmAction
 
 	width, height int
 
@@ -82,7 +93,18 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m Model) handleTableListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if m.confirming {
+		return m.handleConfirmKey(msg)
+	}
 	switch msg.String() {
+	case "f":
+		m.confirming = true
+		m.confirmAction = confirmFinish
+		return m, nil
+	case "c":
+		m.confirming = true
+		m.confirmAction = confirmCancel
+		return m, nil
 	case "enter":
 		if item, ok := m.tableList.SelectedItem().(tableItem); ok {
 			m.selectedTable = item.name
@@ -95,6 +117,23 @@ func (m Model) handleTableListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.tableList, cmd = m.tableList.Update(msg)
 	return m, cmd
+}
+
+func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.String() != "y" {
+		m.confirming = false
+		return m, nil
+	}
+	if m.confirmAction == confirmFinish {
+		if err := m.st.Finish(); err != nil {
+			m.err = err
+			m.confirming = false
+			return m, nil
+		}
+	} else {
+		m.st.Cancel()
+	}
+	return m, tea.Quit
 }
 
 func (m Model) handleColumnDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -149,7 +188,14 @@ func (m Model) View() string {
 	case screenTypePicker:
 		body = m.typeList.View() + "\nenter: select  esc: cancel\n"
 	default:
-		body = m.tableList.View() + "\nenter: open table\n"
+		body = m.tableList.View() + "\nenter: open table  f: finish  c: cancel\n"
+		if m.confirming {
+			verb := "Confirm & Import"
+			if m.confirmAction == confirmCancel {
+				verb = "Cancel"
+			}
+			body += fmt.Sprintf("%s? y/n\n", verb)
+		}
 	}
 	if m.err != nil {
 		body += fmt.Sprintf("\nerror: %s\n", m.err)

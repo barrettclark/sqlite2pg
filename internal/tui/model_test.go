@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"sqlite2pg/internal/review"
 )
 
 func TestNew_StartsOnTableListWithOneTable(t *testing.T) {
@@ -110,5 +112,75 @@ func TestModel_PickerEnterCommitsDecisionAndReturnsToColumnDetail(t *testing.T) 
 	}
 	if col.Transform != "" {
 		t.Fatalf("expected Transform cleared on override, got %q", col.Transform)
+	}
+}
+
+func TestModel_FinishConfirmationRequiresY(t *testing.T) {
+	st := newTestState(t)
+	m := New(st, 80, 24)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	m = updated.(Model)
+	if !m.confirming || m.confirmAction != confirmFinish {
+		t.Fatalf("expected finish confirmation pending, got confirming=%v action=%v", m.confirming, m.confirmAction)
+	}
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected a command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.Quit, got %T", cmd())
+	}
+	select {
+	case <-st.Done():
+	default:
+		t.Fatal("expected State.Done() to be closed")
+	}
+	if st.Outcome() != review.OutcomeConfirmed {
+		t.Fatalf("expected OutcomeConfirmed, got %v", st.Outcome())
+	}
+}
+
+func TestModel_CancelConfirmationRequiresY(t *testing.T) {
+	st := newTestState(t)
+	m := New(st, 80, 24)
+
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'c'}})
+	m = updated.(Model)
+
+	updated, cmd := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
+	m = updated.(Model)
+	if cmd == nil {
+		t.Fatal("expected a command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.Quit, got %T", cmd())
+	}
+	if st.Outcome() != review.OutcomeCancelled {
+		t.Fatalf("expected OutcomeCancelled, got %v", st.Outcome())
+	}
+}
+
+func TestModel_DecliningConfirmationReturnsToTableList(t *testing.T) {
+	st := newTestState(t)
+	m := New(st, 80, 24)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'f'}})
+	m = updated.(Model)
+
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}})
+	m = updated.(Model)
+
+	if m.confirming {
+		t.Fatal("expected confirming to be cleared")
+	}
+	if m.screen != screenTableList {
+		t.Fatalf("expected screenTableList, got %v", m.screen)
+	}
+	select {
+	case <-st.Done():
+		t.Fatal("expected State.Done() to still be open")
+	default:
 	}
 }
