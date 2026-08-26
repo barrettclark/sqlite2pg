@@ -63,7 +63,11 @@ func New(st *review.State, width, height int) Model {
 	m := Model{st: st, summary: st.Summary(), width: width, height: height}
 	m.tableList = newTableList(m.summary, width, height-footerLines)
 	m.columnList = list.New(nil, list.NewDefaultDelegate(), width, height-footerLines)
+	m.columnList.DisableQuitKeybindings()
+	m.columnList.SetFilteringEnabled(false)
 	m.typeList = list.New(nil, list.NewDefaultDelegate(), width, height-footerLines)
+	m.typeList.DisableQuitKeybindings()
+	m.typeList.SetFilteringEnabled(false)
 	return m
 }
 
@@ -104,7 +108,7 @@ func (m Model) handleTableListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.confirming = true
 		m.confirmAction = confirmFinish
 		return m, nil
-	case "c":
+	case "c", "q", "esc":
 		m.confirming = true
 		m.confirmAction = confirmCancel
 		return m, nil
@@ -125,6 +129,7 @@ func (m Model) handleTableListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleConfirmKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.String() != "y" {
 		m.confirming = false
+		m.confirmAction = confirmNone
 		return m, nil
 	}
 	if m.confirmAction == confirmFinish {
@@ -167,13 +172,23 @@ func (m Model) handleTypePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if err := m.st.ApplyDecision(m.selectedTable, m.selectedColumn, review.DecisionRequest{
 				TargetType: string(item),
 				Transform:  "",
+				Rationale:  "human override via TUI",
 			}); err != nil {
 				m.err = err
 				return m, nil
 			}
 			m.summary = m.st.Summary()
+			m.tableList = newTableList(m.summary, m.width, m.height-footerLines)
 			tv := findTable(m.summary, m.selectedTable)
 			m.columnList = newColumnList(tv, m.width, m.height-footerLines)
+			idx := 0
+			for i, it := range m.columnList.Items() {
+				if ci, ok := it.(columnItem); ok && ci.col.Column == m.selectedColumn {
+					idx = i
+					break
+				}
+			}
+			m.columnList.Select(idx)
 		}
 		m.screen = screenColumnDetail
 		return m, nil
@@ -245,6 +260,8 @@ func newTableList(summary review.ReviewSummary, width, height int) list.Model {
 	}
 	l := list.New(items, list.NewDefaultDelegate(), width, height)
 	l.Title = fmt.Sprintf("%d table(s) — %d column(s) need review, %d auto-approved", len(summary.Tables), summary.NeedsReviewCount, summary.AutoApprovedCount)
+	l.DisableQuitKeybindings()
+	l.SetFilteringEnabled(false)
 	return l
 }
 
@@ -254,7 +271,9 @@ type columnItem struct {
 
 func (i columnItem) Title() string {
 	marker := "  "
-	if i.col.NeedsReview {
+	if i.col.Reviewed {
+		marker = "✓ "
+	} else if i.col.NeedsReview {
 		marker = "! "
 	}
 	return fmt.Sprintf("%s%s: %s -> %s", marker, i.col.Column, i.col.DeclaredType, i.col.TargetType)
@@ -271,6 +290,8 @@ func newColumnList(tv review.TableView, width, height int) list.Model {
 	}
 	l := list.New(items, list.NewDefaultDelegate(), width, height)
 	l.Title = tv.Name
+	l.DisableQuitKeybindings()
+	l.SetFilteringEnabled(false)
 	return l
 }
 
@@ -291,6 +312,8 @@ func newTypeList(current string, width, height int) list.Model {
 	}
 	l := list.New(items, list.NewDefaultDelegate(), width, height)
 	l.Title = "select target type"
+	l.DisableQuitKeybindings()
+	l.SetFilteringEnabled(false)
 	l.Select(selected)
 	return l
 }
