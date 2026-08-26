@@ -9,8 +9,9 @@ data-preview grid and lets a human override the profiler's per-column type
 guesses before `migrate run`/`migrate review` proceeds to load.
 
 This spec replaces that web UI with a terminal UI (TUI), reusing the
-UI-agnostic core (`wizard.State`, `wizard.ReviewSummary`,
-`wizard.BuildReviewSummary`) that already exists behind the HTTP layer.
+UI-agnostic core (`State`, `ReviewSummary`, `BuildReviewSummary`) that
+already exists behind the HTTP layer, and renames the package that holds
+it from `wizard` to `review`.
 
 ## Goals
 
@@ -30,17 +31,21 @@ UI-agnostic core (`wizard.State`, `wizard.ReviewSummary`,
 
 ## Architecture
 
-- New package `internal/tui`, depending on `wizard.State` /
-  `wizard.ReviewSummary` / `wizard.BuildReviewSummary` (unchanged — these
-  stay in `internal/wizard` as the reusable core) and adding a
-  `bubbletea.Model` on top.
-- `internal/wizard` loses `handlers.go`, `server.go`, `static.go`,
+- `internal/wizard` is renamed to `internal/review` (package `wizard` →
+  package `review`), since it's no longer specifically the "web wizard"
+  — it's the shared review-session core both the old web UI and the new
+  TUI build on. All existing callers (`cmd/migrate/main.go`) update their
+  import path and `wizard.` references accordingly.
+- New package `internal/tui`, depending on `review.State` /
+  `review.ReviewSummary` / `review.BuildReviewSummary` (unchanged logic,
+  moved package) and adding a `bubbletea.Model` on top.
+- `internal/review` loses `handlers.go`, `server.go`, `static.go`,
   `static/`, and their tests (`handlers_test.go`, `server_test.go`,
   `static_test.go`). `state.go` and `review_model.go` (plus their tests)
-  are untouched.
+  move over unchanged.
 - `TYPE_OPTIONS`, currently hardcoded in `static/app.js`, moves to a Go
-  var in `internal/wizard` (e.g. `wizard.TypeOptions`) so the TUI's picker
-  and any future consumer share one list instead of re-duplicating it.
+  var in `internal/review` (`review.TypeOptions`) so the TUI's picker and
+  any future consumer share one list instead of re-duplicating it.
 - New dependencies: `github.com/charmbracelet/bubbletea`,
   `github.com/charmbracelet/bubbles` (table/list components),
   `github.com/charmbracelet/lipgloss` (styling).
@@ -57,7 +62,7 @@ UI-agnostic core (`wizard.State`, `wizard.ReviewSummary`,
    needs-review marker. `enter` opens the type picker for the selected
    column. `esc`/`backspace` returns to the table list.
 3. **Type picker** (overlay on column detail) — list of
-   `wizard.TypeOptions`, current target pre-selected. `enter` commits via
+   `review.TypeOptions`, current target pre-selected. `enter` commits via
    `State.ApplyDecision` (transform always left blank on manual override,
    matching current behavior — a stale transform is never implicitly
    carried over to a new target type). `esc` cancels the picker without
@@ -84,7 +89,7 @@ UI-agnostic core (`wizard.State`, `wizard.ReviewSummary`,
 
 ## Testing
 
-- `internal/wizard`: existing `review_model_test.go` and the surviving
+- `internal/review`: existing `review_model_test.go` and the surviving
   parts of `state.go`'s coverage are untouched. `handlers_test.go`,
   `server_test.go`, `static_test.go` are deleted along with the code they
   test.
@@ -98,10 +103,3 @@ UI-agnostic core (`wizard.State`, `wizard.ReviewSummary`,
   before calling the work done, same as today's practice for the web
   wizard.
 
-## Open question
-
-Whether to rename the `internal/wizard` package to something UI-neutral
-(e.g. `internal/review`) now that it's no longer specifically the "web
-wizard," since it holds the shared core both the old web UI and the new
-TUI build on. Not required for this work; can be folded in as part of
-this change or left as a separate cleanup — decide during planning.
