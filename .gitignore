@@ -4,6 +4,9 @@ TODO.md
 # Isolated worktrees for subagent-driven-development plan execution
 /.worktrees/
 
+# Superpowers skill scratch state (brainstorm mockups, SDD ledgers)
+/.superpowers/
+
 # Compiled binaries
 /migrate
 migrate/migrate
