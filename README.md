@@ -2,7 +2,7 @@
 
 A `pgloader` replacement for migrating SQLite databases (including Esri File
 Geodatabases) into PostgreSQL, with automatic data profiling and an
-interactive web wizard for reviewing ambiguous type decisions.
+interactive terminal wizard for reviewing ambiguous type decisions.
 
 Background and design rationale live in the parent directory:
 [`../PGLOADER_REWRITE_PLAN.md`](../PGLOADER_REWRITE_PLAN.md) (the original
@@ -35,23 +35,24 @@ The common case — a human at the terminal, watching it happen — is one comma
 migrate run <source.db> --pg <postgres-url>
 ```
 
-This profiles the source, opens a browser at the review wizard showing every
-column's best-guess mapping (editable inline), and waits. Click **Confirm &
-Import** to generate the DDL and stream every table into Postgres via COPY;
-click **Cancel** to abort — nothing touches Postgres and the draft config is
-deleted. The wizard binds to `127.0.0.1` only.
+This profiles the source, then opens an in-terminal review screen showing
+every column's best-guess mapping (editable inline), and waits. Press `f`
+then `y` to finish and import — generates the DDL and streams every table
+into Postgres via COPY; press `c` then `y` to cancel — nothing touches
+Postgres and the draft config is deleted.
 
 For scripted or staged use — profile now, review later, load in CI — the
 same steps are available as three separate commands:
 
 ```
 migrate profile  <source.db>   # sample + profile every column, write a draft config
-migrate review   <config.yaml>  # open a local web wizard to approve/override ambiguous columns
+migrate review   <config.yaml>  # open the terminal review UI to approve/override ambiguous columns
 migrate load     <config.yaml> --pg <postgres-url>   # generate DDL, stream rows via COPY
 ```
 
 - **`run`** is `profile` + `review` + `load` collapsed into one command, with
-  a Confirm/Cancel gate in the wizard controlling whether `load` runs at all.
+  a Confirm/Cancel gate in the review screen controlling whether `load` runs
+  at all.
   `--keep-config` keeps the generated `<source>.migration.yaml` afterward
   instead of deleting it (useful for inspecting exactly what was loaded, or
   for a later `--resume`).
@@ -60,12 +61,13 @@ migrate load     <config.yaml> --pg <postgres-url>   # generate DDL, stream rows
   `*.migration.yaml` config. Columns below the confidence threshold (default
   0.9) are written to an `unresolved_report.yaml` alongside it, and `profile`
   exits non-zero pointing at it.
-- **`review`** starts an HTTP server bound to `127.0.0.1` only, opens your
-  browser, and blocks until you click "Confirm & Import" or "Cancel". Every
-  approve/override click writes straight through to the config file on disk
-  — closing the tab never loses progress. (For standalone `review`, "Confirm
-  & Import" just finishes the review and unblocks the CLI — the actual load
-  is a separate `migrate load` step; only `run` loads immediately after.)
+- **`review`** opens the terminal review UI directly in your current
+  session and blocks until you finish or cancel. Every approve/override
+  commits straight through to the config file on disk — quitting the
+  terminal never loses progress made before that point. (For standalone
+  `review`, finishing just ends the review and unblocks the CLI — the
+  actual load is a separate `migrate load` step; only `run` loads
+  immediately after.)
 - **`load`** refuses to run if unreviewed columns remain above the confidence
   gate (override with `--force`), or if the source file has changed since the
   config was generated (schema drift, detected via a SHA-256 hash). Use
@@ -134,7 +136,8 @@ internal/
   pipeline/            wires sqlitereader + profiler + resolver into ProfileDatabase
   ddl/                 CREATE TABLE generation
   copywriter/          per-column value transforms + streaming pgx COPY pipeline
-  wizard/               localhost-only web review UI (embedded vanilla JS frontend)
+  review/               review-session core (state machine, decisions)
+  tui/                  terminal review UI (Bubble Tea)
 ```
 
 Not yet implemented: an LLM-backed `Resolver` (the interface has a `ctx`

@@ -1,6 +1,6 @@
 // Command migrate replaces pgloader for SQLite -> Postgres migrations: it
 // profiles a source database, lets a human review ambiguous type
-// decisions in a local web wizard, and loads the result into Postgres via
+// decisions in a terminal review UI, and loads the result into Postgres via
 // the COPY protocol.
 package main
 
@@ -56,11 +56,11 @@ func run(args []string) error {
 
 // --- run -------------------------------------------------------------------
 
-// runRun is the single-shot path: profile the source, open the review
-// wizard, and — only if the human clicks "Confirm & Import" rather than
-// "Cancel" — load the result into Postgres. This is `profile` + `review` +
-// `load` collapsed into one command for the common case where a human is
-// sitting at the terminal watching it happen, as opposed to the scriptable
+// runRun is the single-shot path: profile the source, open the review TUI,
+// and — only if the human finishes the review rather than cancelling it —
+// load the result into Postgres. This is `profile` + `review` + `load`
+// collapsed into one command for the common case where a human is sitting
+// at the terminal watching it happen, as opposed to the scriptable
 // three-command flow (profile now, review later, load in CI, etc.).
 func runRun(args []string) error {
 	fs := flag.NewFlagSet("run", flag.ContinueOnError)
