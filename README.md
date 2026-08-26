@@ -37,10 +37,11 @@ migrate run <source.db> --pg <postgres-url>
 
 This profiles the source, then opens an in-terminal review screen showing
 every column's best-guess mapping: drill into a table, select a column, and
-choose a target type from a list to override it. Press `f` then `y` to
-finish and import — generates the DDL and streams every table into Postgres
-via COPY; press `c` then `y` to cancel — nothing touches Postgres and the
-draft config is deleted.
+choose a target type from a list to override it. Press `v` from the table
+list or column detail to see a scrollable grid of real sample rows for that
+table. Press `f` then `y` to finish and import — generates the DDL and
+streams every table into Postgres via COPY; press `c` then `y` to cancel —
+nothing touches Postgres and the draft config is deleted.
 
 For scripted or staged use — profile now, review later, load in CI — the
 same steps are available as three separate commands. Note that the review
