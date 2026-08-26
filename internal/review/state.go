@@ -47,9 +47,16 @@ type State struct {
 	done      chan struct{}
 	doneOnce  sync.Once
 	outcome   Outcome
+	grid      GridData
 }
 
-// NewState loads the config at path for review.
+// gridPreviewLimit is how many preview rows are sampled per table — enough
+// to fill a scrollable terminal grid without a slow/large query.
+const gridPreviewLimit = 30
+
+// NewState loads the config at path for review, and best-effort re-samples
+// the source file so the preview screen can show real data alongside each
+// column's decision.
 func NewState(path string, threshold float64) (*State, error) {
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -60,6 +67,7 @@ func NewState(path string, threshold float64) (*State, error) {
 		cfg:       cfg,
 		threshold: threshold,
 		done:      make(chan struct{}),
+		grid:      sampleGridData(cfg, gridPreviewLimit),
 	}, nil
 }
 
@@ -81,7 +89,7 @@ func (s *State) Outcome() Outcome {
 func (s *State) Summary() ReviewSummary {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return BuildReviewSummary(s.cfg, s.threshold)
+	return BuildReviewSummary(s.cfg, s.threshold, s.grid)
 }
 
 // ApplyDecision records a human override for one column and persists the
