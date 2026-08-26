@@ -1,7 +1,8 @@
-// Package wizard is the local, localhost-only web UI a human uses to
-// approve or override the profiler's column-type decisions before a load
-// proceeds.
-package wizard
+// Package review holds the review-session core shared by every review
+// UI (formerly a browser-based wizard, now a terminal UI): the state
+// machine that tracks a human's approve/override decisions on the
+// profiler's column-type guesses before a load proceeds.
+package review
 
 import (
 	"sort"

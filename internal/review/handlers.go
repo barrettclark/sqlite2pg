@@ -1,21 +1,11 @@
-package wizard
+package review
 
 import (
 	"encoding/json"
 	"net/http"
 )
 
-// DecisionRequest is the body of POST /api/columns/{table}/{column}/decision.
-// Transform must be set explicitly alongside TargetType (empty means
-// passthrough) — a stale transform from the prior heuristic guess (e.g.
-// int_to_bool) is never implicitly carried over to a new target type.
-type DecisionRequest struct {
-	TargetType string `json:"target_type"`
-	Transform  string `json:"transform"`
-	Rationale  string `json:"rationale"`
-}
-
-// NewMux wires the wizard's REST API (and, once added, its static
+// NewMux wires the review UI's REST API (and, once added, its static
 // frontend) against st.
 func NewMux(st *State) *http.ServeMux {
 	mux := http.NewServeMux()

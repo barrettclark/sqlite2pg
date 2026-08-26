@@ -24,7 +24,7 @@ import (
 	"sqlite2pg/internal/pipeline"
 	_ "sqlite2pg/internal/profiler/heuristics"
 	"sqlite2pg/internal/resolver"
-	"sqlite2pg/internal/wizard"
+	"sqlite2pg/internal/review"
 )
 
 func main() {
@@ -101,11 +101,11 @@ func runRun(args []string) error {
 	}
 	fmt.Printf("profiled %s: %d table(s), %d column(s) need review\n", sourcePath, len(result.Config.Tables), len(result.Unresolved))
 
-	st, err := wizard.NewState(configPath, *threshold)
+	st, err := review.NewState(configPath, *threshold)
 	if err != nil {
 		return err
 	}
-	ln, err := wizard.Listen(*port)
+	ln, err := review.Listen(*port)
 	if err != nil {
 		return err
 	}
@@ -113,15 +113,15 @@ func runRun(args []string) error {
 	fmt.Printf("review at %s — Confirm & Import to load, Cancel to abort\n", url)
 	openBrowser(url)
 
-	if err := wizard.Run(context.Background(), ln, st); err != nil {
+	if err := review.Run(context.Background(), ln, st); err != nil {
 		return err
 	}
 
 	switch st.Outcome() {
-	case wizard.OutcomeCancelled:
+	case review.OutcomeCancelled:
 		fmt.Println("cancelled — nothing was imported")
 		return nil
-	case wizard.OutcomeConfirmed:
+	case review.OutcomeConfirmed:
 		// fall through to load below
 	default:
 		return errors.New("review session ended without a decision")
@@ -199,11 +199,11 @@ func runReview(args []string) error {
 	}
 	configPath := fs.Arg(0)
 
-	st, err := wizard.NewState(configPath, *threshold)
+	st, err := review.NewState(configPath, *threshold)
 	if err != nil {
 		return err
 	}
-	ln, err := wizard.Listen(*port)
+	ln, err := review.Listen(*port)
 	if err != nil {
 		return err
 	}
@@ -211,7 +211,7 @@ func runReview(args []string) error {
 	fmt.Printf("review server listening at %s (waiting for Finish Review)\n", url)
 	openBrowser(url)
 
-	return wizard.Run(context.Background(), ln, st)
+	return review.Run(context.Background(), ln, st)
 }
 
 func openBrowser(url string) {
