@@ -1,5 +1,5 @@
 // Package config defines and persists MigrationConfig, the reviewed
-// mapping file that both the web wizard and `migrate load` read and write.
+// mapping file that both the review UI and `migrate load` read and write.
 // It is the single source of truth for a reproducible run.
 package config
 
