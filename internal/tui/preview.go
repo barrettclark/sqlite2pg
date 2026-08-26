@@ -3,6 +3,7 @@ package tui
 import (
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/lipgloss"
 
@@ -10,6 +11,50 @@ import (
 
 	"sqlite2pg/internal/review"
 )
+
+// dateLayouts are the formats validForType accepts for "date"/"timestamptz"
+// — matching what a plain COPY (no transform) would need to parse, not
+// every format Postgres itself understands.
+var dateLayouts = []string{
+	time.RFC3339,
+	"2006-01-02 15:04:05",
+	"2006-01-02",
+}
+
+// validForType reports whether value would load successfully into a column
+// of targetType with no transform applied — i.e. whether the raw text
+// parses as that Postgres type. "NULL" (formatSampleValue's placeholder for
+// a nil value) is always valid, since NULL is valid for any nullable
+// column.
+func validForType(value, targetType string) bool {
+	if value == "NULL" {
+		return true
+	}
+	switch targetType {
+	case "integer", "bigint", "smallint":
+		_, err := strconv.ParseInt(value, 10, 64)
+		return err == nil
+	case "real", "double precision", "numeric":
+		_, err := strconv.ParseFloat(value, 64)
+		return err == nil
+	case "boolean":
+		switch strings.ToLower(value) {
+		case "0", "1", "true", "false", "t", "f":
+			return true
+		}
+		return false
+	case "date", "timestamptz":
+		for _, layout := range dateLayouts {
+			if _, err := time.Parse(layout, value); err == nil {
+				return true
+			}
+		}
+		return false
+	default:
+		// text, jsonb, bytea: any string is valid.
+		return true
+	}
+}
 
 // previewColWidth is the fixed display width of each column in the
 // preview grid; longer values are truncated with an ellipsis.
@@ -50,6 +95,11 @@ func (m Model) renderTypePicker() string {
 	right.WriteString(strings.Repeat("─", rightWidth))
 	right.WriteString("\n")
 
+	highlighted := ""
+	if item, ok := m.typeList.SelectedItem().(typeItem); ok {
+		highlighted = string(item)
+	}
+
 	visibleRows := m.height - footerLines - 2
 	if visibleRows < 0 {
 		visibleRows = 0
@@ -58,7 +108,11 @@ func (m Model) renderTypePicker() string {
 		if i >= visibleRows {
 			break
 		}
-		right.WriteString(padOrTruncate(v, rightWidth))
+		line := v
+		if !validForType(v, highlighted) {
+			line = "⚠ " + v
+		}
+		right.WriteString(padOrTruncate(line, rightWidth))
 		right.WriteString("\n")
 	}
 

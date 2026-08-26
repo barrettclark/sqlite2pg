@@ -5,6 +5,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"sqlite2pg/internal/review"
 )
 
 func TestModel_VOnTableListOpensPreview(t *testing.T) {
@@ -109,6 +111,46 @@ func TestModel_TypePickerShowsSampleValuesForTheSelectedColumn(t *testing.T) {
 	}
 	if !strings.Contains(view, m.pickerColumnValues[0]) {
 		t.Errorf("expected the first sample value (%q) in the picker view, got:\n%s", m.pickerColumnValues[0], view)
+	}
+}
+
+func TestModel_TypePickerFlagsValuesInvalidForHighlightedType(t *testing.T) {
+	m := New(newTestStateWithSource(t), 80, 24)
+	updated, _ := m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // drill into bikes
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown}) // select is_installed (real 0/1 values)
+	m = updated.(Model)
+	updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyEnter}) // open picker; starts on "boolean" (its current type)
+	m = updated.(Model)
+
+	if m.selectedColumn != "is_installed" {
+		t.Fatalf("expected selectedColumn is_installed, got %q", m.selectedColumn)
+	}
+
+	// "boolean" is is_installed's current target type; 0/1 values are valid.
+	if strings.Contains(m.View(), "⚠") {
+		t.Errorf("expected no invalid markers while boolean is highlighted, got:\n%s", m.View())
+	}
+
+	// Move down to "date", which 0/1 strings don't parse as.
+	booleanIdx, dateIdx := -1, -1
+	for i, item := range review.TypeOptions {
+		if item == "boolean" {
+			booleanIdx = i
+		}
+		if item == "date" {
+			dateIdx = i
+		}
+	}
+	for i := booleanIdx; i < dateIdx; i++ {
+		updated, _ = m.Update(tea.KeyMsg{Type: tea.KeyDown})
+		m = updated.(Model)
+	}
+	if item, ok := m.typeList.SelectedItem().(typeItem); !ok || string(item) != "date" {
+		t.Fatalf("expected cursor on \"date\", got %v", m.typeList.SelectedItem())
+	}
+	if !strings.Contains(m.View(), "⚠") {
+		t.Errorf("expected invalid markers while date is highlighted (0/1 aren't valid dates), got:\n%s", m.View())
 	}
 }
 
