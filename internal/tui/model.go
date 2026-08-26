@@ -20,6 +20,7 @@ type screen int
 const (
 	screenTableList screen = iota
 	screenColumnDetail
+	screenTypePicker
 )
 
 // footerLines is how much vertical space the key-hint footer takes, so the
@@ -35,8 +36,10 @@ type Model struct {
 
 	tableList  list.Model
 	columnList list.Model
+	typeList   list.Model
 
-	selectedTable string
+	selectedTable  string
+	selectedColumn string
 
 	width, height int
 
@@ -72,6 +75,8 @@ func (m Model) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m.handleTableListKey(msg)
 	case screenColumnDetail:
 		return m.handleColumnDetailKey(msg)
+	case screenTypePicker:
+		return m.handleTypePickerKey(msg)
 	}
 	return m, nil
 }
@@ -97,19 +102,59 @@ func (m Model) handleColumnDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "esc", "backspace":
 		m.screen = screenTableList
 		return m, nil
+	case "enter":
+		if item, ok := m.columnList.SelectedItem().(columnItem); ok {
+			m.selectedColumn = item.col.Column
+			m.typeList = newTypeList(item.col.TargetType, m.width, m.height-footerLines)
+			m.screen = screenTypePicker
+		}
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.columnList, cmd = m.columnList.Update(msg)
 	return m, cmd
 }
 
+func (m Model) handleTypePickerKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.String() {
+	case "esc":
+		m.screen = screenColumnDetail
+		return m, nil
+	case "enter":
+		if item, ok := m.typeList.SelectedItem().(typeItem); ok {
+			if err := m.st.ApplyDecision(m.selectedTable, m.selectedColumn, review.DecisionRequest{
+				TargetType: string(item),
+				Transform:  "",
+			}); err != nil {
+				m.err = err
+				return m, nil
+			}
+			m.summary = m.st.Summary()
+			tv := findTable(m.summary, m.selectedTable)
+			m.columnList = newColumnList(tv, m.width, m.height-footerLines)
+		}
+		m.screen = screenColumnDetail
+		return m, nil
+	}
+	var cmd tea.Cmd
+	m.typeList, cmd = m.typeList.Update(msg)
+	return m, cmd
+}
+
 func (m Model) View() string {
+	var body string
 	switch m.screen {
 	case screenColumnDetail:
-		return m.columnList.View() + "\nesc: back to tables\n"
+		body = m.columnList.View() + "\nesc: back to tables  enter: change type\n"
+	case screenTypePicker:
+		body = m.typeList.View() + "\nenter: select  esc: cancel\n"
 	default:
-		return m.tableList.View() + "\nenter: open table\n"
+		body = m.tableList.View() + "\nenter: open table\n"
 	}
+	if m.err != nil {
+		body += fmt.Sprintf("\nerror: %s\n", m.err)
+	}
+	return body
 }
 
 func findTable(summary review.ReviewSummary, name string) review.TableView {
@@ -177,5 +222,26 @@ func newColumnList(tv review.TableView, width, height int) list.Model {
 	}
 	l := list.New(items, list.NewDefaultDelegate(), width, height)
 	l.Title = tv.Name
+	return l
+}
+
+type typeItem string
+
+func (i typeItem) Title() string       { return string(i) }
+func (i typeItem) Description() string { return "" }
+func (i typeItem) FilterValue() string { return string(i) }
+
+func newTypeList(current string, width, height int) list.Model {
+	items := make([]list.Item, len(review.TypeOptions))
+	selected := 0
+	for idx, t := range review.TypeOptions {
+		items[idx] = typeItem(t)
+		if t == current {
+			selected = idx
+		}
+	}
+	l := list.New(items, list.NewDefaultDelegate(), width, height)
+	l.Title = "select target type"
+	l.Select(selected)
 	return l
 }
