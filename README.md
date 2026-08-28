@@ -35,13 +35,14 @@ The common case — a human at the terminal, watching it happen — is one comma
 migrate run <source.db> --pg <postgres-url>
 ```
 
-This profiles the source, then opens an in-terminal review screen showing
-every column's best-guess mapping: drill into a table, select a column, and
-choose a target type from a list to override it. Press `v` from the table
-list or column detail to see a scrollable grid of real sample rows for that
-table. Press `f` then `y` to finish and import — generates the DDL and
-streams every table into Postgres via COPY; press `c` then `y` to cancel —
-nothing touches Postgres and the draft config is deleted.
+This profiles the source, then opens an in-terminal review screen: pick a
+table, then see every column's real sample data and its type decision
+together in one grid — select a column and press enter to change its type
+from a list filtered to only the types the sampled data actually validates
+as. Press `f` to finish and import — generates the DDL and streams every
+table into Postgres via COPY; press `c` to cancel — nothing touches
+Postgres and the draft config is deleted. Either raises a Yes/No
+confirmation before doing anything irreversible.
 
 For scripted or staged use — profile now, review later, load in CI — the
 same steps are available as three separate commands. Note that the review
@@ -141,7 +142,8 @@ internal/
   ddl/                 CREATE TABLE generation
   copywriter/          per-column value transforms + streaming pgx COPY pipeline
   review/              review-session core (state machine, decisions)
-  tui/                 terminal review UI (Bubble Tea)
+  tui/                 terminal review UI (tview): table list, per-table
+                        data+type grid, filtered type picker
 ```
 
 Not yet implemented: an LLM-backed `Resolver` (the interface has a `ctx`
