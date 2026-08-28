@@ -72,9 +72,28 @@ func centered(p tview.Primitive, width, height int) tview.Primitive {
 	return col
 }
 
-// onTypeSelected closes the picker. Task 4 replaces this body to apply
-// the selected type via State.ApplyDecision.
+// onTypeSelected applies typeName as m.pickerColumn's new target type,
+// refreshes the grid and status line, and closes the picker. Transform is
+// always cleared and Rationale always set to the fixed string below — a
+// stale transform from the prior heuristic guess is never implicitly
+// carried over to a new target type.
 func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortcut rune) {
+	err := m.st.ApplyDecision(m.selectedTable, m.pickerColumn, review.DecisionRequest{
+		TargetType: typeName,
+		Transform:  "",
+		Rationale:  "human override via TUI",
+	})
+	if err != nil {
+		m.status.SetText(fmt.Sprintf("error: %s", err))
+		m.closePicker()
+		return
+	}
+
+	_, selectedColumn := m.grid.GetSelection()
+	m.summary = m.st.Summary()
+	m.buildGrid(m.selectedTable)
+	m.grid.Select(0, selectedColumn)
+	m.gridSelectionChanged(0, selectedColumn)
 	m.closePicker()
 }
 
