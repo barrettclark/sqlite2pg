@@ -88,12 +88,22 @@ func (m *model) gridColumnSelected(row, column int) {
 }
 
 // gridKeyCapture handles keys the grid itself doesn't know about: esc
-// returns to the table list. Task 5 adds f/c/q for the Finish/Cancel
-// confirmation to this same function.
+// returns to the table list; f raises the Finish confirmation; c/q raise
+// the Cancel confirmation.
 func (m *model) gridKeyCapture(event *tcell.EventKey) *tcell.EventKey {
-	if event.Key() == tcell.KeyEscape {
+	switch {
+	case event.Key() == tcell.KeyEscape:
 		m.pages.SwitchToPage("tablelist")
 		m.app.SetFocus(m.tableList)
+		return nil
+	case event.Key() == tcell.KeyRune && event.Rune() == 'f':
+		m.showConfirm(true)
+		return nil
+	case event.Key() == tcell.KeyRune && event.Rune() == 'c':
+		m.showConfirm(false)
+		return nil
+	case event.Key() == tcell.KeyRune && event.Rune() == 'q':
+		m.showConfirm(false)
 		return nil
 	}
 	return event

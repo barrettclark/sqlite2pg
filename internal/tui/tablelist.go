@@ -39,16 +39,18 @@ func (m *model) buildTableList() {
 }
 
 // tableListKeyCapture handles keys the table list itself doesn't know
-// about. This is a temporary quit-only version: it stops the application
-// without recording a Finish/Cancel outcome. Task 5 replaces this with a
-// version that raises the Finish/Cancel confirmation modal instead.
+// about: f raises the Finish confirmation, c/q raise the Cancel
+// confirmation.
 func (m *model) tableListKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 	switch {
-	case event.Key() == tcell.KeyCtrlC:
-		m.app.Stop()
+	case event.Key() == tcell.KeyRune && event.Rune() == 'f':
+		m.showConfirm(true)
+		return nil
+	case event.Key() == tcell.KeyRune && event.Rune() == 'c':
+		m.showConfirm(false)
 		return nil
 	case event.Key() == tcell.KeyRune && event.Rune() == 'q':
-		m.app.Stop()
+		m.showConfirm(false)
 		return nil
 	}
 	return event

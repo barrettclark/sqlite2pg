@@ -29,6 +29,8 @@ type model struct {
 
 	picker       *tview.List
 	pickerColumn string
+
+	pendingConfirm confirmState
 }
 
 // Run drives the review TUI against st in the current terminal, blocking

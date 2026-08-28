@@ -28,6 +28,9 @@ func testSummary() review.ReviewSummary {
 	}
 }
 
+func newTestApp() *tview.Application { return tview.NewApplication() }
+func newTestPages() *tview.Pages     { return tview.NewPages() }
+
 func testModel() *model {
 	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), summary: testSummary()}
 	m.buildTableList()
