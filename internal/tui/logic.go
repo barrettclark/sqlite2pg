@@ -105,6 +105,19 @@ func previewValueForType(value, targetType string) (display string, valid bool) 
 	}
 }
 
+// firstNonNullValue returns the first value in values that isn't the
+// preview grid's "NULL" placeholder or empty, or "" if none qualify — used
+// to pick one representative sample to preview under each candidate type
+// in the picker.
+func firstNonNullValue(values []string) string {
+	for _, v := range values {
+		if v != "NULL" && v != "" {
+			return v
+		}
+	}
+	return ""
+}
+
 // validTypesForColumn returns the subset of review.TypeOptions that every
 // one of values would load successfully as (per previewValueForType),
 // always including currentType even if it fails that check — so the type

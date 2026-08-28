@@ -105,6 +105,18 @@ func TestValidTypesForColumn_FiltersOutTypesAnySampleFails(t *testing.T) {
 	}
 }
 
+func TestFirstNonNullValue_SkipsNullAndEmpty(t *testing.T) {
+	if got := firstNonNullValue([]string{"NULL", "", "3.7", "4"}); got != "3.7" {
+		t.Errorf("expected \"3.7\", got %q", got)
+	}
+}
+
+func TestFirstNonNullValue_ReturnsEmptyWhenNoneQualify(t *testing.T) {
+	if got := firstNonNullValue([]string{"NULL", "", "NULL"}); got != "" {
+		t.Errorf("expected empty string, got %q", got)
+	}
+}
+
 func TestValidTypesForColumn_AlwaysIncludesCurrentTypeEvenIfInvalid(t *testing.T) {
 	values := []string{"not-a-number-at-all"}
 	got := validTypesForColumn(values, "integer")
