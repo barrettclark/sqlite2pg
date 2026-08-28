@@ -15,7 +15,7 @@ type confirmState struct {
 	finish bool
 }
 
-// showConfirm raises the Finish ("finish is true) or Cancel confirmation
+// showConfirm raises the Finish (finish is true) or Cancel confirmation
 // modal over whichever screen is currently active.
 func (m *model) showConfirm(finish bool) {
 	m.pendingConfirm = confirmState{finish: finish}
@@ -41,13 +41,13 @@ func (m *model) showConfirm(finish bool) {
 // closes the modal without side effects.
 func (m *model) confirmDone(buttonIndex int, buttonLabel string) {
 	if buttonLabel != "Yes" {
-		m.dismissConfirm()
+		m.dismissPage("confirm")
 		return
 	}
 	if m.pendingConfirm.finish {
 		if err := m.st.Finish(); err != nil {
-			m.status.SetText(fmt.Sprintf("error: %s", err))
-			m.dismissConfirm()
+			m.dismissPage("confirm")
+			m.showError(fmt.Sprintf("finish failed: %s", err))
 			return
 		}
 	} else {
@@ -56,15 +56,32 @@ func (m *model) confirmDone(buttonIndex int, buttonLabel string) {
 	m.app.Stop()
 }
 
-// dismissConfirm removes the confirm modal and restores keyboard focus to
-// whichever page is now on top (the table list or the grid) — without
-// this, closing the modal via "No" (or an error on Finish) leaves focus on
-// the removed modal primitive and the underlying page silently stops
-// responding to keys.
-func (m *model) dismissConfirm() {
-	m.pages.RemovePage("confirm")
+// dismissPage removes the named overlay page and restores keyboard focus
+// to whichever page is now on top — without this, closing an overlay
+// (the confirm modal, an error modal) leaves focus on the removed
+// primitive and the underlying page silently stops responding to keys.
+func (m *model) dismissPage(name string) {
+	m.pages.RemovePage(name)
 	_, front := m.pages.GetFrontPage()
 	if front != nil {
 		m.app.SetFocus(front)
 	}
+}
+
+// showError displays msg in a modal with a single "OK" button, visible
+// regardless of which page is currently active — unlike the status line,
+// which is only part of the grid's layout and isn't visible from the
+// table list.
+func (m *model) showError(msg string) {
+	modal := tview.NewModal()
+	modal.SetText(msg)
+	modal.AddButtons([]string{"OK"})
+	modal.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
+		m.dismissPage("error")
+	})
+	if m.pages.HasPage("error") {
+		m.pages.RemovePage("error")
+	}
+	m.pages.AddPage("error", modal, true, true)
+	m.app.SetFocus(modal)
 }

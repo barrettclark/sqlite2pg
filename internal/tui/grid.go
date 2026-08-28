@@ -18,11 +18,6 @@ func (m *model) buildGrid(tableName string) {
 	tv := findTable(m.summary, tableName)
 	m.selectedTable = tableName
 
-	if m.status == nil {
-		m.status = tview.NewTextView()
-		m.status.SetDynamicColors(false)
-	}
-
 	grid := m.grid
 	if grid == nil {
 		grid = tview.NewTable()

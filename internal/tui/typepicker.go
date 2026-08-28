@@ -20,13 +20,19 @@ func (m *model) openTypePicker(columnName string) {
 	types := validTypesForColumn(values, col.TargetType)
 
 	list := tview.NewList()
-	list.ShowSecondaryText(false)
+	list.ShowSecondaryText(true)
 	list.SetBorder(true)
 	list.SetTitle(fmt.Sprintf(" Edit type: %s ", columnName))
 	list.SetInputCapture(m.pickerKeyCapture)
 	list.SetSelectedFunc(m.onTypeSelected)
+	sample := firstNonNullValue(values)
 	for i, t := range types {
-		list.AddItem(t, "", 0, nil)
+		secondary := ""
+		if sample != "" {
+			display, _ := previewValueForType(sample, t)
+			secondary = fmt.Sprintf("e.g. %s", display)
+		}
+		list.AddItem(t, secondary, 0, nil)
 		if t == col.TargetType {
 			list.SetCurrentItem(i)
 		}
@@ -42,7 +48,7 @@ func (m *model) openTypePicker(columnName string) {
 }
 
 // columnByName returns tv's ColumnView matching columnName, or a
-// zero-value ColumnView if not found. Unlike Task 2's columnAt (which
+// zero-value ColumnView if not found. Unlike columnAt (in grid.go, which
 // looks up by grid column index against m.selectedTable), this looks up
 // by column name against an explicit TableView — the picker knows which
 // column it's editing by name, not by the grid's current index.
@@ -84,8 +90,8 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 		Rationale:  "human override via TUI",
 	})
 	if err != nil {
-		m.status.SetText(fmt.Sprintf("error: %s", err))
 		m.closePicker()
+		m.showError(fmt.Sprintf("apply decision failed: %s", err))
 		return
 	}
 

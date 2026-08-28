@@ -61,6 +61,27 @@ func TestPickerKeyCapture_EscClosesWithoutChangingAnything(t *testing.T) {
 	}
 }
 
+func TestOpenTypePicker_SecondaryTextShowsCoercedPreview(t *testing.T) {
+	m := testModel()
+	m.onTableSelected(0, "bikes", "", 0)
+	m.openTypePicker("is_installed")
+
+	idx := -1
+	for i := 0; i < m.picker.GetItemCount(); i++ {
+		text, _ := m.picker.GetItemText(i)
+		if text == "boolean" {
+			idx = i
+		}
+	}
+	if idx == -1 {
+		t.Fatal("expected \"boolean\" to be a valid option")
+	}
+	_, secondary := m.picker.GetItemText(idx)
+	if secondary == "" {
+		t.Error("expected non-empty secondary text showing the coerced preview")
+	}
+}
+
 func newTestState(t *testing.T) (*review.State, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.migration.yaml")
@@ -88,6 +109,7 @@ func newTestState(t *testing.T) (*review.State, string) {
 func TestOnTypeSelected_AppliesTheDecisionAndRefreshesTheGrid(t *testing.T) {
 	st, path := newTestState(t)
 	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: st.Summary()}
+	m.status = tview.NewTextView()
 	m.buildTableList()
 	m.pages.AddPage("tablelist", m.tableList, true, true)
 	m.onTableSelected(0, "bikes", "", 0)
