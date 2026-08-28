@@ -41,17 +41,30 @@ func (m *model) showConfirm(finish bool) {
 // closes the modal without side effects.
 func (m *model) confirmDone(buttonIndex int, buttonLabel string) {
 	if buttonLabel != "Yes" {
-		m.pages.RemovePage("confirm")
+		m.dismissConfirm()
 		return
 	}
 	if m.pendingConfirm.finish {
 		if err := m.st.Finish(); err != nil {
 			m.status.SetText(fmt.Sprintf("error: %s", err))
-			m.pages.RemovePage("confirm")
+			m.dismissConfirm()
 			return
 		}
 	} else {
 		m.st.Cancel()
 	}
 	m.app.Stop()
+}
+
+// dismissConfirm removes the confirm modal and restores keyboard focus to
+// whichever page is now on top (the table list or the grid) — without
+// this, closing the modal via "No" (or an error on Finish) leaves focus on
+// the removed modal primitive and the underlying page silently stops
+// responding to keys.
+func (m *model) dismissConfirm() {
+	m.pages.RemovePage("confirm")
+	_, front := m.pages.GetFrontPage()
+	if front != nil {
+		m.app.SetFocus(front)
+	}
 }

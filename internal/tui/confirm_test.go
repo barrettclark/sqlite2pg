@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
 
 	"sqlite2pg/internal/review"
 )
@@ -55,6 +56,43 @@ func TestConfirmDone_NoClosesWithoutChangingOutcome(t *testing.T) {
 	}
 	if m.pages.HasPage("confirm") {
 		t.Error("expected the confirm page to be removed after declining")
+	}
+}
+
+func TestConfirmDone_NoRestoresFocusToUnderlyingPage(t *testing.T) {
+	st, _ := newTestState(t)
+	m := &model{app: newTestApp(), pages: newTestPages(), st: st, summary: st.Summary()}
+	m.buildTableList()
+	m.pages.AddPage("tablelist", m.tableList, true, true)
+	m.app.SetFocus(m.tableList)
+
+	m.showConfirm(true)
+	m.confirmDone(1, "No")
+
+	// Without restoring focus, the app's focus stays on the removed modal
+	// primitive and the table list silently stops receiving key events —
+	// this is the bug an interactive smoke test (not headless assertions
+	// on state) actually caught: "No" visibly returned to the table list
+	// but subsequent keypresses did nothing.
+	if got := m.app.GetFocus(); got != tview.Primitive(m.tableList) {
+		t.Errorf("expected focus restored to tableList after declining, got %v", got)
+	}
+}
+
+func TestConfirmDone_NoRestoresFocusToGrid(t *testing.T) {
+	st, _ := newTestState(t)
+	m := &model{app: newTestApp(), pages: newTestPages(), st: st, summary: st.Summary()}
+	m.buildTableList()
+	tableName := m.summary.Tables[0].Name
+	m.buildGrid(tableName)
+	m.pages.AddPage("grid", m.grid, true, true)
+	m.app.SetFocus(m.grid)
+
+	m.showConfirm(false)
+	m.confirmDone(1, "No")
+
+	if got := m.app.GetFocus(); got != tview.Primitive(m.grid) {
+		t.Errorf("expected focus restored to grid after declining, got %v", got)
 	}
 }
 
