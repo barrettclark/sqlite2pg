@@ -81,10 +81,10 @@ func (m *model) gridSelectionChanged(row, column int) {
 		col.Column, col.Confidence, col.Source, col.Rationale))
 }
 
-// gridColumnSelected is called when Enter is pressed on the grid. Task 3
-// wires this to open the type picker; for now it's a no-op placeholder
-// that Task 3 replaces entirely.
+// gridColumnSelected is called when Enter is pressed on the grid: it opens
+// the type picker for the currently selected column.
 func (m *model) gridColumnSelected(row, column int) {
+	m.openTypePicker(m.columnAt(column).Column)
 }
 
 // gridKeyCapture handles keys the grid itself doesn't know about: esc

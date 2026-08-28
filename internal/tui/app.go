@@ -26,6 +26,9 @@ type model struct {
 	selectedTable string
 	grid          *tview.Table
 	status        *tview.TextView
+
+	picker       *tview.List
+	pickerColumn string
 }
 
 // Run drives the review TUI against st in the current terminal, blocking
