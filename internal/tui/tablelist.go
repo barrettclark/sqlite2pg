@@ -1,0 +1,54 @@
+package tui
+
+import (
+	"fmt"
+
+	"github.com/gdamore/tcell/v2"
+	"github.com/rivo/tview"
+)
+
+// buildTableList (re)builds m.tableList from m.summary: one row per table,
+// showing its needs-review/auto-approved counts.
+func (m *model) buildTableList() {
+	list := m.tableList
+	if list == nil {
+		list = tview.NewList()
+		list.ShowSecondaryText(true)
+		list.SetBorder(true)
+		list.SetInputCapture(m.tableListKeyCapture)
+	} else {
+		list.Clear()
+	}
+	for _, t := range m.summary.Tables {
+		needs, auto := 0, 0
+		for _, c := range t.Columns {
+			if c.NeedsReview {
+				needs++
+			} else {
+				auto++
+			}
+		}
+		description := fmt.Sprintf("%d column(s) — %d need review, %d auto-approved", len(t.Columns), needs, auto)
+		list.AddItem(t.Name, description, 0, nil)
+	}
+	title := fmt.Sprintf(" %d table(s) — %d column(s) need review, %d auto-approved ",
+		len(m.summary.Tables), m.summary.NeedsReviewCount, m.summary.AutoApprovedCount)
+	list.SetTitle(title)
+	m.tableList = list
+}
+
+// tableListKeyCapture handles keys the table list itself doesn't know
+// about. This is a temporary quit-only version: it stops the application
+// without recording a Finish/Cancel outcome. Task 5 replaces this with a
+// version that raises the Finish/Cancel confirmation modal instead.
+func (m *model) tableListKeyCapture(event *tcell.EventKey) *tcell.EventKey {
+	switch {
+	case event.Key() == tcell.KeyCtrlC:
+		m.app.Stop()
+		return nil
+	case event.Key() == tcell.KeyRune && event.Rune() == 'q':
+		m.app.Stop()
+		return nil
+	}
+	return event
+}
