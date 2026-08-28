@@ -45,9 +45,17 @@ func Run(ctx context.Context, st *review.State) error {
 		app:     tview.NewApplication(),
 		pages:   tview.NewPages(),
 	}
+	m.status = tview.NewTextView()
+	m.status.SetDynamicColors(false)
 
 	m.buildTableList()
-	m.pages.AddPage("tablelist", m.tableList, true, true)
+	tableListFlex := tview.NewFlex()
+	tableListFlex.SetDirection(tview.FlexRow)
+	tableListFlex.AddItem(m.tableList, 0, 1, true)
+	tableListFooter := tview.NewTextView()
+	tableListFooter.SetText("enter: open table  f: finish  c: cancel  q: cancel")
+	tableListFlex.AddItem(tableListFooter, 1, 0, false)
+	m.pages.AddPage("tablelist", tableListFlex, true, true)
 	m.app.SetRoot(m.pages, true)
 
 	go func() {

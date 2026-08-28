@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/gdamore/tcell/v2"
@@ -82,11 +84,10 @@ func TestConfirmDone_NoRestoresFocusToUnderlyingPage(t *testing.T) {
 func TestConfirmDone_NoRestoresFocusToGrid(t *testing.T) {
 	st, _ := newTestState(t)
 	m := &model{app: newTestApp(), pages: newTestPages(), st: st, summary: st.Summary()}
+	m.status = tview.NewTextView()
 	m.buildTableList()
 	tableName := m.summary.Tables[0].Name
-	m.buildGrid(tableName)
-	m.pages.AddPage("grid", m.grid, true, true)
-	m.app.SetFocus(m.grid)
+	m.onTableSelected(0, tableName, "", 0)
 
 	m.showConfirm(false)
 	m.confirmDone(1, "No")
@@ -108,5 +109,37 @@ func TestTableListKeyCapture_FRaisesFinishConfirmation(t *testing.T) {
 	}
 	if !m.pages.HasPage("confirm") {
 		t.Error("expected a confirm page to be shown")
+	}
+}
+
+// TestConfirmDone_FinishErrorFromTableListDoesNotPanic is a regression test
+// for a reachable nil-pointer panic: m.status used to be created lazily
+// inside buildGrid, so a user who pressed f at the table list (before ever
+// opening a table) and hit a Finish() error would reach
+// m.status.SetText(...) in confirmDone while m.status was still nil. This
+// builds a model the way Run now does (m.status created up front, before
+// buildTableList or anything else), stays on the table list the whole
+// time (no grid ever built), and forces st.Finish() to fail by deleting
+// the config's parent directory out from under it. The test passing at
+// all (no panic) is the regression check; it also asserts the error is
+// now surfaced via a modal page rather than the (nonexistent, from this
+// screen) status line.
+func TestConfirmDone_FinishErrorFromTableListDoesNotPanic(t *testing.T) {
+	st, path := newTestState(t)
+	m := &model{st: st, summary: st.Summary(), app: newTestApp(), pages: newTestPages()}
+	m.status = tview.NewTextView()
+	m.status.SetDynamicColors(false)
+	m.buildTableList()
+	m.pages.AddPage("tablelist", m.tableList, true, true)
+
+	if err := os.RemoveAll(filepath.Dir(path)); err != nil {
+		t.Fatalf("removing config dir: %v", err)
+	}
+
+	m.showConfirm(true)
+	m.confirmDone(0, "Yes") // no panic here is the regression check
+
+	if !m.pages.HasPage("error") {
+		t.Error("expected an error page to be shown after Finish() failed")
 	}
 }

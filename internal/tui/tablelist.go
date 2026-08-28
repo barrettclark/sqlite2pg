@@ -66,6 +66,9 @@ func (m *model) onTableSelected(index int, tableName, secondaryText string, shor
 	flex.SetDirection(tview.FlexRow)
 	flex.AddItem(m.grid, 0, 1, true)
 	flex.AddItem(m.status, 1, 0, false)
+	gridFooter := tview.NewTextView()
+	gridFooter.SetText("esc: back  enter: edit type  f: finish  c: cancel  q: cancel")
+	flex.AddItem(gridFooter, 1, 0, false)
 
 	if m.pages.HasPage("grid") {
 		m.pages.RemovePage("grid")
