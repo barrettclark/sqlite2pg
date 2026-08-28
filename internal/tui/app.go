@@ -22,6 +22,10 @@ type model struct {
 	pages *tview.Pages
 
 	tableList *tview.List
+
+	selectedTable string
+	grid          *tview.Table
+	status        *tview.TextView
 }
 
 // Run drives the review TUI against st in the current terminal, blocking

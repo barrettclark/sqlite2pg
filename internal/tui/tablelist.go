@@ -16,6 +16,7 @@ func (m *model) buildTableList() {
 		list.ShowSecondaryText(true)
 		list.SetBorder(true)
 		list.SetInputCapture(m.tableListKeyCapture)
+		list.SetSelectedFunc(m.onTableSelected)
 	} else {
 		list.Clear()
 	}
@@ -51,4 +52,23 @@ func (m *model) tableListKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 	return event
+}
+
+// onTableSelected builds tableName's grid (if not already built) and
+// switches to it.
+func (m *model) onTableSelected(index int, tableName, secondaryText string, shortcut rune) {
+	m.selectedTable = tableName
+	m.buildGrid(tableName)
+
+	flex := tview.NewFlex()
+	flex.SetDirection(tview.FlexRow)
+	flex.AddItem(m.grid, 0, 1, true)
+	flex.AddItem(m.status, 1, 0, false)
+
+	if m.pages.HasPage("grid") {
+		m.pages.RemovePage("grid")
+	}
+	m.pages.AddPage("grid", flex, true, true)
+	m.pages.SwitchToPage("grid")
+	m.app.SetFocus(m.grid)
 }
