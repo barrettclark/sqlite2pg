@@ -71,10 +71,12 @@ func (m *model) dismissPage(name string) {
 // showError displays msg in a modal with a single "OK" button, visible
 // regardless of which page is currently active — unlike the status line,
 // which is only part of the grid's layout and isn't visible from the
-// table list.
+// table list. msg is escaped since it usually wraps an arbitrary error
+// string (e.g. a file path) that could contain literal brackets, which
+// tview would otherwise interpret as a tag.
 func (m *model) showError(msg string) {
 	modal := tview.NewModal()
-	modal.SetText(msg)
+	modal.SetText(tview.Escape(msg))
 	modal.AddButtons([]string{"OK"})
 	modal.SetDoneFunc(func(buttonIndex int, buttonLabel string) {
 		m.dismissPage("error")

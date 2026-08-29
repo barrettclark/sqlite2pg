@@ -30,7 +30,10 @@ func (m *model) openTypePicker(columnName string) {
 		secondary := ""
 		if sample != "" {
 			display, _ := previewValueForType(sample, t)
-			secondary = fmt.Sprintf("e.g. %s", display)
+			// Escaped for the same reason as the grid's header/cell text:
+			// tview treats literal "[...]" in rendered text as a tag, and
+			// real sample data can contain brackets.
+			secondary = tview.Escape(fmt.Sprintf("e.g. %s", display))
 		}
 		list.AddItem(t, secondary, 0, nil)
 		if t == col.TargetType {

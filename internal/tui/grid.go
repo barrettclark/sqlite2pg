@@ -38,14 +38,20 @@ func (m *model) buildGrid(tableName string) {
 		} else if c.NeedsReview {
 			marker = " !"
 		}
-		text := fmt.Sprintf("%s [%s]%s", c.Column, c.TargetType, marker)
+		// tview interprets literal "[...]" in any rendered text as a
+		// color/region tag, so "column [type]" must be escaped or the
+		// bracketed type annotation silently vanishes from the header.
+		text := tview.Escape(fmt.Sprintf("%s [%s]%s", c.Column, c.TargetType, marker))
 		cell := tview.NewTableCell(text)
 		cell.SetSelectable(true)
 		grid.SetCell(0, col, cell)
 	}
 	for row, dataRow := range tv.Rows {
 		for col, value := range dataRow {
-			cell := tview.NewTableCell(value)
+			// Real sample data can itself contain literal brackets (e.g.
+			// a text column holding "[note]") — escape for the same
+			// reason as the header, so data is never silently mangled.
+			cell := tview.NewTableCell(tview.Escape(value))
 			cell.SetSelectable(false)
 			grid.SetCell(row+1, col, cell)
 		}
@@ -72,8 +78,8 @@ func (m *model) columnAt(column int) review.ColumnView {
 // screen.
 func (m *model) gridSelectionChanged(row, column int) {
 	col := m.columnAt(column)
-	m.status.SetText(fmt.Sprintf("%s: confidence %.2f, source %s — %s",
-		col.Column, col.Confidence, col.Source, col.Rationale))
+	m.status.SetText(tview.Escape(fmt.Sprintf("%s: confidence %.2f, source %s — %s",
+		col.Column, col.Confidence, col.Source, col.Rationale)))
 }
 
 // gridColumnSelected is called when Enter is pressed on the grid: it opens
