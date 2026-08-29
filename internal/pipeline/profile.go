@@ -61,7 +61,11 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 	var unresolved []resolver.UnresolvedCase
 
 	for _, table := range tables {
-		tc := config.TableConfig{Include: true, Columns: map[string]config.ColumnConfig{}}
+		tc := config.TableConfig{
+			Include:     true,
+			Columns:     map[string]config.ColumnConfig{},
+			ForeignKeys: convertForeignKeys(table.ForeignKeys),
+		}
 		for _, col := range table.Columns {
 			tc.ColumnOrder = append(tc.ColumnOrder, col.Name)
 			meta := profiler.ColumnMeta{Table: table.Name, Name: col.Name, DeclaredType: col.DeclaredType}
@@ -74,23 +78,25 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 			var cc config.ColumnConfig
 			if len(findings) == 0 {
 				cc = config.ColumnConfig{
-					DeclaredType: col.DeclaredType,
-					TargetType:   fallbackTypeFor(col.DeclaredType, samples),
-					Confidence:   0.99,
-					Source:       "heuristic:default_passthrough",
-					Rationale:    "no heuristic had an opinion; passed through via SQLite type affinity",
-					Reviewed:     false,
+					DeclaredType:  col.DeclaredType,
+					TargetType:    fallbackTypeFor(col.DeclaredType, samples),
+					Confidence:    0.99,
+					Source:        "heuristic:default_passthrough",
+					Rationale:     "no heuristic had an opinion; passed through via SQLite type affinity",
+					Reviewed:      false,
+					PrimaryKeySeq: col.PrimaryKeySeq,
 				}
 			} else {
 				best, needsReview := resolver.Decide(findings, threshold)
 				cc = config.ColumnConfig{
-					DeclaredType: col.DeclaredType,
-					TargetType:   best.SuggestedType,
-					Transform:    best.TransformExpr,
-					Confidence:   best.Confidence,
-					Source:       "heuristic:" + best.Heuristic,
-					Rationale:    best.Rationale,
-					Reviewed:     false,
+					DeclaredType:  col.DeclaredType,
+					TargetType:    best.SuggestedType,
+					Transform:     best.TransformExpr,
+					Confidence:    best.Confidence,
+					Source:        "heuristic:" + best.Heuristic,
+					Rationale:     best.Rationale,
+					Reviewed:      false,
+					PrimaryKeySeq: col.PrimaryKeySeq,
 				}
 				if needsReview {
 					reason := fmt.Sprintf("confidence %.2f below auto-approve threshold %.2f, or heuristics disagreed", best.Confidence, threshold)
@@ -110,6 +116,26 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 	}
 
 	return &ProfileResult{Config: cfg, Unresolved: unresolved}, nil
+}
+
+// convertForeignKeys copies sqlitereader's declared foreign keys into the
+// config's shape unchanged — this is preserved source truth, not something
+// a heuristic decides, so there's no confidence/rationale to attach.
+func convertForeignKeys(fks []sqlitereader.ForeignKeyInfo) []config.ForeignKey {
+	if len(fks) == 0 {
+		return nil
+	}
+	converted := make([]config.ForeignKey, len(fks))
+	for i, fk := range fks {
+		converted[i] = config.ForeignKey{
+			Columns:    fk.Columns,
+			RefTable:   fk.RefTable,
+			RefColumns: fk.RefColumns,
+			OnDelete:   fk.OnDelete,
+			OnUpdate:   fk.OnUpdate,
+		}
+	}
+	return converted
 }
 
 // fallbackTypeFor maps a column with no heuristic opinion to a Postgres

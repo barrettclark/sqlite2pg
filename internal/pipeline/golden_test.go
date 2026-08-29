@@ -197,6 +197,50 @@ func TestGolden_AviationFacilitiesGeodatabase(t *testing.T) {
 	}
 }
 
+func TestGolden_ChinookPreservesPrimaryKeyAndForeignKeys(t *testing.T) {
+	db, path := openFixture(t, "chinook.db")
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	albums, ok := result.Config.Tables["albums"]
+	if !ok {
+		t.Fatalf("expected albums table, got tables: %v", tableNames(result))
+	}
+	if seq := albums.Columns["AlbumId"].PrimaryKeySeq; seq != 1 {
+		t.Errorf("expected albums.AlbumId primary key position 1, got %d", seq)
+	}
+	if len(albums.ForeignKeys) != 1 {
+		t.Fatalf("expected albums to have 1 foreign key (ArtistId -> artists), got %+v", albums.ForeignKeys)
+	}
+	fk := albums.ForeignKeys[0]
+	if fk.RefTable != "artists" {
+		t.Errorf("expected foreign key to reference artists, got %q", fk.RefTable)
+	}
+	if len(fk.Columns) != 1 || fk.Columns[0] != "ArtistId" {
+		t.Errorf("expected foreign key column [ArtistId], got %v", fk.Columns)
+	}
+}
+
+func TestGolden_ChinookPreservesCompositePrimaryKey(t *testing.T) {
+	db, path := openFixture(t, "chinook.db")
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+	pt, ok := result.Config.Tables["playlist_track"]
+	if !ok {
+		t.Fatalf("expected playlist_track table, got tables: %v", tableNames(result))
+	}
+	if seq := pt.Columns["PlaylistId"].PrimaryKeySeq; seq != 1 {
+		t.Errorf("expected PlaylistId primary key position 1, got %d", seq)
+	}
+	if seq := pt.Columns["TrackId"].PrimaryKeySeq; seq != 2 {
+		t.Errorf("expected TrackId primary key position 2, got %d", seq)
+	}
+}
+
 func TestGolden_AtomicDatabase(t *testing.T) {
 	db, path := openFixture(t, "atomic_database.db")
 	// small sample size: MACS has ~1M rows, this must stay fast.

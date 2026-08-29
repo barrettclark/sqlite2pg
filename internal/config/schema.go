@@ -36,6 +36,23 @@ type TableConfig struct {
 	// Columns is a map and Go/YAML give no ordering guarantee. DDL
 	// generation depends on this for a deterministic CREATE TABLE.
 	ColumnOrder []string `yaml:"column_order,omitempty"`
+
+	// ForeignKeys are the source table's declared foreign key constraints,
+	// carried forward as-is — this is preserved source truth, not an
+	// inference, so it's applied automatically rather than requiring human
+	// review the way an ambiguous type decision does.
+	ForeignKeys []ForeignKey `yaml:"foreign_keys,omitempty"`
+}
+
+// ForeignKey is one declared foreign key constraint, which may span
+// multiple columns (a composite key) — Columns and RefColumns are aligned
+// by position.
+type ForeignKey struct {
+	Columns    []string `yaml:"columns"`
+	RefTable   string   `yaml:"ref_table"`
+	RefColumns []string `yaml:"ref_columns"`
+	OnDelete   string   `yaml:"on_delete,omitempty"`
+	OnUpdate   string   `yaml:"on_update,omitempty"`
 }
 
 // ColumnConfig is one column's resolved type decision, together with the
@@ -50,6 +67,12 @@ type ColumnConfig struct {
 	Reviewed     bool       `yaml:"reviewed"`
 	ReviewedBy   string     `yaml:"reviewed_by,omitempty"`
 	ReviewedAt   *time.Time `yaml:"reviewed_at,omitempty"`
+
+	// PrimaryKeySeq is 0 if this column isn't part of the table's primary
+	// key, or its 1-based position within it otherwise — mirrors
+	// sqlitereader.ColumnInfo.PrimaryKeySeq, preserving a composite
+	// primary key's declared column order into the generated DDL.
+	PrimaryKeySeq int `yaml:"primary_key_seq,omitempty"`
 
 	// OriginalSuggestion preserves the tool's original guess when a human
 	// (or future LLM resolver) overrides it, so the diff between "what the
