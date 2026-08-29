@@ -14,6 +14,7 @@ var timestampLayouts = []string{
 	"2006-01-02T15:04:05",
 	"2006-01-02 15:04:05", // SQLite's datetime()/CURRENT_TIMESTAMP canonical format
 	"2006-01-02",          // date only
+	"1/2/2006 3:04:05 PM", // US-style M/D/YYYY with 12-hour AM/PM (e.g. Access/Excel exports)
 }
 
 // ParseTimestamp attempts every recognized layout and returns the first

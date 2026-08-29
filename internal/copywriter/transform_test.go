@@ -55,6 +55,25 @@ func TestTransform_ISO8601ToTimestamptz(t *testing.T) {
 	}
 }
 
+func TestTransform_ISO8601ToTimestamptz_USStyleAMPM(t *testing.T) {
+	// neh-grants.db's CouncilDate/BeginGrant/EndGrant columns — this must
+	// convert successfully through the same shared layout list the
+	// iso8601_timestamp heuristic uses to classify the column as
+	// timestamptz in the first place, or the heuristic's promise and the
+	// transform's actual behavior would drift apart again.
+	got, err := Transform("iso8601_to_timestamptz", "7/31/2006 12:00:00 AM")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() != 2006 || tm.Month() != time.July || tm.Day() != 31 {
+		t.Errorf("expected 2006-07-31, got %v", tm)
+	}
+}
+
 func TestTransform_IntToBool(t *testing.T) {
 	one, err := Transform("int_to_bool", int64(1))
 	if err != nil || one != true {
