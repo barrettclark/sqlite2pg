@@ -70,6 +70,54 @@ func TestTableSource_StreamsAllRowsWithTransformsApplied(t *testing.T) {
 	}
 }
 
+func TestTableSource_OnRowFiresOncePerRowReturnedByNext(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE bikes (bike_id INTEGER);`)
+	for i := 0; i < 5; i++ {
+		if _, err := db.Exec(`INSERT INTO bikes VALUES (?)`, i); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	tc := config.TableConfig{
+		ColumnOrder: []string{"bike_id"},
+		Columns:     map[string]config.ColumnConfig{"bike_id": {TargetType: "integer"}},
+	}
+
+	var calls int
+	src := NewTableSource(db, "bikes", tc).OnRow(func() { calls++ })
+	var seen int
+	for src.Next() {
+		seen++
+	}
+	if err := src.Err(); err != nil {
+		t.Fatalf("Err: %v", err)
+	}
+	if calls != seen {
+		t.Errorf("expected OnRow to fire once per row (%d), fired %d times", seen, calls)
+	}
+	if calls != 5 {
+		t.Errorf("expected 5 calls, got %d", calls)
+	}
+}
+
+func TestTableSource_OnRowIsOptional(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE bikes (bike_id INTEGER);`)
+	if _, err := db.Exec(`INSERT INTO bikes VALUES (1)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+	tc := config.TableConfig{
+		ColumnOrder: []string{"bike_id"},
+		Columns:     map[string]config.ColumnConfig{"bike_id": {TargetType: "integer"}},
+	}
+
+	// No OnRow registered — must not panic.
+	src := NewTableSource(db, "bikes", tc)
+	for src.Next() {
+	}
+	if err := src.Err(); err != nil {
+		t.Fatalf("Err: %v", err)
+	}
+}
+
 func TestTableSource_ExcludesDroppedColumns(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE t (a INTEGER, shape BLOB);`)
 	if _, err := db.Exec(`INSERT INTO t VALUES (1, x'00')`); err != nil {

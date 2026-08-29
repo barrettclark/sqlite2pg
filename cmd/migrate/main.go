@@ -11,6 +11,7 @@ import (
 	"flag"
 	"fmt"
 	"os"
+	"sort"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -23,6 +24,7 @@ import (
 	_ "sqlite2pg/internal/profiler/heuristics"
 	"sqlite2pg/internal/resolver"
 	"sqlite2pg/internal/review"
+	"sqlite2pg/internal/sqlitereader"
 	"sqlite2pg/internal/tui"
 )
 
@@ -289,6 +291,14 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		}
 	}
 
+	// Count every table this run will actually load up front, so the
+	// progress bar has a real grand total from its very first draw
+	// instead of growing as tables are discovered. Tables already
+	// completed by a prior --resume run are excluded, matching what the
+	// loop below will actually touch. Sorted for deterministic load
+	// order — cfg.Tables is a Go map, and this replaces what was
+	// previously an unordered range directly over it.
+	var tableNames []string
 	for tableName, tc := range cfg.Tables {
 		if !tc.Include {
 			continue
@@ -297,18 +307,36 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 			fmt.Printf("%s: skipping (already completed)\n", tableName)
 			continue
 		}
+		tableNames = append(tableNames, tableName)
+	}
+	sort.Strings(tableNames)
+
+	var totalRows int64
+	for _, tableName := range tableNames {
+		n, err := sqlitereader.CountRows(sourceDB, tableName)
+		if err != nil {
+			return fmt.Errorf("counting rows in %s: %w", tableName, err)
+		}
+		totalRows += int64(n)
+	}
+	progress := newProgressReporter(totalRows)
+
+	for _, tableName := range tableNames {
+		tc := cfg.Tables[tableName]
 		if _, err := conn.Exec(ctx, ddl.GenerateCreateTable(tableName, tc)); err != nil {
 			return fmt.Errorf("creating table %s: %w", tableName, err)
 		}
-		src := copywriter.NewTableSource(sourceDB, tableName, tc)
+		progress.startTable(tableName)
+		src := copywriter.NewTableSource(sourceDB, tableName, tc).OnRow(progress.row)
 		n, err := copywriter.LoadTable(ctx, conn, tableName, tc, src)
 		if err != nil {
+			progress.abort()
 			return err
 		}
 		if err := markTableCompleted(statePath, tableName); err != nil {
 			return err
 		}
-		fmt.Printf("%s: loaded %d row(s)\n", tableName, n)
+		progress.finishTable(tableName, n)
 	}
 
 	// Foreign keys are added only now, after every table exists and is

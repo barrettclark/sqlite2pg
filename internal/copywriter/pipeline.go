@@ -18,6 +18,7 @@ type TableSource struct {
 	errCh   chan error
 	current []any
 	err     error
+	onRow   func()
 }
 
 // NewTableSource starts streaming table in the background. Columns marked
@@ -49,6 +50,14 @@ func NewTableSource(db *sql.DB, table string, tc config.TableConfig) *TableSourc
 	return ts
 }
 
+// OnRow registers fn to be called once per row Next() successfully pulls
+// off the pipeline — after transform, right as pgx is about to receive it
+// via Values(). Returns ts so it can be chained onto NewTableSource.
+func (ts *TableSource) OnRow(fn func()) *TableSource {
+	ts.onRow = fn
+	return ts
+}
+
 func (ts *TableSource) Next() bool {
 	row, ok := <-ts.rowsCh
 	if !ok {
@@ -60,6 +69,9 @@ func (ts *TableSource) Next() bool {
 		return false
 	}
 	ts.current = row
+	if ts.onRow != nil {
+		ts.onRow()
+	}
 	return true
 }
 
