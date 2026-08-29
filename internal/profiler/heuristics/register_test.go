@@ -6,7 +6,7 @@ import (
 	"sqlite2pg/internal/profiler"
 )
 
-func TestInit_RegistersAllSevenHeuristicsWithTheDefaultRegistry(t *testing.T) {
+func TestInit_RegistersAllHeuristicsWithTheDefaultRegistry(t *testing.T) {
 	// This package's init() functions self-register into profiler.Default
 	// on import, which is how the CLI is meant to pick them all up without
 	// any explicit wiring per heuristic.

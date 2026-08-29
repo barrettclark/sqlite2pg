@@ -89,6 +89,17 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		}
 		return julianDayToDate(int64(f)), nil
 
+	case "yyyymmdd_to_date":
+		s, ok := toYYYYMMDDString(raw)
+		if !ok {
+			return nil, fmt.Errorf("yyyymmdd_to_date: unexpected type %T", raw)
+		}
+		tm, err := time.Parse("20060102", s)
+		if err != nil {
+			return nil, fmt.Errorf("yyyymmdd_to_date: %q: %w", s, err)
+		}
+		return tm, nil
+
 	case "nullif_sentinels":
 		if s, ok := raw.(string); ok {
 			if sentinelTokens[strings.ToLower(s)] {
@@ -126,6 +137,22 @@ func toInt64(v profiler.Value) (int64, bool) {
 		return int64(n), true
 	default:
 		return 0, false
+	}
+}
+
+// toYYYYMMDDString normalizes v (an int64 from an INTEGER column or a
+// string from a TEXT column — both forms seen in real source data) to its
+// 8-digit string form, or reports false for any other shape. It does not
+// validate the digits form a real calendar date — time.Parse in the
+// yyyymmdd_to_date case does that.
+func toYYYYMMDDString(v profiler.Value) (string, bool) {
+	switch val := v.(type) {
+	case int64:
+		return strconv.FormatInt(val, 10), true
+	case string:
+		return val, true
+	default:
+		return "", false
 	}
 }
 

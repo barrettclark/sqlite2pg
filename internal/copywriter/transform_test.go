@@ -82,6 +82,32 @@ func TestTransform_JulianDayToDate(t *testing.T) {
 	}
 }
 
+func TestTransform_YYYYMMDDToDate(t *testing.T) {
+	cases := []profiler.Value{int64(20210927), "20210927"}
+	for _, raw := range cases {
+		got, err := Transform("yyyymmdd_to_date", raw)
+		if err != nil {
+			t.Fatalf("Transform(%v): %v", raw, err)
+		}
+		tm, ok := got.(time.Time)
+		if !ok {
+			t.Fatalf("expected time.Time, got %T", got)
+		}
+		if tm.Year() != 2021 || tm.Month() != time.September || tm.Day() != 27 {
+			t.Errorf("expected 2021-09-27, got %v", tm)
+		}
+	}
+}
+
+func TestTransform_YYYYMMDDToDateRejectsUnparseableValues(t *testing.T) {
+	if _, err := Transform("yyyymmdd_to_date", "YYYYMMDD"); err == nil {
+		t.Error("expected an error for a non-date placeholder string")
+	}
+	if _, err := Transform("yyyymmdd_to_date", "20211301"); err == nil {
+		t.Error("expected an error for an invalid calendar date (month 13)")
+	}
+}
+
 func TestTransform_NullifSentinels(t *testing.T) {
 	got, err := Transform("nullif_sentinels", "Unknown")
 	if err != nil {
