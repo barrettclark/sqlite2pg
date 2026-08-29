@@ -40,7 +40,8 @@ func (m *model) buildTableList() {
 
 // tableListKeyCapture handles keys the table list itself doesn't know
 // about: f raises the Finish confirmation, c/q raise the Cancel
-// confirmation.
+// confirmation, n/N jump straight to the next/previous column flagged for
+// review without having to pick a table first.
 func (m *model) tableListKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 	switch {
 	case event.Key() == tcell.KeyRune && event.Rune() == 'f':
@@ -51,6 +52,12 @@ func (m *model) tableListKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	case event.Key() == tcell.KeyRune && event.Rune() == 'q':
 		m.showConfirm(false)
+		return nil
+	case event.Key() == tcell.KeyRune && event.Rune() == 'n':
+		m.jumpToFlagged(true)
+		return nil
+	case event.Key() == tcell.KeyRune && event.Rune() == 'N':
+		m.jumpToFlagged(false)
 		return nil
 	}
 	return event
@@ -67,7 +74,7 @@ func (m *model) onTableSelected(index int, tableName, secondaryText string, shor
 	flex.AddItem(m.grid, 0, 1, true)
 	flex.AddItem(m.status, 1, 0, false)
 	gridFooter := tview.NewTextView()
-	gridFooter.SetText("esc: back  enter: edit type  f: finish  c: cancel  q: cancel")
+	gridFooter.SetText("esc: back  enter: edit type  n/N: next/prev flagged  f: finish  c: cancel  q: cancel")
 	flex.AddItem(gridFooter, 1, 0, false)
 
 	if m.pages.HasPage("grid") {

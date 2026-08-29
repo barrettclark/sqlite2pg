@@ -117,6 +117,105 @@ func TestFirstNonNullValue_ReturnsEmptyWhenNoneQualify(t *testing.T) {
 	}
 }
 
+func TestTypeShortcuts_CoversEveryTypeOptionWithNoDuplicateRune(t *testing.T) {
+	seen := map[rune]string{}
+	for _, t2 := range review.TypeOptions {
+		r, ok := typeShortcuts[t2]
+		if !ok {
+			t.Errorf("no shortcut defined for %q", t2)
+			continue
+		}
+		if other, dup := seen[r]; dup {
+			t.Errorf("shortcut %q used by both %q and %q", r, other, t2)
+		}
+		seen[r] = t2
+	}
+}
+
+func TestFlaggedColumns_ReturnsOnlyNeedsReviewColumnsInTableOrder(t *testing.T) {
+	summary := review.ReviewSummary{Tables: []review.TableView{
+		{Name: "albums", Columns: []review.ColumnView{
+			{Column: "AlbumId", NeedsReview: false},
+			{Column: "ArtistId", NeedsReview: true},
+		}},
+		{Name: "tracks", Columns: []review.ColumnView{
+			{Column: "Flag", NeedsReview: true},
+		}},
+	}}
+	got := flaggedColumns(summary)
+	want := []flaggedColumn{
+		{Table: "albums", Column: "ArtistId"},
+		{Table: "tracks", Column: "Flag"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("got[%d] = %+v, want %+v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestFlaggedColumns_IncludesAlreadyReviewedColumns(t *testing.T) {
+	// NeedsReview reflects original confidence, not whether a human has
+	// since resolved it — a reviewed column must stay in the flagged list
+	// so it's still reachable via the jump command.
+	summary := review.ReviewSummary{Tables: []review.TableView{
+		{Name: "t", Columns: []review.ColumnView{
+			{Column: "c", NeedsReview: true, Reviewed: true},
+		}},
+	}}
+	got := flaggedColumns(summary)
+	if len(got) != 1 || got[0].Column != "c" {
+		t.Errorf("expected the reviewed-but-flagged column to still appear, got %v", got)
+	}
+}
+
+func TestNextFlaggedColumn_StepsForwardAndWrapsAround(t *testing.T) {
+	flagged := []flaggedColumn{{Table: "a", Column: "x"}, {Table: "a", Column: "y"}, {Table: "b", Column: "z"}}
+
+	next, ok := nextFlaggedColumn(flagged, flagged[0], true)
+	if !ok || next != flagged[1] {
+		t.Errorf("expected %+v, got %+v (ok=%v)", flagged[1], next, ok)
+	}
+
+	next, ok = nextFlaggedColumn(flagged, flagged[2], true)
+	if !ok || next != flagged[0] {
+		t.Errorf("expected wraparound to %+v, got %+v (ok=%v)", flagged[0], next, ok)
+	}
+}
+
+func TestNextFlaggedColumn_StepsBackwardAndWrapsAround(t *testing.T) {
+	flagged := []flaggedColumn{{Table: "a", Column: "x"}, {Table: "a", Column: "y"}, {Table: "b", Column: "z"}}
+
+	prev, ok := nextFlaggedColumn(flagged, flagged[0], false)
+	if !ok || prev != flagged[2] {
+		t.Errorf("expected wraparound to %+v, got %+v (ok=%v)", flagged[2], prev, ok)
+	}
+}
+
+func TestNextFlaggedColumn_CurrentNotInListStartsAtFirstOrLast(t *testing.T) {
+	flagged := []flaggedColumn{{Table: "a", Column: "x"}, {Table: "a", Column: "y"}}
+	notFlagged := flaggedColumn{Table: "a", Column: "unflagged"}
+
+	next, ok := nextFlaggedColumn(flagged, notFlagged, true)
+	if !ok || next != flagged[0] {
+		t.Errorf("forward from an unflagged column: expected first entry %+v, got %+v", flagged[0], next)
+	}
+
+	prev, ok := nextFlaggedColumn(flagged, notFlagged, false)
+	if !ok || prev != flagged[len(flagged)-1] {
+		t.Errorf("backward from an unflagged column: expected last entry %+v, got %+v", flagged[len(flagged)-1], prev)
+	}
+}
+
+func TestNextFlaggedColumn_EmptyListReturnsNotOK(t *testing.T) {
+	if _, ok := nextFlaggedColumn(nil, flaggedColumn{}, true); ok {
+		t.Error("expected ok=false for an empty flagged list")
+	}
+}
+
 func TestValidTypesForColumn_AlwaysIncludesCurrentTypeEvenIfInvalid(t *testing.T) {
 	values := []string{"not-a-number-at-all"}
 	got := validTypesForColumn(values, "integer")

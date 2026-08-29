@@ -108,6 +108,65 @@ func TestRun_FullFlowViaSimulationScreen(t *testing.T) {
 	}
 }
 
+// TestTypePicker_ShortcutKeySelectsTypeWithoutArrowingOrEnter drives a
+// real event loop and presses the type picker's single-letter shortcut
+// directly — proving tview's own shortcut dispatch (List.AddItem's
+// shortcut rune, wired in openTypePicker via typeShortcuts) actually
+// applies the decision, not just that the right rune was requested.
+func TestTypePicker_ShortcutKeySelectsTypeWithoutArrowingOrEnter(t *testing.T) {
+	st, path := newTestState(t)
+
+	screen := tcell.NewSimulationScreen("UTF-8")
+	if err := screen.Init(); err != nil {
+		t.Fatalf("screen.Init: %v", err)
+	}
+	screen.SetSize(100, 40)
+
+	m := &model{st: st, summary: st.Summary(), app: newTestApp(), pages: newTestPages()}
+	m.status = newTestTextView()
+	m.status.SetDynamicColors(false)
+	m.buildTableList()
+	tableListFlex := newTestFlexRow(m.tableList, newTestTextView())
+	m.pages.AddPage("tablelist", tableListFlex, true, true)
+	m.app.SetRoot(m.pages, true)
+	m.app.SetScreen(screen)
+
+	done := make(chan error, 1)
+	go func() { done <- m.app.Run() }()
+
+	step := func(key tcell.Key, ch rune) {
+		screen.InjectKey(key, ch, tcell.ModNone)
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	step(tcell.KeyEnter, 0)  // open the bikes table -> grid, lands on bike_id
+	step(tcell.KeyRight, 0)  // move to is_installed (currently boolean)
+	step(tcell.KeyEnter, 0)  // open the picker
+	step(tcell.KeyRune, 'i') // shortcut for "integer" — should apply immediately
+
+	m.app.Stop()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("app.Run() returned an error: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for app.Run() to return after Stop()")
+	}
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["bikes"].Columns["is_installed"]
+	if col.TargetType != "integer" {
+		t.Errorf("expected the 'i' shortcut to set is_installed to integer, got %q", col.TargetType)
+	}
+	if m.pages.HasPage("picker") {
+		t.Error("expected the picker to have closed after the shortcut applied the decision")
+	}
+}
+
 // screenText joins a SimulationScreen's rendered cells into one string, in
 // row-major order, for substring assertions against what actually got
 // drawn — as opposed to a TableCell's stored .Text field, which reflects

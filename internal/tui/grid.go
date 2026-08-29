@@ -78,8 +78,15 @@ func (m *model) columnAt(column int) review.ColumnView {
 // screen.
 func (m *model) gridSelectionChanged(row, column int) {
 	col := m.columnAt(column)
-	m.status.SetText(tview.Escape(fmt.Sprintf("%s: confidence %.2f, source %s — %s",
-		col.Column, col.Confidence, col.Source, col.Rationale)))
+	flag := ""
+	switch {
+	case col.Reviewed && col.NeedsReview:
+		flag = "✓ reviewed — "
+	case col.NeedsReview:
+		flag = "⚠ needs review — "
+	}
+	m.status.SetText(tview.Escape(fmt.Sprintf("%s%s: confidence %.2f, source %s — %s",
+		flag, col.Column, col.Confidence, col.Source, col.Rationale)))
 }
 
 // gridColumnSelected is called when Enter is pressed on the grid: it opens
@@ -90,7 +97,8 @@ func (m *model) gridColumnSelected(row, column int) {
 
 // gridKeyCapture handles keys the grid itself doesn't know about: esc
 // returns to the table list; f raises the Finish confirmation; c/q raise
-// the Cancel confirmation.
+// the Cancel confirmation; n/N jump to the next/previous column flagged
+// for review, across every table.
 func (m *model) gridKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 	switch {
 	case event.Key() == tcell.KeyEscape:
@@ -105,6 +113,12 @@ func (m *model) gridKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	case event.Key() == tcell.KeyRune && event.Rune() == 'q':
 		m.showConfirm(false)
+		return nil
+	case event.Key() == tcell.KeyRune && event.Rune() == 'n':
+		m.jumpToFlagged(true)
+		return nil
+	case event.Key() == tcell.KeyRune && event.Rune() == 'N':
+		m.jumpToFlagged(false)
 		return nil
 	}
 	return event

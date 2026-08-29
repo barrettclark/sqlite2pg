@@ -53,7 +53,7 @@ func Run(ctx context.Context, st *review.State) error {
 	tableListFlex.SetDirection(tview.FlexRow)
 	tableListFlex.AddItem(m.tableList, 0, 1, true)
 	tableListFooter := tview.NewTextView()
-	tableListFooter.SetText("enter: open table  f: finish  c: cancel  q: cancel")
+	tableListFooter.SetText("enter: open table  n/N: next/prev flagged  f: finish  c: cancel  q: cancel")
 	tableListFlex.AddItem(tableListFooter, 1, 0, false)
 	m.pages.AddPage("tablelist", tableListFlex, true, true)
 	m.app.SetRoot(m.pages, true)

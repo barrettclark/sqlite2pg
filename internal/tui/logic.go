@@ -118,6 +118,87 @@ func firstNonNullValue(values []string) string {
 	return ""
 }
 
+// typeShortcuts maps every review.TypeOptions entry to a distinct
+// mnemonic rune for the type picker's single-key selection — pressing the
+// rune jumps straight to that type without arrowing through the list
+// first. Picked to stay memorable and collision-free across all 12
+// options at once (not just whichever subset a given column's sample data
+// happens to validate as): "g" for bigint ("biG int"), "f" for double
+// precision (its common colloquial name, "float"; "d" was needed for
+// date), and "x" for bytea (Postgres itself prints bytea in \x-prefixed
+// hex).
+var typeShortcuts = map[string]rune{
+	"text":             't',
+	"integer":          'i',
+	"bigint":           'g',
+	"smallint":         's',
+	"boolean":          'b',
+	"double precision": 'f',
+	"real":             'r',
+	"numeric":          'n',
+	"date":             'd',
+	"timestamptz":      'z',
+	"jsonb":            'j',
+	"bytea":            'x',
+}
+
+// flaggedColumn identifies one column flagged for review, by its table and
+// column name.
+type flaggedColumn struct {
+	Table  string
+	Column string
+}
+
+// flaggedColumns returns every column across summary's tables whose
+// NeedsReview is true, in table order then declared column order.
+// NeedsReview reflects the confidence the profiler originally computed and
+// never changes once a human overrides a column (only Reviewed does), so
+// this list is stable for the life of a session: a column already
+// resolved stays on it, so jumping back to something already decided is
+// always possible, not just the columns still outstanding.
+func flaggedColumns(summary review.ReviewSummary) []flaggedColumn {
+	var flagged []flaggedColumn
+	for _, t := range summary.Tables {
+		for _, c := range t.Columns {
+			if c.NeedsReview {
+				flagged = append(flagged, flaggedColumn{Table: t.Name, Column: c.Column})
+			}
+		}
+	}
+	return flagged
+}
+
+// nextFlaggedColumn returns the flagged column to jump to from current,
+// stepping forward (or, if forward is false, backward) through flagged in
+// a wraparound cycle. If current isn't itself in flagged (e.g. nothing
+// selected yet, or the selection is on an auto-approved column), it
+// returns flagged's first entry going forward or its last going backward.
+// ok is false only when flagged is empty.
+func nextFlaggedColumn(flagged []flaggedColumn, current flaggedColumn, forward bool) (flaggedColumn, bool) {
+	if len(flagged) == 0 {
+		return flaggedColumn{}, false
+	}
+	idx := -1
+	for i, f := range flagged {
+		if f == current {
+			idx = i
+			break
+		}
+	}
+	var next int
+	switch {
+	case idx == -1 && forward:
+		next = 0
+	case idx == -1:
+		next = len(flagged) - 1
+	case forward:
+		next = (idx + 1) % len(flagged)
+	default:
+		next = (idx - 1 + len(flagged)) % len(flagged)
+	}
+	return flagged[next], true
+}
+
 // validTypesForColumn returns the subset of review.TypeOptions that every
 // one of values would load successfully as (per previewValueForType),
 // always including currentType even if it fails that check — so the type

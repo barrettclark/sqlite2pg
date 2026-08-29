@@ -35,14 +35,16 @@ func (m *model) openTypePicker(columnName string) {
 			// real sample data can contain brackets.
 			secondary = tview.Escape(fmt.Sprintf("e.g. %s", display))
 		}
-		list.AddItem(t, secondary, 0, nil)
+		list.AddItem(t, secondary, typeShortcuts[t], nil)
 		if t == col.TargetType {
 			list.SetCurrentItem(i)
 		}
 	}
 	m.picker = list
 
-	overlay := centered(list, 40, len(types)+2)
+	// tview reserves 4 extra columns to print each item's "(x)" shortcut
+	// prefix once any item has one, so widen the overlay to match.
+	overlay := centered(list, 44, len(types)+2)
 	if m.pages.HasPage("picker") {
 		m.pages.RemovePage("picker")
 	}
