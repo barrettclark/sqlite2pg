@@ -7,12 +7,20 @@ import (
 	"sqlite2pg/internal/profiler"
 )
 
-// SampleColumn returns up to limit values from a single column via a bounded
-// LIMIT query — it never reads the full table, which matters for tables the
-// size of atomic_database.db's MACS (tens of thousands of rows, far more
-// than any sample size in practice).
+// SampleColumn returns up to limit randomly-chosen values from a single
+// column via `ORDER BY RANDOM() LIMIT` — a bounded result, but not a bounded
+// scan: SQLite has to read and shuffle every row to pick from all of them
+// fairly. A table physically sorted by this column (or by one correlated
+// with it — e.g. a foreign key used as the table's natural insert order)
+// used to produce a sample that was entirely one repeated value with a
+// plain `LIMIT`, misleading heuristics like boolean01 into thinking a
+// column with real variety was binary. Profiling a whole table's worth of
+// columns this way means one random scan per column; ProfileDatabase
+// prefers SampleRows for that reason — one random scan covers every column
+// in the table at once. SampleColumn remains for callers that only need a
+// single column.
 func SampleColumn(db *sql.DB, table, column string, limit int) ([]profiler.Value, error) {
-	rows, err := db.Query(fmt.Sprintf(`SELECT %q FROM %q LIMIT ?`, column, table), limit)
+	rows, err := db.Query(fmt.Sprintf(`SELECT %q FROM %q ORDER BY RANDOM() LIMIT ?`, column, table), limit)
 	if err != nil {
 		return nil, fmt.Errorf("sampling %s.%s: %w", table, column, err)
 	}
@@ -30,10 +38,15 @@ func SampleColumn(db *sql.DB, table, column string, limit int) ([]profiler.Value
 }
 
 // SampleRows returns up to limit complete rows (all requested columns
-// together, in order) via a single bounded LIMIT query — unlike
-// SampleColumn, which samples one column independently of the others, this
-// gives synchronized rows suitable for a data-preview grid where each row
-// must show values that actually belong together.
+// together, in order), chosen at random across the whole table via `ORDER
+// BY RANDOM() LIMIT` rather than just the first rows — see SampleColumn's
+// comment for why a plain LIMIT is unsafe for a table that isn't stored in
+// an arbitrary order. Unlike SampleColumn, which samples one column
+// independently of the others, this gives synchronized rows suitable for a
+// data-preview grid where each row must show values that actually belong
+// together — and, sampling every requested column in one random scan
+// instead of one random scan per column, it's what ProfileDatabase uses to
+// profile a whole table's columns together.
 func SampleRows(db *sql.DB, table string, columns []string, limit int) ([][]profiler.Value, error) {
 	colList := ""
 	for i, c := range columns {
@@ -43,7 +56,7 @@ func SampleRows(db *sql.DB, table string, columns []string, limit int) ([][]prof
 		colList += fmt.Sprintf("%q", c)
 	}
 
-	rows, err := db.Query(fmt.Sprintf(`SELECT %s FROM %q LIMIT ?`, colList, table), limit)
+	rows, err := db.Query(fmt.Sprintf(`SELECT %s FROM %q ORDER BY RANDOM() LIMIT ?`, colList, table), limit)
 	if err != nil {
 		return nil, fmt.Errorf("sampling rows from %s: %w", table, err)
 	}

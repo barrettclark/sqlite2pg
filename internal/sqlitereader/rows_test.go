@@ -41,6 +41,60 @@ func TestSampleColumn_ReturnsFewerThanLimitWhenTableIsSmaller(t *testing.T) {
 	}
 }
 
+func TestSampleColumn_SamplesAcrossTheWholeTableNotJustTheStart(t *testing.T) {
+	// Regression test for a real bug: a table physically sorted so that
+	// early rows all share one value (e.g. chinook.db's playlist_track,
+	// sorted by PlaylistId) used to produce a sample that was entirely
+	// that one value with a plain `LIMIT`, misleading heuristics like
+	// boolean01 into thinking a column with real variety was binary.
+	db := openTestDB(t, `CREATE TABLE sorted (id INTEGER PRIMARY KEY, val INTEGER);`)
+	const total = 10000
+	const tailStart = 9000 // last 10% of rows carry the minority value
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	for i := 1; i <= total; i++ {
+		val := 1
+		if i > tailStart {
+			val = 2
+		}
+		if _, err := tx.Exec(`INSERT INTO sorted (val) VALUES (?)`, val); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	samples, err := SampleColumn(db, "sorted", "val", 500)
+	if err != nil {
+		t.Fatalf("SampleColumn: %v", err)
+	}
+	if len(samples) != 500 {
+		t.Fatalf("expected 500 samples, got %d", len(samples))
+	}
+
+	// With a plain `LIMIT 500` against rows inserted in order, every
+	// sample would be 1 — the minority value only appears in the last
+	// 10% of the table. A random sample of 500 drawn from a population
+	// that's 10% minority-valued has essentially no chance (0.9^500) of
+	// missing the minority value entirely if it's actually scanning the
+	// whole table, so seeing at least one 2 proves this isn't a plain
+	// prefix scan.
+	var sawMinorityValue bool
+	for _, v := range samples {
+		if n, ok := v.(int64); ok && n == 2 {
+			sawMinorityValue = true
+			break
+		}
+	}
+	if !sawMinorityValue {
+		t.Error("expected the sample to include at least one row from the table's minority-valued tail — " +
+			"got a sample that looks like a plain prefix LIMIT instead of a random sample across the whole table")
+	}
+}
+
 func TestSampleRows_ReturnsUpToLimitCompleteRowsInColumnOrder(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE bikes (bike_id INTEGER PRIMARY KEY, station_id TEXT, last_reported INTEGER);`)
 	for i := 1; i <= 10; i++ {

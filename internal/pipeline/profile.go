@@ -66,13 +66,26 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 			Columns:     map[string]config.ColumnConfig{},
 			ForeignKeys: convertForeignKeys(table.ForeignKeys),
 		}
-		for _, col := range table.Columns {
+
+		columnNames := make([]string, len(table.Columns))
+		for i, col := range table.Columns {
+			columnNames[i] = col.Name
+		}
+		// One random-order scan samples every column in the table together,
+		// instead of one random-order scan per column — both cheaper and,
+		// since every column's sample comes from the same randomly-chosen
+		// rows, exactly as representative per column as SampleColumn alone
+		// would be.
+		sampledRows, err := sqlitereader.SampleRows(db, table.Name, columnNames, sampleSize)
+		if err != nil {
+			return nil, fmt.Errorf("sampling %s: %w", table.Name, err)
+		}
+		columnSamples := transposeToColumns(sampledRows, len(columnNames))
+
+		for i, col := range table.Columns {
 			tc.ColumnOrder = append(tc.ColumnOrder, col.Name)
 			meta := profiler.ColumnMeta{Table: table.Name, Name: col.Name, DeclaredType: col.DeclaredType}
-			samples, err := sqlitereader.SampleColumn(db, table.Name, col.Name, sampleSize)
-			if err != nil {
-				return nil, fmt.Errorf("sampling %s.%s: %w", table.Name, col.Name, err)
-			}
+			samples := columnSamples[i]
 			findings := profiler.Default.ProfileColumn(meta, samples)
 
 			var cc config.ColumnConfig
@@ -116,6 +129,25 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 	}
 
 	return &ProfileResult{Config: cfg, Unresolved: unresolved}, nil
+}
+
+// transposeToColumns turns rows (each a slice of numCols values, one row
+// per sampled record) into numCols column-major slices — what
+// profiler.ProfileColumn expects for a single column, given what
+// sqlitereader.SampleRows returns for a whole table. An empty rows (a table
+// with no rows at all) yields numCols empty-but-non-nil slices, so every
+// column still gets a (trivial) heuristic pass rather than being skipped.
+func transposeToColumns(rows [][]profiler.Value, numCols int) [][]profiler.Value {
+	columns := make([][]profiler.Value, numCols)
+	for i := range columns {
+		columns[i] = make([]profiler.Value, 0, len(rows))
+	}
+	for _, row := range rows {
+		for i, v := range row {
+			columns[i] = append(columns[i], v)
+		}
+	}
+	return columns
 }
 
 // convertForeignKeys copies sqlitereader's declared foreign keys into the
