@@ -252,3 +252,35 @@ func TestGolden_AtomicDatabase(t *testing.T) {
 		t.Errorf("expected 12 tables, got %d: %v", len(result.Config.Tables), tableNames(result))
 	}
 }
+
+// TestGolden_SampleDates covers two real-world date/time shapes that had
+// no fixture-backed regression coverage before this test: 8-digit YYYYMMDD
+// dates stored as both INTEGER and TEXT (found in the wild in an ISO 10383
+// MIC registry database) and US-style M/D/YYYY h:mm:ss AM/PM timestamps
+// (found in the wild in an NEH grants database). Both were real bugs fixed
+// during dogfooding against databases outside this repo, so unlike the
+// other golden tests here there's no upstream IMPORT_NOTES.md entry to
+// trace to — sample-dates.sqlite is a small handcrafted fixture instead,
+// same as sample-types.sqlite.
+func TestGolden_SampleDates(t *testing.T) {
+	db, path := openFixture(t, "sample-dates.sqlite")
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	targetType, source, _ := decisionFor(t, result, "date_demo", "creation_date")
+	if targetType != "date" || source != "heuristic:yyyymmdd_date" {
+		t.Errorf("creation_date (YYYYMMDD as INTEGER): expected date via yyyymmdd_date, got %q via %q", targetType, source)
+	}
+
+	targetType, source, _ = decisionFor(t, result, "date_demo", "last_validation_date")
+	if targetType != "date" || source != "heuristic:yyyymmdd_date" {
+		t.Errorf("last_validation_date (YYYYMMDD as TEXT): expected date via yyyymmdd_date, got %q via %q", targetType, source)
+	}
+
+	targetType, source, _ = decisionFor(t, result, "date_demo", "logged_at")
+	if targetType != "timestamptz" || source != "heuristic:iso8601_timestamp" {
+		t.Errorf("logged_at (US-style M/D/YYYY h:mm:ss AM/PM): expected timestamptz via iso8601_timestamp, got %q via %q", targetType, source)
+	}
+}
