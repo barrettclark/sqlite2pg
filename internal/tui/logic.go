@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -20,6 +21,12 @@ var dateLayouts = []string{
 	"2006-01-02 15:04:05",
 	"2006-01-02",
 }
+
+// uuidPattern mirrors the canonical-UUID check the uuid_format heuristic
+// uses (internal/profiler/heuristics/uuid_format.go) — kept as its own
+// copy since that package is internal to the profiler and not meant to be
+// imported for a display-only check here.
+var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
 
 // findTable returns name's TableView from summary, or a zero-value
 // TableView if not found.
@@ -99,6 +106,8 @@ func previewValueForType(value, targetType string) (display string, valid bool) 
 			}
 		}
 		return value, false
+	case "uuid":
+		return value, uuidPattern.MatchString(value)
 	default:
 		// text, jsonb, bytea: any string is valid, displayed as-is.
 		return value, true
@@ -121,7 +130,7 @@ func firstNonNullValue(values []string) string {
 // typeShortcuts maps every review.TypeOptions entry to a distinct
 // mnemonic rune for the type picker's single-key selection — pressing the
 // rune jumps straight to that type without arrowing through the list
-// first. Picked to stay memorable and collision-free across all 12
+// first. Picked to stay memorable and collision-free across all 13
 // options at once (not just whichever subset a given column's sample data
 // happens to validate as): "g" for bigint ("biG int"), "f" for double
 // precision (its common colloquial name, "float"; "d" was needed for
@@ -140,6 +149,7 @@ var typeShortcuts = map[string]rune{
 	"timestamptz":      'z',
 	"jsonb":            'j',
 	"bytea":            'x',
+	"uuid":             'u',
 }
 
 // flaggedColumn identifies one column flagged for review, by its table and

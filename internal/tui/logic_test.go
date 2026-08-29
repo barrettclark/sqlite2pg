@@ -82,6 +82,24 @@ func TestPreviewValueForType_ValidityForNonNumericTypes(t *testing.T) {
 	}
 }
 
+func TestPreviewValueForType_UUID(t *testing.T) {
+	cases := []struct {
+		value     string
+		wantValid bool
+	}{
+		{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", true},
+		{"E4EFF6F3-3F1A-4D6E-9C1E-7C3D2A5B9E10", true}, // uppercase, still valid
+		{"not-a-uuid", false},
+		{"NULL", true},
+	}
+	for _, c := range cases {
+		_, valid := previewValueForType(c.value, "uuid")
+		if valid != c.wantValid {
+			t.Errorf("previewValueForType(%q, \"uuid\") valid = %v, want %v", c.value, valid, c.wantValid)
+		}
+	}
+}
+
 func TestValidTypesForColumn_FiltersOutTypesAnySampleFails(t *testing.T) {
 	// Every value is a plain non-negative integer string, so the numeric
 	// and text-like types validate; boolean/date/timestamptz don't, since

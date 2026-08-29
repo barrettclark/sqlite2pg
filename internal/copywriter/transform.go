@@ -10,6 +10,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"sqlite2pg/internal/profiler"
 )
 
@@ -99,6 +101,22 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			return nil, fmt.Errorf("yyyymmdd_to_date: %q: %w", s, err)
 		}
 		return tm, nil
+
+	case "uuid_format":
+		s, ok := raw.(string)
+		if !ok {
+			return nil, fmt.Errorf("uuid_format: unexpected type %T", raw)
+		}
+		// pgx's uuid codec only accepts values implementing UUIDValuer
+		// (which a plain Go string doesn't) — a raw string reaches
+		// PlanEncode as nil and COPY fails with "cannot find encode
+		// plan". pgtype.UUID.Scan parses the canonical text form into
+		// the [16]byte pgx actually needs.
+		var u pgtype.UUID
+		if err := u.Scan(s); err != nil {
+			return nil, fmt.Errorf("uuid_format: %q: %w", s, err)
+		}
+		return u, nil
 
 	case "nullif_sentinels":
 		if s, ok := raw.(string); ok {

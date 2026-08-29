@@ -284,3 +284,29 @@ func TestGolden_SampleDates(t *testing.T) {
 		t.Errorf("logged_at (US-style M/D/YYYY h:mm:ss AM/PM): expected timestamptz via iso8601_timestamp, got %q via %q", targetType, source)
 	}
 }
+
+// TestGolden_SampleUUIDs covers a real-world shape with no fixture-backed
+// regression coverage before this test: a TEXT column storing a single
+// canonical UUID per row. Real evidence: an ISO 10383 MIC registry
+// database's station_id column, and a beets music library's several
+// single-valued MusicBrainz ID columns — both outside this repo, so
+// sample-uuids.sqlite is a small handcrafted fixture instead, same as
+// sample-dates.sqlite and sample-types.sqlite. label is a plain string
+// column included as a negative control: it must not also get flagged.
+func TestGolden_SampleUUIDs(t *testing.T) {
+	db, path := openFixture(t, "sample-uuids.sqlite")
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	targetType, source, _ := decisionFor(t, result, "entity_demo", "station_id")
+	if targetType != "uuid" || source != "heuristic:uuid_format" {
+		t.Errorf("station_id: expected uuid via uuid_format, got %q via %q", targetType, source)
+	}
+
+	targetType, source, _ = decisionFor(t, result, "entity_demo", "label")
+	if targetType != "text" {
+		t.Errorf("label: expected the uuid_format heuristic to leave a plain string column alone, got %q via %q", targetType, source)
+	}
+}

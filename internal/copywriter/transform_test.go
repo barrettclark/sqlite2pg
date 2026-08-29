@@ -4,6 +4,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgtype"
+
 	"sqlite2pg/internal/profiler"
 )
 
@@ -52,6 +54,29 @@ func TestTransform_ISO8601ToTimestamptz(t *testing.T) {
 	}
 	if tm.Year() != 2026 || tm.Month() != time.August || tm.Day() != 14 {
 		t.Errorf("expected 2026-08-14, got %v", tm)
+	}
+}
+
+func TestTransform_UUIDFormat(t *testing.T) {
+	got, err := Transform("uuid_format", "90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	u, ok := got.(pgtype.UUID)
+	if !ok {
+		t.Fatalf("expected pgtype.UUID, got %T", got)
+	}
+	if !u.Valid {
+		t.Fatal("expected a valid UUID")
+	}
+	if got, want := u.String(), "90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10"; got != want {
+		t.Errorf("expected round-trip %q, got %q", want, got)
+	}
+}
+
+func TestTransform_UUIDFormatRejectsUnparseableValues(t *testing.T) {
+	if _, err := Transform("uuid_format", "not-a-uuid"); err == nil {
+		t.Fatal("expected an error for an unparseable UUID")
 	}
 }
 
