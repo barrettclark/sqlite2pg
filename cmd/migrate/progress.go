@@ -81,20 +81,26 @@ func (p *progressReporter) render(force bool) {
 		filled = progressBarWidth
 	}
 	bar := strings.Repeat("=", filled) + strings.Repeat("-", progressBarWidth-filled)
-	// \r returns to column 0; the trailing spaces overwrite anything
-	// longer left over from the previous draw (e.g. a longer table name)
-	// without needing an ANSI clear-to-end-of-line sequence.
-	fmt.Printf("\r[%s] %d/%d rows (%.1f%%) — %s%s", bar, p.done, p.total, pct, p.tableName, strings.Repeat(" ", 10))
+	fmt.Printf("\r%s[%s] %d/%d rows (%.1f%%) — %s", clearLine, bar, p.done, p.total, pct, p.tableName)
 }
 
-// abort prints a trailing newline if a live bar is currently drawn, so an
-// error message printed right after (e.g. a COPY failure mid-table) lands
-// on its own line instead of running into whatever partial bar text is
-// still sitting on the terminal's current line. A no-op for non-terminal
-// output, which never leaves an unterminated line to begin with.
+// clearLine is \r followed by the ANSI "erase to end of line" sequence —
+// unlike padding the new text with a guessed number of trailing spaces
+// (which this used to do, and which left visible leftover characters
+// whenever the previous line was longer than expected: a long table name,
+// or more digits once row counts climbed past what the guess accounted
+// for), this reliably erases whatever was on the line before, regardless
+// of length.
+const clearLine = "\x1b[K"
+
+// abort clears the live bar and moves to a fresh line, so an error
+// message printed right after (e.g. a COPY failure mid-table) neither
+// collides with nor leaves behind partial bar text. A no-op for
+// non-terminal output, which never leaves an unterminated line to begin
+// with.
 func (p *progressReporter) abort() {
 	if p.isTerminal {
-		fmt.Println()
+		fmt.Print("\r" + clearLine + "\n")
 	}
 }
 
@@ -105,10 +111,7 @@ func (p *progressReporter) abort() {
 func (p *progressReporter) finishTable(tableName string, rows int64) {
 	line := fmt.Sprintf("%s: loaded %d row(s)", tableName, rows)
 	if p.isTerminal {
-		// Pad past whatever the last bar redraw left on this line (a
-		// longer table name, more digits) before the newline commits it
-		// to scrollback — trailing spaces are invisible either way.
-		fmt.Printf("\r%s%s\n", line, strings.Repeat(" ", 20))
+		fmt.Print("\r" + clearLine + line + "\n")
 		return
 	}
 	fmt.Println(line)
