@@ -13,17 +13,36 @@ type ColumnInfo struct {
 	Name         string
 	DeclaredType string
 	NotNull      bool
-	PrimaryKey   bool
+
+	// PrimaryKeySeq is 0 if this column isn't part of the table's primary
+	// key, or its 1-based position within it otherwise — SQLite reports
+	// this directly via PRAGMA table_info's "pk" column, which is how a
+	// composite primary key's declared column order is preserved.
+	PrimaryKeySeq int
 }
 
-// TableInfo describes a table and its columns.
+// ForeignKeyInfo describes one declared foreign key constraint, which may
+// span multiple columns (a composite key) — SQLite's PRAGMA foreign_key_list
+// groups the columns of one constraint under a shared "id" and orders them
+// within it via "seq".
+type ForeignKeyInfo struct {
+	Columns    []string // local columns, in declared order
+	RefTable   string
+	RefColumns []string // referenced columns, in declared order (aligned with Columns)
+	OnDelete   string
+	OnUpdate   string
+}
+
+// TableInfo describes a table, its columns, and its declared foreign keys.
 type TableInfo struct {
-	Name    string
-	Columns []ColumnInfo
+	Name        string
+	Columns     []ColumnInfo
+	ForeignKeys []ForeignKeyInfo
 }
 
 // ReadSchema reads every user table (excluding SQLite's own sqlite_%
-// system tables) and its columns via PRAGMA table_info.
+// system tables), its columns via PRAGMA table_info, and its declared
+// foreign keys via PRAGMA foreign_key_list.
 func ReadSchema(db *sql.DB) ([]TableInfo, error) {
 	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
@@ -53,7 +72,11 @@ func ReadSchema(db *sql.DB) ([]TableInfo, error) {
 			// skip them rather than failing the whole schema read.
 			continue
 		}
-		tables = append(tables, TableInfo{Name: name, Columns: cols})
+		fks, err := ReadForeignKeys(db, name)
+		if err != nil {
+			return nil, fmt.Errorf("reading foreign keys for %s: %w", name, err)
+		}
+		tables = append(tables, TableInfo{Name: name, Columns: cols, ForeignKeys: fks})
 	}
 	return tables, nil
 }
@@ -79,11 +102,52 @@ func readColumns(db *sql.DB, table string) ([]ColumnInfo, error) {
 			return nil, err
 		}
 		cols = append(cols, ColumnInfo{
-			Name:         name,
-			DeclaredType: ctype,
-			NotNull:      notNull != 0,
-			PrimaryKey:   primaryKey != 0,
+			Name:          name,
+			DeclaredType:  ctype,
+			NotNull:       notNull != 0,
+			PrimaryKeySeq: primaryKey,
 		})
 	}
 	return cols, rows.Err()
+}
+
+// ReadForeignKeys reads table's declared foreign keys via PRAGMA
+// foreign_key_list, grouping multi-column (composite) constraints by their
+// shared id and ordering each constraint's columns by seq.
+func ReadForeignKeys(db *sql.DB, table string) ([]ForeignKeyInfo, error) {
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA foreign_key_list(%q)`, table))
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	byID := map[int]*ForeignKeyInfo{}
+	var order []int
+	for rows.Next() {
+		var (
+			id, seq                     int
+			refTable, from, to          string
+			onUpdate, onDelete, matchOn string
+		)
+		if err := rows.Scan(&id, &seq, &refTable, &from, &to, &onUpdate, &onDelete, &matchOn); err != nil {
+			return nil, err
+		}
+		fk, ok := byID[id]
+		if !ok {
+			fk = &ForeignKeyInfo{RefTable: refTable, OnDelete: onDelete, OnUpdate: onUpdate}
+			byID[id] = fk
+			order = append(order, id)
+		}
+		fk.Columns = append(fk.Columns, from)
+		fk.RefColumns = append(fk.RefColumns, to)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+
+	fks := make([]ForeignKeyInfo, 0, len(order))
+	for _, id := range order {
+		fks = append(fks, *byID[id])
+	}
+	return fks, nil
 }
