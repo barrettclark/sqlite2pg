@@ -4,6 +4,7 @@ package ddl
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 
 	"sqlite2pg/internal/config"
@@ -14,7 +15,10 @@ import (
 const dropSentinel = "__drop__"
 
 // GenerateCreateTable emits a CREATE TABLE statement for table using tc's
-// ColumnOrder, skipping any column whose TargetType is the drop sentinel.
+// ColumnOrder, skipping any column whose TargetType is the drop sentinel,
+// with an inline PRIMARY KEY clause if any included column has a
+// PrimaryKeySeq — this is preserved source truth carried straight from
+// SQLite, not something a heuristic decides.
 func GenerateCreateTable(table string, tc config.TableConfig) string {
 	var cols []string
 	for _, name := range tc.ColumnOrder {
@@ -24,12 +28,51 @@ func GenerateCreateTable(table string, tc config.TableConfig) string {
 		}
 		cols = append(cols, fmt.Sprintf("    %q %s", name, col.TargetType))
 	}
+	if pk := primaryKeyColumns(tc); len(pk) > 0 {
+		cols = append(cols, fmt.Sprintf("    PRIMARY KEY (%s)", quoteJoin(pk)))
+	}
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "CREATE TABLE %q (\n", table)
 	b.WriteString(strings.Join(cols, ",\n"))
 	b.WriteString("\n);\n")
 	return b.String()
+}
+
+// primaryKeyColumns returns tc's included primary-key columns ordered by
+// their declared PrimaryKeySeq (1-based), not by ColumnOrder — a composite
+// primary key's declared column order can differ from the table's overall
+// column order. A dropped or otherwise excluded column that happened to be
+// part of the primary key is simply omitted, same as it is from the
+// column list itself.
+func primaryKeyColumns(tc config.TableConfig) []string {
+	type seqCol struct {
+		seq  int
+		name string
+	}
+	var pk []seqCol
+	for _, name := range IncludedColumns(tc) {
+		if seq := tc.Columns[name].PrimaryKeySeq; seq > 0 {
+			pk = append(pk, seqCol{seq: seq, name: name})
+		}
+	}
+	sort.Slice(pk, func(i, j int) bool { return pk[i].seq < pk[j].seq })
+
+	names := make([]string, len(pk))
+	for i, c := range pk {
+		names[i] = c.name
+	}
+	return names
+}
+
+// quoteJoin double-quotes each identifier and joins them with ", " — the
+// form both a column list and a composite key clause need.
+func quoteJoin(names []string) string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = fmt.Sprintf("%q", n)
+	}
+	return strings.Join(quoted, ", ")
 }
 
 // IncludedColumns returns tc's column names, in declared order, excluding

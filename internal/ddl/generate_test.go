@@ -34,6 +34,69 @@ func TestGenerateCreateTable_EmitsColumnsInDeclaredOrder(t *testing.T) {
 	}
 }
 
+func TestGenerateCreateTable_EmitsInlinePrimaryKey(t *testing.T) {
+	tc := config.TableConfig{
+		ColumnOrder: []string{"station_id", "num_bikes_available"},
+		Columns: map[string]config.ColumnConfig{
+			"station_id":          {TargetType: "text", PrimaryKeySeq: 1},
+			"num_bikes_available": {TargetType: "integer"},
+		},
+	}
+
+	ddl := GenerateCreateTable("bikes", tc)
+
+	if !strings.Contains(ddl, `PRIMARY KEY ("station_id")`) {
+		t.Errorf("expected an inline PRIMARY KEY clause, got:\n%s", ddl)
+	}
+}
+
+func TestGenerateCreateTable_EmitsCompositePrimaryKeyInDeclaredSeqOrder(t *testing.T) {
+	tc := config.TableConfig{
+		ColumnOrder: []string{"PlaylistId", "TrackId"},
+		Columns: map[string]config.ColumnConfig{
+			"PlaylistId": {TargetType: "integer", PrimaryKeySeq: 1},
+			"TrackId":    {TargetType: "integer", PrimaryKeySeq: 2},
+		},
+	}
+
+	ddl := GenerateCreateTable("playlist_track", tc)
+
+	if !strings.Contains(ddl, `PRIMARY KEY ("PlaylistId", "TrackId")`) {
+		t.Errorf("expected composite primary key in seq order, got:\n%s", ddl)
+	}
+}
+
+func TestGenerateCreateTable_CompositePrimaryKeyRespectsSeqNotColumnOrder(t *testing.T) {
+	// Declared column order and primary key seq order can differ — DDL
+	// generation must follow seq, not ColumnOrder.
+	tc := config.TableConfig{
+		ColumnOrder: []string{"b", "a"},
+		Columns: map[string]config.ColumnConfig{
+			"a": {TargetType: "integer", PrimaryKeySeq: 1},
+			"b": {TargetType: "integer", PrimaryKeySeq: 2},
+		},
+	}
+
+	ddl := GenerateCreateTable("t", tc)
+
+	if !strings.Contains(ddl, `PRIMARY KEY ("a", "b")`) {
+		t.Errorf("expected primary key ordered by seq (a, b), not column order (b, a), got:\n%s", ddl)
+	}
+}
+
+func TestGenerateCreateTable_NoPrimaryKeyClauseWhenNoColumnIsAPrimaryKey(t *testing.T) {
+	tc := config.TableConfig{
+		ColumnOrder: []string{"a"},
+		Columns:     map[string]config.ColumnConfig{"a": {TargetType: "integer"}},
+	}
+
+	ddl := GenerateCreateTable("t", tc)
+
+	if strings.Contains(ddl, "PRIMARY KEY") {
+		t.Errorf("expected no PRIMARY KEY clause, got:\n%s", ddl)
+	}
+}
+
 func TestGenerateCreateTable_ExcludesDroppedColumns(t *testing.T) {
 	tc := config.TableConfig{
 		ColumnOrder: []string{"OBJECTID", "SHAPE"},
