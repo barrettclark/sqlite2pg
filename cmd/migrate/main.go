@@ -240,6 +240,13 @@ func runLoad(args []string) error {
 			}
 			fmt.Print(ddl.GenerateCreateTable(tableName, tc))
 		}
+		statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
+		for _, stmt := range statements {
+			fmt.Println(stmt)
+		}
+		for _, reason := range skipped {
+			fmt.Fprintf(os.Stderr, "skipping foreign key: %s\n", reason)
+		}
 		return nil
 	}
 
@@ -302,6 +309,22 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 			return err
 		}
 		fmt.Printf("%s: loaded %d row(s)\n", tableName, n)
+	}
+
+	// Foreign keys are added only now, after every table exists and is
+	// fully loaded — never interleaved with CREATE TABLE/COPY above, so
+	// table creation and data loading never need to be ordered by FK
+	// dependency. If this fails, the state file is deliberately left in
+	// place: a --resume retry will skip every already-loaded table (per
+	// the completed-tables check above) and land right back here.
+	statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
+	for _, reason := range skipped {
+		fmt.Printf("skipping foreign key: %s\n", reason)
+	}
+	for _, stmt := range statements {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("adding foreign key: %w", err)
+		}
 	}
 
 	// Every included table made it through, so nothing is left to resume —
