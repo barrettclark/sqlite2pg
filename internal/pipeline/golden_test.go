@@ -1,15 +1,15 @@
 package pipeline
 
-// Tier 2: golden-fixture tests against the real, already-migrated
-// databases documented in IMPORT_NOTES.md. The fixtures live in
-// testdata/fixtures/ within this module (see internal/pipeline's own
-// nesting: two levels up from here), so the tests aren't sensitive to
-// wherever the surrounding project directory happens to sit. Rather than a
-// full hand-authored per-column YAML diff for every table
-// (atomic_database.db alone has 12 tables), these assert the specific
-// decision points IMPORT_NOTES.md records as having required non-default
-// handling — the cases that actually matter as regression coverage for the
-// heuristic set. No Postgres connection is used.
+// Tier 2: golden-fixture tests against real databases (plus a couple of
+// small handcrafted ones for cases no real fixture happened to cover). The
+// fixtures live in testdata/fixtures/ within this module (see
+// internal/pipeline's own nesting: two levels up from here), so the tests
+// aren't sensitive to wherever the surrounding project directory happens to
+// sit. Rather than a full hand-authored per-column YAML diff for every
+// table (atomic_database.db alone has 12 tables), these assert the
+// specific decision points that needed non-default handling — the cases
+// that actually matter as regression coverage for the heuristic set. No
+// Postgres connection is used.
 
 import (
 	"database/sql"
@@ -82,7 +82,7 @@ func TestGolden_Bikes(t *testing.T) {
 		t.Fatalf("ProfileDatabase: %v", err)
 	}
 
-	// last_reported: Unix epoch timestamp per IMPORT_NOTES.md.
+	// last_reported: Unix epoch timestamp.
 	targetType, _, _ := decisionFor(t, result, "bikes", "last_reported")
 	if targetType != "timestamptz" {
 		t.Errorf("bikes.last_reported: expected timestamptz, got %q", targetType)
