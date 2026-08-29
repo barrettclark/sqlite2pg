@@ -13,6 +13,9 @@ migrate/migrate
 *.exe
 *.test
 
+# goreleaser local build output
+/dist/
+
 # Go build/test artifacts
 *.out
 
