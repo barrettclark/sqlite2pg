@@ -107,6 +107,21 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("uuid_format: unexpected type %T", raw)
 		}
+		if s == "" {
+			// The uuid_format heuristic itself treats an empty string as
+			// skippable — like NULL, not a disqualifying non-UUID value
+			// (see its Evaluate) — since that's how beets (and likely
+			// other SQLite-backed ORMs) represents "no ID assigned" for
+			// an optional text column instead of using NULL. A column
+			// can pass the heuristic on a sample that happened to miss
+			// every empty-string row (real example: beets' albums.
+			// mb_albumid, 13 empty out of 13,629, easily missed by a
+			// 500-row sample) and only hit one during the full-table
+			// COPY, so the transform has to honor the same leniency or
+			// this fails at load time on a column the profiler already
+			// promised was a uuid.
+			return nil, nil
+		}
 		// pgx's uuid codec only accepts values implementing UUIDValuer
 		// (which a plain Go string doesn't) — a raw string reaches
 		// PlanEncode as nil and COPY fails with "cannot find encode

@@ -80,6 +80,24 @@ func TestTransform_UUIDFormatRejectsUnparseableValues(t *testing.T) {
 	}
 }
 
+func TestTransform_UUIDFormatTreatsEmptyStringAsNull(t *testing.T) {
+	// Regression test for a real bug: beets' albums.mb_albumid is a
+	// canonical UUID in 13,616 of 13,629 rows and an empty string (not
+	// NULL) in the other 13 — "no ID assigned" for an optional field,
+	// the same shape the uuid_format heuristic's Evaluate already treats
+	// as skippable. A 500-row sample easily misses all 13, so the
+	// heuristic can confidently assign uuid_format to a column the
+	// transform then has to actually handle at COPY time, not just at
+	// sampling time — this used to error with "cannot parse UUID ''".
+	got, err := Transform("uuid_format", "")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil (SQL NULL) for an empty string, got %v", got)
+	}
+}
+
 func TestTransform_ISO8601ToTimestamptz_USStyleAMPM(t *testing.T) {
 	// neh-grants.db's CouncilDate/BeginGrant/EndGrant columns — this must
 	// convert successfully through the same shared layout list the
