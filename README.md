@@ -2,18 +2,10 @@
 
 A `pgloader` replacement for migrating SQLite databases (including Esri File
 Geodatabases) into PostgreSQL, with automatic data profiling and an
-interactive terminal wizard for reviewing ambiguous type decisions.
+interactive terminal UI for reviewing ambiguous type decisions.
 
-Background and design rationale live in the parent directory:
-[`../PGLOADER_REWRITE_PLAN.md`](../PGLOADER_REWRITE_PLAN.md) (the original
-architecture proposal) and
-[`../PGLOADER_REWRITE_PLAN_V2.md`](../PGLOADER_REWRITE_PLAN_V2.md) (this
-implementation's plan — wizard, resolver, test strategy). Per-database import
-notes from the original hand-written `pgloader` migrations, which this tool's
-heuristics encode, are in [`../IMPORT_NOTES.md`](../IMPORT_NOTES.md). The
-sample databases the test suite exercises live in `testdata/fixtures/`
-within this project, so the tests don't depend on the surrounding directory
-layout.
+Sample databases the test suite exercises live in `testdata/fixtures/`
+within this project, so the tests don't depend on anything outside the repo.
 
 ## Why
 
@@ -95,10 +87,11 @@ type Heuristic interface {
 }
 ```
 
-Each self-registers via `init()`, so adding a new case — the 8th heuristic,
-`sentinel_null`, was added this way after a golden-fixture test caught a real
-gap — never requires touching an existing heuristic. Every heuristic has a
-same-named `_test.go` with table-driven unit tests and no I/O.
+Each self-registers via `init()`, so adding a new case — `sentinel_null` and
+`yyyymmdd_date` were both added this way, after a golden-fixture test or
+real-world dogfooding caught a gap — never requires touching an existing
+heuristic. Every heuristic has a same-named `_test.go` with table-driven
+unit tests and no I/O.
 
 ## Known limitation: sampling can miss rare rows
 
@@ -135,7 +128,7 @@ cmd/migrate/          CLI entrypoint (run, profile, review, load, resolve subcom
 internal/
   sqlitereader/        schema + streaming row reading (modernc.org/sqlite, no CGO)
   profiler/            heuristic interface + registry
-  profiler/heuristics/ the 8 type-inference heuristics, one file each
+  profiler/heuristics/ the type-inference heuristics, one file each
   resolver/            confidence scoring + escalation (Resolver interface)
   config/              the persisted MigrationConfig (YAML), versioning, drift detection
   pipeline/            wires sqlitereader + profiler + resolver into ProfileDatabase
