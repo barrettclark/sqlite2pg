@@ -9,7 +9,8 @@ import (
 
 // SampleColumn returns up to limit values from a single column via a bounded
 // LIMIT query — it never reads the full table, which matters for tables the
-// size of atomic_database.db's ~1M-row MACS.
+// size of atomic_database.db's MACS (tens of thousands of rows, far more
+// than any sample size in practice).
 func SampleColumn(db *sql.DB, table, column string, limit int) ([]profiler.Value, error) {
 	rows, err := db.Query(fmt.Sprintf(`SELECT %q FROM %q LIMIT ?`, column, table), limit)
 	if err != nil {

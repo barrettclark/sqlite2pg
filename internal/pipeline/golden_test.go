@@ -243,7 +243,7 @@ func TestGolden_ChinookPreservesCompositePrimaryKey(t *testing.T) {
 
 func TestGolden_AtomicDatabase(t *testing.T) {
 	db, path := openFixture(t, "atomic_database.db")
-	// small sample size: MACS has ~1M rows, this must stay fast.
+	// small sample size: MACS has 20k rows, this must stay fast.
 	result, err := ProfileDatabase(db, path, 200, 0.9)
 	if err != nil {
 		t.Fatalf("ProfileDatabase: %v", err)
