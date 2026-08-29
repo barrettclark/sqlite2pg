@@ -95,6 +95,62 @@ func TestSampleColumn_SamplesAcrossTheWholeTableNotJustTheStart(t *testing.T) {
 	}
 }
 
+func TestSampleNonNullColumn_ReturnsOnlyNonNullValues(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE sparse (id INTEGER PRIMARY KEY, val TEXT);`)
+	tx, err := db.Begin()
+	if err != nil {
+		t.Fatalf("begin: %v", err)
+	}
+	// 995 NULL rows, 5 real values scattered at the very end — the shape
+	// that made ordinary random sampling miss the real values entirely.
+	for i := 1; i <= 995; i++ {
+		if _, err := tx.Exec(`INSERT INTO sparse (val) VALUES (NULL)`); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	for i := 1; i <= 5; i++ {
+		if _, err := tx.Exec(`INSERT INTO sparse (val) VALUES (?)`, "real-value"); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		t.Fatalf("commit: %v", err)
+	}
+
+	samples, err := SampleNonNullColumn(db, "sparse", "val", 500)
+	if err != nil {
+		t.Fatalf("SampleNonNullColumn: %v", err)
+	}
+	if len(samples) != 5 {
+		t.Fatalf("expected all 5 non-NULL values (fewer than the limit), got %d", len(samples))
+	}
+	for _, v := range samples {
+		if v == nil {
+			t.Error("expected no NULL values in the result")
+		}
+		if s, ok := v.(string); !ok || s != "real-value" {
+			t.Errorf("expected %q, got %v", "real-value", v)
+		}
+	}
+}
+
+func TestSampleNonNullColumn_ReturnsEmptyForAnAllNullColumn(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE allnull (id INTEGER PRIMARY KEY, val TEXT);`)
+	for i := 0; i < 10; i++ {
+		if _, err := db.Exec(`INSERT INTO allnull (val) VALUES (NULL)`); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	samples, err := SampleNonNullColumn(db, "allnull", "val", 500)
+	if err != nil {
+		t.Fatalf("SampleNonNullColumn: %v", err)
+	}
+	if len(samples) != 0 {
+		t.Fatalf("expected no values, got %d", len(samples))
+	}
+}
+
 func TestSampleRows_ReturnsUpToLimitCompleteRowsInColumnOrder(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE bikes (bike_id INTEGER PRIMARY KEY, station_id TEXT, last_reported INTEGER);`)
 	for i := 1; i <= 10; i++ {

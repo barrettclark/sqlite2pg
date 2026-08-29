@@ -82,6 +82,32 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 		}
 		columnSamples := transposeToColumns(sampledRows, len(columnNames))
 
+		// A column that comes back entirely NULL in a full-size random
+		// sample isn't necessarily entirely NULL in the table — it might
+		// just be sparse enough that random chance missed every non-NULL
+		// value (verified for real against a 99.5%-NULL column). A
+		// heuristic that never sees a real value can't fire, so the
+		// column silently falls through to the declared-type passthrough
+		// instead of being flagged — no error, just a silently wrong
+		// type. Rescue these with a second, targeted query for non-NULL
+		// values only. If sampledRows came back shorter than sampleSize,
+		// the table has no more rows than we already sampled — the
+		// column really is all NULL, and there's nothing to rescue.
+		if len(sampledRows) == sampleSize {
+			for i, name := range columnNames {
+				if hasNonNilValue(columnSamples[i]) {
+					continue
+				}
+				rescued, err := sqlitereader.SampleNonNullColumn(db, table.Name, name, sampleSize)
+				if err != nil {
+					return nil, fmt.Errorf("rescuing sparse column %s.%s: %w", table.Name, name, err)
+				}
+				if len(rescued) > 0 {
+					columnSamples[i] = rescued
+				}
+			}
+		}
+
 		for i, col := range table.Columns {
 			tc.ColumnOrder = append(tc.ColumnOrder, col.Name)
 			meta := profiler.ColumnMeta{Table: table.Name, Name: col.Name, DeclaredType: col.DeclaredType}
@@ -148,6 +174,17 @@ func transposeToColumns(rows [][]profiler.Value, numCols int) [][]profiler.Value
 		}
 	}
 	return columns
+}
+
+// hasNonNilValue reports whether samples contains at least one non-NULL
+// value.
+func hasNonNilValue(samples []profiler.Value) bool {
+	for _, v := range samples {
+		if v != nil {
+			return true
+		}
+	}
+	return false
 }
 
 // convertForeignKeys copies sqlitereader's declared foreign keys into the

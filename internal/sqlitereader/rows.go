@@ -37,6 +37,37 @@ func SampleColumn(db *sql.DB, table, column string, limit int) ([]profiler.Value
 	return samples, rows.Err()
 }
 
+// SampleNonNullColumn returns up to limit randomly-chosen non-NULL values
+// from a single column — a targeted rescue for a column whose ordinary
+// random sample (SampleColumn/SampleRows) came back entirely NULL even
+// though the table has more rows than that sample covered. A very sparse
+// column (a real example: an Esri geodatabase's ClosedDate, 99.5% NULL)
+// can easily land zero non-NULL values in a few-hundred-row random sample;
+// without ever seeing a real value, a heuristic like esri_julian_day has
+// nothing to evaluate and silently falls back to a passthrough type
+// instead of flagging anything — no error, just a silently wrong type.
+// This costs a full scan of the column when it's this sparse, same as
+// SampleColumn's own ORDER BY RANDOM() — but ProfileDatabase only calls it
+// when the ordinary sample already came back entirely empty-handed, so it
+// isn't paid for every column, only the ones that need it.
+func SampleNonNullColumn(db *sql.DB, table, column string, limit int) ([]profiler.Value, error) {
+	rows, err := db.Query(fmt.Sprintf(`SELECT %q FROM %q WHERE %q IS NOT NULL ORDER BY RANDOM() LIMIT ?`, column, table, column), limit)
+	if err != nil {
+		return nil, fmt.Errorf("rescuing sparse column %s.%s: %w", table, column, err)
+	}
+	defer rows.Close()
+
+	var samples []profiler.Value
+	for rows.Next() {
+		var v any
+		if err := rows.Scan(&v); err != nil {
+			return nil, err
+		}
+		samples = append(samples, v)
+	}
+	return samples, rows.Err()
+}
+
 // SampleRows returns up to limit complete rows (all requested columns
 // together, in order), chosen at random across the whole table via `ORDER
 // BY RANDOM() LIMIT` rather than just the first rows — see SampleColumn's
