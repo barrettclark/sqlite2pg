@@ -96,9 +96,6 @@ func runRun(args []string) error {
 	if err := config.Save(result.Config, configPath); err != nil {
 		return err
 	}
-	if !*keepConfig {
-		defer os.Remove(configPath)
-	}
 	fmt.Printf("profiled %s: %d table(s), %d column(s) need review\n", sourcePath, len(result.Config.Tables), len(result.Unresolved))
 	warnSkippedTables(result.SkippedTables)
 	warnFilteredSystemTables(result.FilteredSystemTables)
@@ -136,7 +133,29 @@ func runRun(args []string) error {
 		return err
 	}
 
-	return executeLoad(cfg, connCfg, false, statePath)
+	loadErr := executeLoad(cfg, connCfg, false, statePath)
+	return cleanupConfigAfterLoad(loadErr, configPath, *keepConfig)
+}
+
+// cleanupConfigAfterLoad decides what becomes of a `run`-generated config
+// once the load step has run its course (issue #38). The config is only
+// ever removed after a load that actually succeeded — on any load error it
+// is left in place, independent of --keep-config, so a user who hits a
+// failure without having anticipated --keep-config up front can still
+// inspect what was decided or retry via `migrate load --resume` against the
+// surviving config and its state file. loadErr, when non-nil, is returned
+// unchanged so callers still see the real failure.
+func cleanupConfigAfterLoad(loadErr error, configPath string, keepConfig bool) error {
+	if loadErr != nil {
+		return loadErr
+	}
+	if keepConfig {
+		return nil
+	}
+	if err := os.Remove(configPath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing generated config %s: %w", configPath, err)
+	}
+	return nil
 }
 
 // --- profile ---------------------------------------------------------------
