@@ -339,6 +339,43 @@ func TestGolden_SampleUUIDs(t *testing.T) {
 	}
 }
 
+// TestGolden_SampleNumericText covers a real-world shape found via
+// dogfooding against a companies.db file: TEXT-declared columns storing
+// plain numeric values with no comma formatting at all (current_employees,
+// total_employees) or whole-number floats ("1998.0" for year_founded) —
+// comma_formatted_number only fires once it's seen at least one
+// comma-formatted value, so a column that never happens to use comma
+// formatting got no opinion and silently fell back to text.
+// postal_code is a negative control: "07030" has a meaningful leading
+// zero a numeric type would destroy on round-trip, so it must stay text.
+func TestGolden_SampleNumericText(t *testing.T) {
+	db, path := openFixture(t, "sample-numeric-text.sqlite")
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	targetType, source, _ := decisionFor(t, result, "company_demo", "year_founded")
+	if targetType != "integer" || source != "heuristic:numeric_text" {
+		t.Errorf("year_founded: expected integer via numeric_text, got %q via %q", targetType, source)
+	}
+
+	targetType, source, _ = decisionFor(t, result, "company_demo", "current_employees")
+	if targetType != "integer" || source != "heuristic:numeric_text" {
+		t.Errorf("current_employees: expected integer via numeric_text, got %q via %q", targetType, source)
+	}
+
+	targetType, source, _ = decisionFor(t, result, "company_demo", "total_employees")
+	if targetType != "integer" || source != "heuristic:numeric_text" {
+		t.Errorf("total_employees: expected integer via numeric_text, got %q via %q", targetType, source)
+	}
+
+	targetType, _, _ = decisionFor(t, result, "company_demo", "postal_code")
+	if targetType != "text" {
+		t.Errorf("postal_code: expected numeric_text to leave a meaningful-leading-zero column alone, got %q", targetType)
+	}
+}
+
 // TestGolden_SampleVarchar covers issue #7: preserving a declared
 // VARCHAR(N) length where it looks intentional. customer_demo's two
 // VARCHAR columns have different declared lengths (45 vs 100) — real

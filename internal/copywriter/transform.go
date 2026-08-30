@@ -117,6 +117,37 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		}
 		return tm, nil
 
+	case "numeric_text_to_integer":
+		s, ok := raw.(string)
+		if !ok {
+			return raw, nil
+		}
+		if s == "" {
+			// Matches the numeric_text heuristic's own leniency: an empty
+			// string is "no value on file," the same convention seen
+			// elsewhere (e.g. uuid_format), not a disqualifying non-number.
+			return nil, nil
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return nil, fmt.Errorf("numeric_text_to_integer: %q: %w", s, err)
+		}
+		return int64(f), nil
+
+	case "numeric_text_to_double":
+		s, ok := raw.(string)
+		if !ok {
+			return raw, nil
+		}
+		if s == "" {
+			return nil, nil
+		}
+		f, err := strconv.ParseFloat(s, 64)
+		if err != nil {
+			return nil, fmt.Errorf("numeric_text_to_double: %q: %w", s, err)
+		}
+		return f, nil
+
 	case "excel_serial_to_timestamptz":
 		f, ok := toFloat64(raw)
 		if !ok {

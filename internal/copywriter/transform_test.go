@@ -71,6 +71,62 @@ func TestTransform_UnixEpochMicros(t *testing.T) {
 	}
 }
 
+func TestTransform_NumericTextToInteger(t *testing.T) {
+	cases := []struct {
+		raw  string
+		want int64
+	}{
+		{"24", 24},
+		{"1998.0", 1998},
+		{"-5", -5},
+	}
+	for _, c := range cases {
+		got, err := Transform("numeric_text_to_integer", c.raw)
+		if err != nil {
+			t.Fatalf("Transform(%q): %v", c.raw, err)
+		}
+		if got != c.want {
+			t.Errorf("Transform(%q) = %v, want %d", c.raw, got, c.want)
+		}
+	}
+}
+
+func TestTransform_NumericTextToIntegerTreatsEmptyStringAsNull(t *testing.T) {
+	got, err := Transform("numeric_text_to_integer", "")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for an empty string, got %v", got)
+	}
+}
+
+func TestTransform_NumericTextToIntegerRejectsUnparseableValues(t *testing.T) {
+	if _, err := Transform("numeric_text_to_integer", "not-a-number"); err == nil {
+		t.Fatal("expected an error for an unparseable value")
+	}
+}
+
+func TestTransform_NumericTextToDouble(t *testing.T) {
+	got, err := Transform("numeric_text_to_double", "18.5")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != float64(18.5) {
+		t.Errorf("expected 18.5, got %v", got)
+	}
+}
+
+func TestTransform_NumericTextToDoubleTreatsEmptyStringAsNull(t *testing.T) {
+	got, err := Transform("numeric_text_to_double", "")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil for an empty string, got %v", got)
+	}
+}
+
 func TestTransform_ISO8601ToTimestamptz(t *testing.T) {
 	got, err := Transform("iso8601_to_timestamptz", "2026-08-14T18:01:38.401Z")
 	if err != nil {

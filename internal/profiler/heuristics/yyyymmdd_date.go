@@ -56,7 +56,15 @@ func (YYYYMMDDDate) Evaluate(meta profiler.ColumnMeta, samples []profiler.Value)
 	}
 	return profiler.Finding{
 		SuggestedType: "date",
-		Confidence:    0.9,
+		// Deliberately above numeric_text's 0.9: an 8-digit YYYYMMDD value
+		// ("20211015") is also a syntactically plain whole number, so a
+		// date-named column storing one gets a competing numeric_text
+		// finding too. This heuristic's date-name-plus-valid-calendar-date
+		// evidence is strictly more specific, and must win outright rather
+		// than tie and force review (real bug, caught by
+		// TestGolden_SampleDates: last_validation_date resolved to
+		// "integer" via numeric_text before this).
+		Confidence:    0.95,
 		Rationale:     "column name matches a date-like pattern and every sampled value is a valid 8-digit YYYYMMDD date",
 		TransformExpr: "yyyymmdd_to_date",
 	}, true
