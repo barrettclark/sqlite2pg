@@ -6,6 +6,7 @@ interactive terminal UI for reviewing ambiguous type decisions.
 
 Sample databases the test suite exercises live in `testdata/fixtures/`
 within this project, so the tests don't depend on anything outside the repo.
+See `testdata/fixtures/README.md` for where they came from.
 
 ## Why
 
