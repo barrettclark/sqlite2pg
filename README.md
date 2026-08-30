@@ -104,12 +104,27 @@ unit tests and no I/O.
 
 ## Known limitation: sampling can miss rare rows
 
-Type decisions are made from a bounded sample (`--sample-size`, default 500),
+Type decisions start from a bounded sample (`--sample-size`, default 500),
 not a full table scan. A rare edge-case value that falls outside the sample
-(e.g. a single aggregate/catch-all row) can be missed at profiling time and
-then fail during the actual COPY, which reads every row. For small tables,
-pass a `--sample-size` at or above the row count. This surfaced for real
-during development — see `internal/pipeline/integration_test.go`'s comment on
+(e.g. a single aggregate/catch-all row) can look fine at profiling time —
+but before any such decision is auto-approved, it's re-verified by running
+the real transform against *every* row in the full table, not just the
+sample. A value the sample never saw that would break the transform (or
+that overflows the target column's numeric range, or would NULL out a
+primary-key column) drops the column's confidence and routes it to human
+review instead of silently reaching COPY. This closed the original gap
+for auto-approved decisions — see `internal/pipeline/verify_transform.go`.
+
+What full-table verification does *not* catch: a decision a human
+explicitly reviews and approves is taken on trust, since review is the
+whole point of that gate. And a transform that can never itself return an
+error (a bare pass-through) only catches what its underlying validity
+check covers — e.g. `text_to_jsonb` verifies well-formed JSON, but a
+transform with no such check of its own has nothing for the full-table
+pass to catch. For small tables, passing a `--sample-size` at or above the
+row count still avoids the sample/full-table distinction entirely. This
+surfaced for real during development — see
+`internal/pipeline/integration_test.go`'s comment on
 `DisabilityCompByCounty.db`.
 
 ## Testing
