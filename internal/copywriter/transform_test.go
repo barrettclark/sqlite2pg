@@ -141,6 +141,29 @@ func TestTransform_ISO8601ToTimestamptz(t *testing.T) {
 	}
 }
 
+func TestTransform_ISO8601ToDate(t *testing.T) {
+	cases := []string{"1953-09-02", "1996-01-02 00:00:00"}
+	for _, raw := range cases {
+		got, err := Transform("iso8601_to_date", raw)
+		if err != nil {
+			t.Fatalf("Transform(%q): %v", raw, err)
+		}
+		tm, ok := got.(time.Time)
+		if !ok {
+			t.Fatalf("expected time.Time, got %T", got)
+		}
+		if tm.Hour() != 0 || tm.Minute() != 0 || tm.Second() != 0 || tm.Nanosecond() != 0 {
+			t.Errorf("expected midnight time-of-day, got %v", tm)
+		}
+	}
+}
+
+func TestTransform_ISO8601ToDateRejectsUnparseableValues(t *testing.T) {
+	if _, err := Transform("iso8601_to_date", "not a date"); err == nil {
+		t.Error("expected an error for an unparseable string")
+	}
+}
+
 func TestTransform_UUIDFormat(t *testing.T) {
 	got, err := Transform("uuid_format", "90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10")
 	if err != nil {

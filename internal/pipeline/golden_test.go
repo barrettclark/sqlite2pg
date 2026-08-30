@@ -287,9 +287,12 @@ func TestGolden_SampleDates(t *testing.T) {
 	// The remaining columns cover issue #2's date/time coverage gaps:
 	// month-name dates, day-first (D/M/YYYY) dates, Excel/Access serial
 	// dates, and epoch timestamps in milliseconds/microseconds.
+	// month_name_date's values ("Sep 27, 2021") carry no time-of-day
+	// component at all, so per issue #14 this now resolves to date rather
+	// than timestamptz.
 	targetType, source, _ = decisionFor(t, result, "date_demo", "month_name_date")
-	if targetType != "timestamptz" || source != "heuristic:iso8601_timestamp" {
-		t.Errorf("month_name_date: expected timestamptz via iso8601_timestamp, got %q via %q", targetType, source)
+	if targetType != "date" || source != "heuristic:iso8601_timestamp" {
+		t.Errorf("month_name_date: expected date via iso8601_timestamp, got %q via %q", targetType, source)
 	}
 
 	targetType, source, _ = decisionFor(t, result, "date_demo", "day_first_date")
@@ -310,6 +313,25 @@ func TestGolden_SampleDates(t *testing.T) {
 	targetType, source, _ = decisionFor(t, result, "date_demo", "epoch_micros_at")
 	if targetType != "timestamptz" || source != "heuristic:unix_epoch_micros" {
 		t.Errorf("epoch_micros_at: expected timestamptz via unix_epoch_micros, got %q via %q", targetType, source)
+	}
+
+	// Issue #14: a DATE-declared column holding plain "YYYY-MM-DD" values
+	// (real example: employee.db's birth_date/hire_date) must resolve to
+	// date, not timestamptz — targeting timestamptz and assuming UTC
+	// midnight silently shifts the calendar date back a day in any
+	// non-UTC session.
+	targetType, source, _ = decisionFor(t, result, "date_demo", "birth_date_only")
+	if targetType != "date" || source != "heuristic:iso8601_timestamp" {
+		t.Errorf("birth_date_only: expected date via iso8601_timestamp, got %q via %q", targetType, source)
+	}
+
+	// Issue #14: a full timestamp string that is midnight-only across
+	// every sample (real example: neh-grants.db's BeginGrant/CouncilDate/
+	// EndGrant, "4/1/2006 12:00:00 AM") is functionally date-only and must
+	// also resolve to date.
+	targetType, source, _ = decisionFor(t, result, "date_demo", "midnight_timestamp")
+	if targetType != "date" || source != "heuristic:iso8601_timestamp" {
+		t.Errorf("midnight_timestamp: expected date via iso8601_timestamp, got %q via %q", targetType, source)
 	}
 }
 

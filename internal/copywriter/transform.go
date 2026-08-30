@@ -89,6 +89,24 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		}
 		return nil, fmt.Errorf("iso8601_to_timestamptz: cannot parse %q", s)
 
+	case "iso8601_to_date":
+		s, ok := raw.(string)
+		if !ok {
+			return raw, nil
+		}
+		// Shares profiler.ParseTimestamp with the iso8601_timestamp
+		// heuristic that assigns this transform when every sampled value's
+		// time-of-day is midnight (issue #14) — same reasoning as
+		// iso8601_to_timestamptz: a format the heuristic accepts must
+		// always be one this transform can convert. The time-of-day is
+		// discarded rather than carried through to a timestamptz, since
+		// the whole point of targeting date here is that there is no real
+		// time-of-day to represent.
+		if tm, ok := profiler.ParseTimestamp(s); ok {
+			return time.Date(tm.Year(), tm.Month(), tm.Day(), 0, 0, 0, 0, time.UTC), nil
+		}
+		return nil, fmt.Errorf("iso8601_to_date: cannot parse %q", s)
+
 	case "int_to_bool":
 		n, ok := toInt64(raw)
 		if !ok {
