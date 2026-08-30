@@ -51,6 +51,35 @@ func TestTransform_StripCommas(t *testing.T) {
 	}
 }
 
+func TestTransform_StripCommasFloat(t *testing.T) {
+	got, err := Transform("strip_commas_float", "1,234.56")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != float64(1234.56) {
+		t.Errorf("expected 1234.56, got %v (%T)", got, got)
+	}
+}
+
+func TestTransform_StripCommasFloat_RejectsUnparsable(t *testing.T) {
+	_, err := Transform("strip_commas_float", "1,234.56.78")
+	if err == nil {
+		t.Fatal("expected an error for a value that isn't a parsable float")
+	}
+}
+
+func TestTransform_StripCommas_ErrorsOnDecimal(t *testing.T) {
+	// Issue #23: strip_commas is only ever meant to run against
+	// comma-formatted whole numbers now that comma_number targets
+	// strip_commas_float for anything with a fractional part — this pins
+	// down that strip_commas itself still can't parse a decimal, so a
+	// misrouted value fails loudly rather than silently truncating.
+	_, err := Transform("strip_commas", "1,234.56")
+	if err == nil {
+		t.Fatal("expected an error: strip_commas can't parse a decimal point")
+	}
+}
+
 func TestTransform_UnixEpochSeconds(t *testing.T) {
 	got, err := Transform("unix_epoch_seconds", int64(1620000000))
 	if err != nil {

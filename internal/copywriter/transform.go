@@ -58,6 +58,17 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		}
 		return n, nil
 
+	case "strip_commas_float":
+		s, ok := raw.(string)
+		if !ok {
+			return raw, nil
+		}
+		f, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", ""), 64)
+		if err != nil {
+			return nil, fmt.Errorf("strip_commas_float: %q: %w", s, err)
+		}
+		return f, nil
+
 	case "unix_epoch_seconds":
 		sec, ok := toInt64(raw)
 		if !ok {

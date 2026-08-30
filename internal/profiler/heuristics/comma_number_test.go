@@ -29,6 +29,24 @@ func TestCommaNumber_DetectsCommaFormattedIntegers(t *testing.T) {
 	}
 }
 
+func TestCommaNumber_TargetsDoublePrecisionWhenSampleHasFraction(t *testing.T) {
+	h := CommaNumber{}
+	samples := []profiler.Value{"1,234.56", "2,500.00", "500", nil}
+	finding, ok := h.Evaluate(profiler.ColumnMeta{}, samples)
+	if !ok {
+		t.Fatal("expected a finding for comma-formatted numbers with a fractional part")
+	}
+	if finding.SuggestedType != "double precision" {
+		t.Errorf("expected suggested type double precision, got %q", finding.SuggestedType)
+	}
+	if finding.TransformExpr != "strip_commas_float" {
+		t.Errorf("expected transform strip_commas_float, got %q", finding.TransformExpr)
+	}
+	if finding.Confidence < 0.9 {
+		t.Errorf("expected high confidence, got %f", finding.Confidence)
+	}
+}
+
 func TestCommaNumber_NoOpinionWhenNoCommasPresent(t *testing.T) {
 	h := CommaNumber{}
 	samples := []profiler.Value{"500", "12", int64(3)}
