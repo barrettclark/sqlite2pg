@@ -303,6 +303,30 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 // sawFraction check — so a value containing a decimal point is only valid
 // here when everything after the point is zeros; that suffix is trimmed
 // before the exact integer parse, never fed through ParseFloat.
+// FitsRange reports whether n fits the Postgres integer type targetType
+// names ("smallint"/int2, "integer"/int4, "bigint"/int8) — any int64
+// always fits "bigint" since that's exactly int64's own range. Every other
+// targetType reports true: this is only meaningful for the three integer
+// types, and callers that don't yet know a value is integer-shaped (or are
+// checking a non-integer target) have nothing for this to say. Shared by
+// the TUI type picker (internal/tui/logic.go, issue #27 — offering
+// "smallint" for a value outside int2's range let the picker promise a
+// type the real COPY would then reject) and by
+// verifyTransformAgainstFullTable's fitsTargetType (internal/pipeline/
+// verify_transform.go, issue #15's originally int4-only range check).
+func FitsRange(n int64, targetType string) bool {
+	switch targetType {
+	case "smallint":
+		return n >= math.MinInt16 && n <= math.MaxInt16
+	case "integer":
+		return n >= math.MinInt32 && n <= math.MaxInt32
+	case "bigint":
+		return true
+	default:
+		return true
+	}
+}
+
 func parseWholeNumberText(s string) (int64, error) {
 	intPart := s
 	if i := strings.IndexByte(s, '.'); i >= 0 {

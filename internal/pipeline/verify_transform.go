@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"math"
 
 	"sqlite2pg/internal/copywriter"
 	"sqlite2pg/internal/profiler"
@@ -67,21 +66,20 @@ func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform, targe
 }
 
 // fitsTargetType reports whether a value a transform produced actually
-// fits the Postgres target column type — currently only "integer" (int4)
-// has a narrower range than the int64 a transform like
-// numeric_text_to_integer naturally produces, so this only range-checks
-// that case; every other target type is left to the transform's own
+// fits the Postgres target column type — "smallint" (int2), "integer"
+// (int4), and "bigint" (int8) all have a range narrower than (or, for
+// bigint, exactly matching) the int64 a transform like
+// numeric_text_to_integer naturally produces, so this range-checks those
+// three cases via copywriter.FitsRange (issue #27 extended this beyond
+// integer-only); every other target type is left to the transform's own
 // error handling.
 func fitsTargetType(val any, targetType string) bool {
-	if targetType != "integer" {
-		return true
-	}
 	n, ok := asInt64(val)
 	if !ok {
 		// Not an integer-shaped value at all; nothing for this check to say.
 		return true
 	}
-	return n >= math.MinInt32 && n <= math.MaxInt32
+	return copywriter.FitsRange(n, targetType)
 }
 
 func asInt64(v any) (int64, bool) {

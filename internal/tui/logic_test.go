@@ -234,6 +234,113 @@ func TestNextFlaggedColumn_EmptyListReturnsNotOK(t *testing.T) {
 	}
 }
 
+func TestValidTypesForColumn_OffersTimestamptzForAPlausibleUnixEpochValueNotAlreadyTimestamptz(t *testing.T) {
+	// bikes.last_reported's raw value (issue #27): a plausible Unix epoch
+	// seconds integer. currentType is deliberately "integer", not
+	// "timestamptz", to prove timestamptz is offered because
+	// unix_epoch_seconds actually converts it — not merely because it
+	// happens to already be the column's current type (the bug: the old
+	// implementation ran the raw text through date-string parsing
+	// directly, which 1712345678 could never pass, so timestamptz was
+	// missing from the picker for any column that didn't already have it
+	// as its current type).
+	values := []string{"1712345678"}
+	got := validTypesForColumn(values, "integer")
+	found := false
+	for _, typ := range got {
+		if typ == "timestamptz" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("expected timestamptz to be offered for a plausible Unix epoch value, got %v", got)
+	}
+}
+
+func TestValidTypesForColumn_DoesNotOfferTimestamptzForOrdinarySmallIntegers(t *testing.T) {
+	// Guards against the naive fix of just running every integer through
+	// unix_epoch_seconds unconditionally: an ordinary small integer (e.g.
+	// a count) is not remotely epoch-shaped and must not "validate" as
+	// timestamptz just because Transform happens not to error on it.
+	values := []string{"12", "34", "0"}
+	got := validTypesForColumn(values, "integer")
+	for _, typ := range got {
+		if typ == "timestamptz" || typ == "date" {
+			t.Errorf("did not expect %q to be offered for ordinary small integers, got %v", typ, got)
+		}
+	}
+}
+
+func TestPreviewValueForType_TimestamptzViaUnixEpochSecondsTransform(t *testing.T) {
+	display, valid := previewValueForType("1712345678", "timestamptz")
+	if !valid {
+		t.Fatal("expected 1712345678 to be valid as timestamptz via unix_epoch_seconds")
+	}
+	want := "2024-04-05T19:34:38Z"
+	if display != want {
+		t.Errorf("previewValueForType(1712345678, timestamptz) display = %q, want %q", display, want)
+	}
+}
+
+func TestValidTypesForColumn_ExcludesSmallintForOutOfRangeValues(t *testing.T) {
+	// 70000 is outside int2's range (-32768..32767); offering smallint
+	// here would let the picker promise a type the real COPY then rejects
+	// with "value out of range for type smallint" (issue #27).
+	values := []string{"70000"}
+	got := validTypesForColumn(values, "integer")
+	for _, typ := range got {
+		if typ == "smallint" {
+			t.Errorf("did not expect smallint to be offered for out-of-range value 70000, got %v", got)
+		}
+	}
+	for _, want := range []string{"integer", "bigint"} {
+		found := false
+		for _, typ := range got {
+			if typ == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected %q still offered for 70000, got %v", want, got)
+		}
+	}
+}
+
+func TestPreviewValueForType_SmallintRangeCheck(t *testing.T) {
+	cases := []struct {
+		value     string
+		wantValid bool
+	}{
+		{"70000", false},
+		{"32767", true},
+		{"-32768", true},
+		{"-32769", false},
+	}
+	for _, c := range cases {
+		_, valid := previewValueForType(c.value, "smallint")
+		if valid != c.wantValid {
+			t.Errorf("previewValueForType(%q, \"smallint\") valid = %v, want %v", c.value, valid, c.wantValid)
+		}
+	}
+}
+
+func TestPreviewValueForType_IntegerRangeCheck(t *testing.T) {
+	cases := []struct {
+		value     string
+		wantValid bool
+	}{
+		{"2147483648", false}, // math.MaxInt32 + 1
+		{"2147483647", true},
+		{"-2147483648", true},
+	}
+	for _, c := range cases {
+		_, valid := previewValueForType(c.value, "integer")
+		if valid != c.wantValid {
+			t.Errorf("previewValueForType(%q, \"integer\") valid = %v, want %v", c.value, valid, c.wantValid)
+		}
+	}
+}
+
 func TestValidTypesForColumn_AlwaysIncludesCurrentTypeEvenIfInvalid(t *testing.T) {
 	values := []string{"not-a-number-at-all"}
 	got := validTypesForColumn(values, "integer")

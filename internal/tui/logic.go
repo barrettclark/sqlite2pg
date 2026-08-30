@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"sqlite2pg/internal/copywriter"
 	"sqlite2pg/internal/review"
 )
 
@@ -27,6 +28,97 @@ var dateLayouts = []string{
 // copy since that package is internal to the profiler and not meant to be
 // imported for a display-only check here.
 var uuidPattern = regexp.MustCompile(`^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$`)
+
+// epoch/day-number plausibility bounds mirror the same-named heuristics in
+// internal/profiler/heuristics (unix_epoch.go, unix_epoch_millis.go,
+// unix_epoch_micros.go, excel_serial_date.go, julian_day.go) — kept as
+// local copies for the same reason uuidPattern above is: that package is
+// internal to the profiler and isn't meant to be imported for a
+// display-only check here.
+//
+// Without these bounds, feeding a raw value straight through
+// copywriter.Transform's numeric date transforms would "succeed" for
+// nearly any integer or float — unix_epoch_seconds converts ANY int64 into
+// *some* time.Time with no error, so an ordinary small integer like "12"
+// would validate as timestamptz just as readily as a genuine epoch value.
+// dateTransformPreview below applies the same real-world-magnitude check
+// the assigning heuristic itself requires before it would ever suggest
+// that transform, so previewValueForType only credits a transform when the
+// raw value actually looks like its target shape.
+const (
+	epochSecondsMin = 946684800
+	epochSecondsMax = 2051222400
+	epochMillisMin  = epochSecondsMin * 1000
+	epochMillisMax  = epochSecondsMax * 1000
+	epochMicrosMin  = epochSecondsMin * 1000000
+	epochMicrosMax  = epochSecondsMax * 1000000
+	excelSerialMin  = 36526
+	excelSerialMax  = 49310
+	julianDayMin    = 1721425.5
+	julianDayMax    = 2816787.5
+)
+
+// timeFromTransform runs raw through copywriter.Transform under the named
+// transform — the exact function the real COPY would use — and reports
+// the resulting time.Time, or ok=false if the transform errored or (for
+// e.g. a mis-plumbed transform) didn't produce a time.Time at all.
+func timeFromTransform(transform string, raw any) (time.Time, bool) {
+	result, err := copywriter.Transform(transform, raw)
+	if err != nil {
+		return time.Time{}, false
+	}
+	tm, ok := result.(time.Time)
+	return tm, ok
+}
+
+// dateTransformPreview reports whether value would convert to a real date
+// or timestamp under any transform a profiler heuristic could plausibly
+// have assigned it — by actually running it through copywriter.Transform,
+// not by re-deriving date-string parsing here (issue #27: this is what
+// lets a Unix epoch integer like bikes.last_reported's raw 1712345678
+// validate as timestamptz even when timestamptz isn't already the
+// column's current type). Each purely-numeric transform is only tried
+// when value's magnitude falls in that transform's own real-world
+// plausibility window, so an ordinary small integer or float doesn't
+// "convert" its way into looking like a date.
+func dateTransformPreview(value string) (time.Time, bool) {
+	if n, err := strconv.ParseInt(value, 10, 64); err == nil {
+		switch {
+		case n >= epochSecondsMin && n <= epochSecondsMax:
+			if tm, ok := timeFromTransform("unix_epoch_seconds", n); ok {
+				return tm, true
+			}
+		case n >= epochMillisMin && n <= epochMillisMax:
+			if tm, ok := timeFromTransform("unix_epoch_millis", n); ok {
+				return tm, true
+			}
+		case n >= epochMicrosMin && n <= epochMicrosMax:
+			if tm, ok := timeFromTransform("unix_epoch_micros", n); ok {
+				return tm, true
+			}
+		}
+	}
+	if f, err := strconv.ParseFloat(value, 64); err == nil {
+		switch {
+		case f >= excelSerialMin && f <= excelSerialMax:
+			if tm, ok := timeFromTransform("excel_serial_to_timestamptz", f); ok {
+				return tm, true
+			}
+		case f >= julianDayMin && f <= julianDayMax:
+			if tm, ok := timeFromTransform("julian_day_to_date", f); ok {
+				return tm, true
+			}
+		}
+	}
+	// String-shaped transforms are self-limiting (time.Parse against a
+	// fixed layout), so no extra plausibility window is needed for these.
+	for _, transform := range []string{"iso8601_to_timestamptz", "iso8601_to_date", "dayfirst_to_timestamptz", "yyyymmdd_to_date"} {
+		if tm, ok := timeFromTransform(transform, value); ok {
+			return tm, true
+		}
+	}
+	return time.Time{}, false
+}
 
 // findTable returns name's TableView from summary, or a zero-value
 // TableView if not found.
@@ -63,15 +155,23 @@ func columnSampleValues(tv review.TableView, columnName string) []string {
 
 // previewValueForType returns what value would look like under targetType:
 // for numeric target types, the actual coerced number (truncated for
-// integer types, decimal-formatted for floating-point types) rather than a
-// bare valid/invalid flag, so a human can see e.g. what "3.7" becomes under
-// "integer" or what "3" becomes under "double precision". For non-numeric
-// target types it falls back to a validity check — whether the raw text
-// would parse as that Postgres type with no transform applied — since
-// there's no meaningful "conversion" to preview for e.g. a UUID string
-// under "boolean". "NULL" (the preview grid's placeholder for a nil value)
-// always displays as-is and is always valid, since NULL is valid for any
-// nullable column.
+// integer types, decimal-formatted for floating-point types, and
+// range-checked against copywriter.FitsRange for smallint/integer/bigint —
+// issue #27) rather than a bare valid/invalid flag, so a human can see
+// e.g. what "3.7" becomes under "integer" or what "3" becomes under
+// "double precision". "date"/"timestamptz" likewise preview the real
+// converted timestamp whenever some transform a profiler heuristic could
+// plausibly have assigned (dateTransformPreview) actually converts value,
+// not just when value is already a recognized date string — sharing
+// copywriter.Transform rather than re-deriving date-string parsing here is
+// what lets a Unix epoch integer validate as timestamptz even when
+// timestamptz isn't already the column's current type. For every other
+// non-numeric target type it falls back to a validity check — whether the
+// raw text would parse as that Postgres type with no transform applied —
+// since there's no meaningful "conversion" to preview for e.g. a UUID
+// string under "boolean". "NULL" (the preview grid's placeholder for a nil
+// value) always displays as-is and is always valid, since NULL is valid
+// for any nullable column.
 func previewValueForType(value, targetType string) (display string, valid bool) {
 	if value == "NULL" {
 		return value, true
@@ -82,7 +182,15 @@ func previewValueForType(value, targetType string) (display string, valid bool) 
 		if err != nil {
 			return value, false
 		}
-		return strconv.FormatInt(int64(f), 10), true
+		n := int64(f)
+		if !copywriter.FitsRange(n, targetType) {
+			// e.g. 70000 parses fine as a number but is outside
+			// smallint's (int2) range — offering smallint here would
+			// let the picker promise a type the real COPY then rejects
+			// with "value out of range for type smallint" (issue #27).
+			return value, false
+		}
+		return strconv.FormatInt(n, 10), true
 	case "real", "double precision", "numeric":
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil {
@@ -104,6 +212,12 @@ func previewValueForType(value, targetType string) (display string, valid bool) 
 			if _, err := time.Parse(layout, value); err == nil {
 				return value, true
 			}
+		}
+		if tm, ok := dateTransformPreview(value); ok {
+			if targetType == "date" {
+				return tm.Format("2006-01-02"), true
+			}
+			return tm.Format(time.RFC3339), true
 		}
 		return value, false
 	case "uuid":
