@@ -249,6 +249,9 @@ func runLoad(args []string) error {
 		for _, reason := range skipped {
 			fmt.Fprintf(os.Stderr, "skipping foreign key: %s\n", reason)
 		}
+		for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
+			fmt.Println(stmt)
+		}
 		return nil
 	}
 
@@ -352,6 +355,16 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	for _, stmt := range statements {
 		if _, err := conn.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("adding foreign key: %w", err)
+		}
+	}
+
+	// Postgres doesn't auto-index foreign keys the way some other
+	// databases do, and an index on every FK column is well-established
+	// best practice with no real downside — added right after the
+	// constraints themselves, once every FK is known to be valid.
+	for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
+		if _, err := conn.Exec(ctx, stmt); err != nil {
+			return fmt.Errorf("adding foreign key index: %w", err)
 		}
 	}
 
