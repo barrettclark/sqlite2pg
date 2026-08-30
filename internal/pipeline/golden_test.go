@@ -338,3 +338,41 @@ func TestGolden_SampleUUIDs(t *testing.T) {
 		t.Errorf("label: expected the uuid_format heuristic to leave a plain string column alone, got %q via %q", targetType, source)
 	}
 }
+
+// TestGolden_SampleVarchar covers issue #7: preserving a declared
+// VARCHAR(N) length where it looks intentional. customer_demo's two
+// VARCHAR columns have different declared lengths (45 vs 100) — real
+// MySQL-origin schema shape — so both should be suggested as varchar(N),
+// flagged for review. widget_demo's two VARCHAR columns share the same
+// declared length (8000) — the hallmark of a mechanical export default —
+// so both should fall back to plain text, unflagged.
+func TestGolden_SampleVarchar(t *testing.T) {
+	db, path := openFixture(t, "sample-varchar.sqlite")
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	targetType, source, reviewed := decisionFor(t, result, "customer_demo", "first_name")
+	if targetType != "varchar(45)" || source != "heuristic:varchar_length_preservation" {
+		t.Errorf("first_name: expected varchar(45) via varchar_length_preservation, got %q via %q", targetType, source)
+	}
+	if reviewed {
+		t.Error("first_name: expected to be flagged for review, not auto-applied")
+	}
+
+	targetType, source, _ = decisionFor(t, result, "customer_demo", "city")
+	if targetType != "varchar(100)" || source != "heuristic:varchar_length_preservation" {
+		t.Errorf("city: expected varchar(100) via varchar_length_preservation, got %q via %q", targetType, source)
+	}
+
+	targetType, _, _ = decisionFor(t, result, "widget_demo", "name")
+	if targetType != "text" {
+		t.Errorf("name: expected a uniform VARCHAR length across the table to fall back to text, got %q", targetType)
+	}
+
+	targetType, _, _ = decisionFor(t, result, "widget_demo", "description")
+	if targetType != "text" {
+		t.Errorf("description: expected a uniform VARCHAR length across the table to fall back to text, got %q", targetType)
+	}
+}

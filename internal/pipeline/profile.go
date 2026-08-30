@@ -8,6 +8,8 @@ import (
 	"database/sql"
 	"fmt"
 	"math"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -108,11 +110,16 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 			}
 		}
 
+		varcharLens := varcharSuggestions(table.Columns)
+
 		for i, col := range table.Columns {
 			tc.ColumnOrder = append(tc.ColumnOrder, col.Name)
 			meta := profiler.ColumnMeta{Table: table.Name, Name: col.Name, DeclaredType: col.DeclaredType}
 			samples := columnSamples[i]
 			findings := profiler.Default.ProfileColumn(meta, samples)
+			if n, ok := varcharLens[col.Name]; ok {
+				findings = append(findings, varcharFinding(n))
+			}
 
 			var cc config.ColumnConfig
 			if len(findings) == 0 {
@@ -267,6 +274,67 @@ func fallbackTypeFor(declared string, samples []profiler.Value) string {
 		return "text"
 	default:
 		return fallbackTypeFromDeclared(declared)
+	}
+}
+
+// varcharLengthPattern matches a declared VARCHAR(N) type exactly (SQLite
+// happily accepts extra tokens on a declared type, but the specific
+// "VARCHAR(N)" shape is what MySQL-origin schema exports, the case this
+// feature targets, actually produce).
+var varcharLengthPattern = regexp.MustCompile(`(?i)^\s*VARCHAR\s*\(\s*(\d+)\s*\)\s*$`)
+
+// varcharLength parses a VARCHAR(N) declared type, reporting false for
+// anything else (bare VARCHAR, TEXT, CHARACTER, or a non-matching shape).
+func varcharLength(declared string) (int, bool) {
+	m := varcharLengthPattern.FindStringSubmatch(declared)
+	if m == nil {
+		return 0, false
+	}
+	n, err := strconv.Atoi(m[1])
+	if err != nil {
+		return 0, false
+	}
+	return n, true
+}
+
+// varcharSuggestions returns, for every VARCHAR(N)-declared column in
+// columns, its N — but only when this table's VARCHAR columns don't all
+// share the same N. A shared length across every VARCHAR column in a
+// table is the hallmark of a mechanical export default (the same
+// VARCHAR(8000) stamped on every text column regardless of content); a
+// table whose VARCHAR lengths actually vary looks like a real,
+// deliberately-sized schema (e.g. VARCHAR(45) alongside VARCHAR(100), a
+// genuine MySQL-origin export) worth suggesting as varchar(N) rather than
+// defaulting to text. SQLite never enforces these lengths either way, so
+// this is a suggestion for human review (see varcharFinding), never
+// auto-applied.
+func varcharSuggestions(columns []sqlitereader.ColumnInfo) map[string]int {
+	lengths := map[string]int{}
+	distinct := map[int]bool{}
+	for _, col := range columns {
+		if n, ok := varcharLength(col.DeclaredType); ok {
+			lengths[col.Name] = n
+			distinct[n] = true
+		}
+	}
+	if len(distinct) <= 1 {
+		return nil
+	}
+	return lengths
+}
+
+// varcharFinding builds the Finding that gets a VARCHAR(N) column
+// suggested as varchar(N) instead of text. Its confidence is deliberately
+// held below any normal auto-approve threshold — this issue (#7) requires
+// a human confirm the length looks real before it's carried into the
+// target schema, since a wrong carried-over length risks a load failure
+// text would never have.
+func varcharFinding(n int) profiler.Finding {
+	return profiler.Finding{
+		SuggestedType: fmt.Sprintf("varchar(%d)", n),
+		Confidence:    0.5,
+		Rationale:     fmt.Sprintf("declared VARCHAR(%d), and this table's VARCHAR column lengths vary rather than sharing one blanket value — the length looks like a real constraint, but SQLite never enforced it, so confirm before keeping it", n),
+		Heuristic:     "varchar_length_preservation",
 	}
 }
 

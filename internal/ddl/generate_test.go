@@ -34,6 +34,23 @@ func TestGenerateCreateTable_EmitsColumnsInDeclaredOrder(t *testing.T) {
 	}
 }
 
+func TestGenerateCreateTable_EmitsParameterizedVarcharTypeVerbatim(t *testing.T) {
+	// varchar(N) suggestions (issue #7) are just another TargetType string
+	// — no special-cased DDL handling needed, the same as any other type.
+	tc := config.TableConfig{
+		ColumnOrder: []string{"first_name"},
+		Columns: map[string]config.ColumnConfig{
+			"first_name": {TargetType: "varchar(45)"},
+		},
+	}
+
+	ddl := GenerateCreateTable("customers", tc)
+
+	if !strings.Contains(ddl, `"first_name" varchar(45)`) {
+		t.Errorf("expected first_name varchar(45) column definition, got:\n%s", ddl)
+	}
+}
+
 func TestGenerateCreateTable_EmitsInlinePrimaryKey(t *testing.T) {
 	tc := config.TableConfig{
 		ColumnOrder: []string{"station_id", "num_bikes_available"},

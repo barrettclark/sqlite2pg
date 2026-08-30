@@ -99,6 +99,86 @@ func TestProfileDatabase_FlagsAmbiguousBooleanColumnAsUnresolved(t *testing.T) {
 // — virtually certain to require the rescue query this test is really
 // checking for. (Confirmed by temporarily reverting the rescue and
 // re-running: it failed, as expected, before being restored.)
+func TestProfileDatabase_FlagsVaryingVARCHARLengthsAsAReviewableSuggestion(t *testing.T) {
+	// first_name VARCHAR(45) and city VARCHAR(100) don't share a length —
+	// evidence the lengths were chosen deliberately (real MySQL-origin
+	// schema), not one mechanical export default applied to every text
+	// column. Each should be suggested as varchar(N), flagged for review
+	// rather than auto-applied.
+	db, path := openTestDB(t, `
+		CREATE TABLE customers (
+			id INTEGER PRIMARY KEY,
+			first_name VARCHAR(45),
+			city VARCHAR(100)
+		);
+	`)
+	for i := 0; i < 5; i++ {
+		db.Exec(`INSERT INTO customers (first_name, city) VALUES (?, ?)`, "Alex", "Springfield")
+	}
+
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	customers := result.Config.Tables["customers"]
+
+	firstName := customers.Columns["first_name"]
+	if firstName.TargetType != "varchar(45)" {
+		t.Errorf("expected first_name suggested as varchar(45), got %q", firstName.TargetType)
+	}
+	if firstName.Reviewed {
+		t.Error("expected first_name to be flagged for review, not auto-applied")
+	}
+
+	city := customers.Columns["city"]
+	if city.TargetType != "varchar(100)" {
+		t.Errorf("expected city suggested as varchar(100), got %q", city.TargetType)
+	}
+
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Table == "customers" && u.Column == "first_name" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected first_name to appear in Unresolved")
+	}
+}
+
+func TestProfileDatabase_TreatsUniformVARCHARLengthAcrossATableAsAMechanicalDefault(t *testing.T) {
+	// Every VARCHAR column in this table shares the same length — the
+	// hallmark of a blanket export default (e.g. every text column
+	// declared VARCHAR(8000) regardless of content), not a real
+	// constraint. Both columns should fall back to text, unflagged.
+	db, path := openTestDB(t, `
+		CREATE TABLE widgets (
+			id INTEGER PRIMARY KEY,
+			name VARCHAR(8000),
+			description VARCHAR(8000)
+		);
+	`)
+	for i := 0; i < 5; i++ {
+		db.Exec(`INSERT INTO widgets (name, description) VALUES (?, ?)`, "Widget", "A widget")
+	}
+
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	widgets := result.Config.Tables["widgets"]
+	name := widgets.Columns["name"]
+	if name.TargetType != "text" {
+		t.Errorf("expected name to fall back to text, got %q", name.TargetType)
+	}
+	description := widgets.Columns["description"]
+	if description.TargetType != "text" {
+		t.Errorf("expected description to fall back to text, got %q", description.TargetType)
+	}
+}
+
 func TestProfileDatabase_RescuesASparseColumnMissedByRandomSampling(t *testing.T) {
 	db, path := openTestDB(t, `
 		CREATE TABLE registry (
