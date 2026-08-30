@@ -123,14 +123,36 @@ func ReadForeignKeys(db *sql.DB, table string) ([]ForeignKeyInfo, error) {
 
 	byID := map[int]*ForeignKeyInfo{}
 	var order []int
+	// refPKCache memoizes each referenced table's primary key column name,
+	// looked up only when an implicit (column-list-less) REFERENCES clause
+	// needs it — most foreign keys declare their target column explicitly.
+	refPKCache := map[string]string{}
 	for rows.Next() {
 		var (
 			id, seq                     int
-			refTable, from, to          string
+			refTable, from              string
+			to                          sql.NullString
 			onUpdate, onDelete, matchOn string
 		)
 		if err := rows.Scan(&id, &seq, &refTable, &from, &to, &onUpdate, &onDelete, &matchOn); err != nil {
 			return nil, err
+		}
+		toCol := to.String
+		if !to.Valid {
+			// SQLite allows an implicit-column REFERENCES clause, which
+			// refers to the parent table's declared primary key rather
+			// than naming a column explicitly. PRAGMA foreign_key_list
+			// reports this case with a NULL "to" — resolve it ourselves.
+			pk, ok := refPKCache[refTable]
+			if !ok {
+				var err error
+				pk, err = primaryKeyColumn(db, refTable)
+				if err != nil {
+					return nil, fmt.Errorf("resolving implicit foreign key reference to %s: %w", refTable, err)
+				}
+				refPKCache[refTable] = pk
+			}
+			toCol = pk
 		}
 		fk, ok := byID[id]
 		if !ok {
@@ -139,7 +161,7 @@ func ReadForeignKeys(db *sql.DB, table string) ([]ForeignKeyInfo, error) {
 			order = append(order, id)
 		}
 		fk.Columns = append(fk.Columns, from)
-		fk.RefColumns = append(fk.RefColumns, to)
+		fk.RefColumns = append(fk.RefColumns, toCol)
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -150,4 +172,24 @@ func ReadForeignKeys(db *sql.DB, table string) ([]ForeignKeyInfo, error) {
 		fks = append(fks, *byID[id])
 	}
 	return fks, nil
+}
+
+// primaryKeyColumn returns table's single declared primary key column name,
+// for resolving an implicit-column REFERENCES clause. SQLite only permits
+// such a clause to target a table with exactly one primary key column.
+func primaryKeyColumn(db *sql.DB, table string) (string, error) {
+	cols, err := readColumns(db, table)
+	if err != nil {
+		return "", err
+	}
+	var pkCols []string
+	for _, c := range cols {
+		if c.PrimaryKeySeq > 0 {
+			pkCols = append(pkCols, c.Name)
+		}
+	}
+	if len(pkCols) != 1 {
+		return "", fmt.Errorf("table %s has %d primary key columns, expected exactly 1", table, len(pkCols))
+	}
+	return pkCols[0], nil
 }

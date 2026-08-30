@@ -148,6 +148,33 @@ func TestReadForeignKeys_GroupsCompositeForeignKeysByID(t *testing.T) {
 	}
 }
 
+func TestReadForeignKeys_ResolvesImplicitReferenceToParentPrimaryKey(t *testing.T) {
+	db := openTestDB(t, `
+		CREATE TABLE blob (rid INTEGER PRIMARY KEY);
+		CREATE TABLE delta (
+			srcid INTEGER NOT NULL REFERENCES blob
+		);
+	`)
+
+	fks, err := ReadForeignKeys(db, "delta")
+	if err != nil {
+		t.Fatalf("ReadForeignKeys: %v", err)
+	}
+	if len(fks) != 1 {
+		t.Fatalf("expected 1 foreign key, got %d: %+v", len(fks), fks)
+	}
+	fk := fks[0]
+	if fk.RefTable != "blob" {
+		t.Errorf("expected ref table blob, got %q", fk.RefTable)
+	}
+	if len(fk.Columns) != 1 || fk.Columns[0] != "srcid" {
+		t.Errorf("expected local column [srcid], got %v", fk.Columns)
+	}
+	if len(fk.RefColumns) != 1 || fk.RefColumns[0] != "rid" {
+		t.Errorf("expected ref column [rid] (resolved from blob's primary key), got %v", fk.RefColumns)
+	}
+}
+
 func TestReadForeignKeys_ReturnsEmptyForTableWithNoForeignKeys(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE standalone (id INTEGER PRIMARY KEY);`)
 	fks, err := ReadForeignKeys(db, "standalone")

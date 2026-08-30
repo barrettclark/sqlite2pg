@@ -386,6 +386,38 @@ func TestGolden_SampleUUIDs(t *testing.T) {
 	}
 }
 
+// TestGolden_SampleImplicitFK covers issue #17: an implicit-column-list
+// REFERENCES clause (`srcid INTEGER REFERENCES blob`, no `(rid)` column
+// list), which PRAGMA foreign_key_list reports with a NULL "to" column.
+// Found pervasively in real-world Fossil SCM repository databases.
+// sample-implicit-fk.sqlite is a small handcrafted fixture, same pattern
+// as sample-dates.sqlite and sample-uuids.sqlite.
+func TestGolden_SampleImplicitFK(t *testing.T) {
+	db, path := openFixture(t, "sample-implicit-fk.sqlite")
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	delta, ok := result.Config.Tables["delta"]
+	if !ok {
+		t.Fatalf("expected delta table, got tables: %v", tableNames(result))
+	}
+	if len(delta.ForeignKeys) != 1 {
+		t.Fatalf("expected delta to have 1 foreign key, got %+v", delta.ForeignKeys)
+	}
+	fk := delta.ForeignKeys[0]
+	if fk.RefTable != "blob" {
+		t.Errorf("expected foreign key to reference blob, got %q", fk.RefTable)
+	}
+	if len(fk.Columns) != 1 || fk.Columns[0] != "srcid" {
+		t.Errorf("expected foreign key column [srcid], got %v", fk.Columns)
+	}
+	if len(fk.RefColumns) != 1 || fk.RefColumns[0] != "rid" {
+		t.Errorf("expected foreign key to resolve the implicit reference to blob's primary key [rid], got %v", fk.RefColumns)
+	}
+}
+
 // TestGolden_SampleNumericText covers a real-world shape found via
 // dogfooding against a companies.db file: TEXT-declared columns storing
 // plain numeric values with no comma formatting at all (current_employees,
