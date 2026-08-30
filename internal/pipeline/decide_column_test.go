@@ -248,6 +248,39 @@ func TestDecideColumn_FlagsForReviewWhenNumericDeclaredColumnHasASentinelString(
 	}
 }
 
+func TestDecideColumn_FlagsForReviewWhenAPrimaryKeyColumnHasAnEmptyStringUUID(t *testing.T) {
+	// Issue #31: uuid_format maps "" to NULL by design (to tolerate an
+	// optional-UUID column like beets' albums.mb_albumid). That's fine for
+	// an ordinary column, but station_id here is the table's primary key —
+	// auto-approving uuid_format would let a NULL reach COPY's PRIMARY KEY
+	// (station_id) clause and abort the whole load with a not-null
+	// violation. The sample below is entirely clean UUIDs (mirroring a
+	// sample that missed the one empty-string row in the full table), so
+	// only the full-table NULL check catches this.
+	db, _ := openTestDB(t, `CREATE TABLE stations (station_id TEXT PRIMARY KEY);`)
+	db.Exec(`INSERT INTO stations (station_id) VALUES
+		('90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10'),
+		('e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10'),
+		('')`)
+
+	col := sqlitereader.ColumnInfo{Name: "station_id", DeclaredType: "TEXT", PrimaryKeySeq: 1}
+	sample := []any{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10"}
+
+	cc, unresolved, err := decideColumn(db, "stations", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.TargetType != "uuid" {
+		t.Errorf("expected the suggested type uuid to still be shown, got %q", cc.TargetType)
+	}
+	if cc.Confidence >= 0.9 {
+		t.Errorf("expected confidence dropped below threshold once a primary-key NULL was found, got %f", cc.Confidence)
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase once the full-table check found a primary-key column resolving to NULL")
+	}
+}
+
 func TestDecideColumn_ReviewedAlwaysStartsFalseRegardlessOfConfidence(t *testing.T) {
 	// Reviewed means "a human confirmed this," a separate concept from
 	// confidence/needs-review — profiling never sets it, whether a column

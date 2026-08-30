@@ -35,11 +35,20 @@ var errFullTableViolation = errors.New("full-table verification found a value th
 // lets verifyTransformAgainstFullTable range-check the *produced* value
 // against the target, not just detect a transform error.
 //
-// ok is true when every non-nil value converted cleanly and fit the
-// target type, or transform is empty (nothing to check). badValue is the
-// first offending raw value's string form when ok is false. err is a real
-// I/O/query failure, distinct from a found violation.
-func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform, targetType string) (ok bool, badValue string, err error) {
+// isPrimaryKey additionally rejects any value the transform maps to NULL
+// (issue #31): uuid_format, numeric_text_to_integer, numeric_text_to_double,
+// and nullif_empty all map an empty string to NULL by design — a
+// reasonable default for an ordinary column, but internal/ddl/generate.go
+// emits an inline PRIMARY KEY (...) clause for any PrimaryKeySeq > 0
+// column, so a transform-produced NULL there would abort the whole COPY
+// with a not-null violation instead of merely losing one column's value.
+//
+// ok is true when every value converted cleanly, fit the target type, and
+// (for a primary-key column) never came out NULL — or transform is empty
+// (nothing to check). badValue is the first offending raw value's string
+// form when ok is false. err is a real I/O/query failure, distinct from a
+// found violation.
+func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform, targetType string, isPrimaryKey bool) (ok bool, badValue string, err error) {
 	if transform == "" {
 		return true, "", nil
 	}
@@ -47,6 +56,10 @@ func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform, targe
 	streamErr := sqlitereader.StreamTable(db, table, []string{column}, func(row []profiler.Value) error {
 		val, err := copywriter.Transform(transform, row[0])
 		if err != nil {
+			badValue = fmt.Sprintf("%v", row[0])
+			return errFullTableViolation
+		}
+		if isPrimaryKey && val == nil {
 			badValue = fmt.Sprintf("%v", row[0])
 			return errFullTableViolation
 		}

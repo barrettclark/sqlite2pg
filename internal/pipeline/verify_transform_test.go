@@ -9,7 +9,7 @@ func TestVerifyTransformAgainstFullTable_OKWhenEveryValueConvertsCleanly(t *test
 		('e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10'),
 		(NULL)`)
 
-	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "mb_id", "uuid_format", "uuid")
+	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "mb_id", "uuid_format", "uuid", false)
 	if err != nil {
 		t.Fatalf("verifyTransformAgainstFullTable: %v", err)
 	}
@@ -27,7 +27,7 @@ func TestVerifyTransformAgainstFullTable_FindsAViolationOutsideTheSample(t *test
 		('811171'),
 		('e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10')`)
 
-	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "mb_id", "uuid_format", "uuid")
+	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "mb_id", "uuid_format", "uuid", false)
 	if err != nil {
 		t.Fatalf("verifyTransformAgainstFullTable: %v", err)
 	}
@@ -48,7 +48,7 @@ func TestVerifyTransformAgainstFullTable_FindsInvalidJSONOutsideTheSample(t *tes
 		('{"type":"Point","coordinates":[1,2]}'),
 		('N/A')`)
 
-	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "geom", "text_to_jsonb", "jsonb")
+	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "geom", "text_to_jsonb", "jsonb", false)
 	if err != nil {
 		t.Fatalf("verifyTransformAgainstFullTable: %v", err)
 	}
@@ -64,7 +64,7 @@ func TestVerifyTransformAgainstFullTable_OKWhenTransformIsEmpty(t *testing.T) {
 	db, _ := openTestDB(t, `CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);`)
 	db.Exec(`INSERT INTO t (name) VALUES ('anything at all')`)
 
-	ok, _, err := verifyTransformAgainstFullTable(db, "t", "name", "", "text")
+	ok, _, err := verifyTransformAgainstFullTable(db, "t", "name", "", "text", false)
 	if err != nil {
 		t.Fatalf("verifyTransformAgainstFullTable: %v", err)
 	}
@@ -82,7 +82,7 @@ func TestVerifyTransformAgainstFullTable_FindsAnInt4OverflowAgainstTheTargetType
 	db, _ := openTestDB(t, `CREATE TABLE t (id INTEGER PRIMARY KEY, legacy_id TEXT);`)
 	db.Exec(`INSERT INTO t (legacy_id) VALUES ('100'), ('9999999999')`)
 
-	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "legacy_id", "numeric_text_to_integer", "integer")
+	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "legacy_id", "numeric_text_to_integer", "integer", false)
 	if err != nil {
 		t.Fatalf("verifyTransformAgainstFullTable: %v", err)
 	}
@@ -94,6 +94,46 @@ func TestVerifyTransformAgainstFullTable_FindsAnInt4OverflowAgainstTheTargetType
 	}
 }
 
+func TestVerifyTransformAgainstFullTable_FindsAPrimaryKeyColumnResolvingToNULL(t *testing.T) {
+	// Issue #31: uuid_format maps "" to NULL by design (a reasonable
+	// default for an ordinary optional-UUID column), but
+	// internal/ddl/generate.go emits an inline PRIMARY KEY (...) for any
+	// PrimaryKeySeq > 0 column — a transform-produced NULL there aborts
+	// the whole COPY with a not-null violation, so isPrimaryKey=true must
+	// catch it even though uuid_format itself never errors on "".
+	db, _ := openTestDB(t, `CREATE TABLE t (station_id TEXT PRIMARY KEY);`)
+	db.Exec(`INSERT INTO t (station_id) VALUES
+		('90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10'), ('')`)
+
+	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "station_id", "uuid_format", "uuid", true)
+	if err != nil {
+		t.Fatalf("verifyTransformAgainstFullTable: %v", err)
+	}
+	if ok {
+		t.Fatal("expected a violation to be found for a primary-key column resolving to NULL")
+	}
+	if badValue != "" {
+		t.Errorf("expected the offending empty-string value reported, got %q", badValue)
+	}
+}
+
+func TestVerifyTransformAgainstFullTable_AllowsNullingTransformsOnNonPrimaryKeyColumns(t *testing.T) {
+	// The isPrimaryKey check must not regress the ordinary case these
+	// nulling transforms exist for: an empty string on a non-PK column is
+	// still a legitimate NULL, not a violation.
+	db, _ := openTestDB(t, `CREATE TABLE t (id INTEGER PRIMARY KEY, mb_id TEXT);`)
+	db.Exec(`INSERT INTO t (mb_id) VALUES
+		('90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10'), ('')`)
+
+	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "mb_id", "uuid_format", "uuid", false)
+	if err != nil {
+		t.Fatalf("verifyTransformAgainstFullTable: %v", err)
+	}
+	if !ok {
+		t.Errorf("expected ok=true for a non-primary-key column, got a violation on %q", badValue)
+	}
+}
+
 func TestVerifyTransformAgainstFullTable_OKForBigintTargetWithOutOfInt4RangeValues(t *testing.T) {
 	// The int4-range check must only apply when the target type is
 	// "integer" — a bigint target legitimately holds values outside int4
@@ -101,7 +141,7 @@ func TestVerifyTransformAgainstFullTable_OKForBigintTargetWithOutOfInt4RangeValu
 	db, _ := openTestDB(t, `CREATE TABLE t (id INTEGER PRIMARY KEY, legacy_id TEXT);`)
 	db.Exec(`INSERT INTO t (legacy_id) VALUES ('100'), ('9999999999')`)
 
-	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "legacy_id", "numeric_text_to_integer", "bigint")
+	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "legacy_id", "numeric_text_to_integer", "bigint", false)
 	if err != nil {
 		t.Fatalf("verifyTransformAgainstFullTable: %v", err)
 	}
