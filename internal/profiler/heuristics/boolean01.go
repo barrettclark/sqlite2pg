@@ -1,10 +1,20 @@
 package heuristics
 
 import (
+	"regexp"
 	"strings"
 
 	"sqlite2pg/internal/profiler"
 )
+
+// idSuffixPattern matches a column name ending in "id" or "_id"
+// (case-insensitively) — foreign-key-shaped names like discogs_artistid
+// or CustomerId. No reasonable person names a boolean column this way, so
+// Boolean01 excludes them regardless of what values a sample happens to
+// catch (issue #11: discogs_artistid/discogs_labelid, real Discogs
+// numeric IDs, sampled as all-0 in a real beets library and got flagged
+// as ambiguous boolean candidates).
+var idSuffixPattern = regexp.MustCompile(`(?i)_?id$`)
 
 // Boolean01 detects integer columns whose sampled values are entirely
 // within {0, 1, NULL}. This is deliberately ambiguous: such a column might
@@ -16,7 +26,10 @@ type Boolean01 struct{}
 func (Boolean01) Name() string { return "boolean01" }
 
 func (Boolean01) AppliesTo(meta profiler.ColumnMeta) bool {
-	return strings.Contains(strings.ToUpper(meta.DeclaredType), "INT")
+	if !strings.Contains(strings.ToUpper(meta.DeclaredType), "INT") {
+		return false
+	}
+	return !idSuffixPattern.MatchString(meta.Name)
 }
 
 func (Boolean01) Evaluate(meta profiler.ColumnMeta, samples []profiler.Value) (profiler.Finding, bool) {
