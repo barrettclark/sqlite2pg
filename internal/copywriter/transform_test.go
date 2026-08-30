@@ -91,6 +91,39 @@ func TestTransform_NumericTextToInteger(t *testing.T) {
 	}
 }
 
+func TestTransform_NumericTextToIntegerPreservesExactPrecisionBeyondFloat64(t *testing.T) {
+	// Issue #15: parsing via strconv.ParseFloat(s, 64) and casting to int64
+	// silently rounds to the nearest representable float64 once s exceeds
+	// float64's ~15-17 significant digits. This must go through
+	// strconv.ParseInt directly (or an equivalent exact path) so a 19-digit
+	// value like a real bikes.db legacy_id round-trips exactly.
+	cases := []struct {
+		raw  string
+		want int64
+	}{
+		{"2124037125711300644", 2124037125711300644},
+		{"1795146692060860976", 1795146692060860976},
+		{"9007199254740993", 9007199254740993},
+	}
+	for _, c := range cases {
+		got, err := Transform("numeric_text_to_integer", c.raw)
+		if err != nil {
+			t.Fatalf("Transform(%q): %v", c.raw, err)
+		}
+		if got != c.want {
+			t.Errorf("Transform(%q) = %v, want %d (precision lost)", c.raw, got, c.want)
+		}
+	}
+}
+
+func TestTransform_NumericTextToIntegerRejectsValuesTooLargeForInt64(t *testing.T) {
+	// Must fail loudly (not silently saturate to math.MaxInt64 via a
+	// float64 round-trip) once a value genuinely can't fit in an int64.
+	if _, err := Transform("numeric_text_to_integer", "12345678901234567890"); err == nil {
+		t.Fatal("expected an error for a value beyond int64 range, not silent saturation")
+	}
+}
+
 func TestTransform_NumericTextToIntegerTreatsEmptyStringAsNull(t *testing.T) {
 	got, err := Transform("numeric_text_to_integer", "")
 	if err != nil {

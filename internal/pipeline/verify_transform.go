@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"math"
 
 	"sqlite2pg/internal/copywriter"
 	"sqlite2pg/internal/profiler"
@@ -28,17 +29,29 @@ var errFullTableViolation = errors.New("full-table verification found a value th
 // deliberately run only for columns about to auto-approve, not every
 // column profiled.
 //
-// ok is true when every non-nil value converted cleanly, or transform is
-// empty (nothing to check). badValue is the first offending raw value's
-// string form when ok is false. err is a real I/O/query failure, distinct
-// from a found violation.
-func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform string) (ok bool, badValue string, err error) {
+// A transform can convert a value cleanly and still produce something the
+// target column type can't hold — e.g. numeric_text_to_integer turning
+// "9999999999" into a perfectly valid int64 that overflows a Postgres
+// "integer" (int4) column and fails at COPY time (issue #15). targetType
+// lets verifyTransformAgainstFullTable range-check the *produced* value
+// against the target, not just detect a transform error.
+//
+// ok is true when every non-nil value converted cleanly and fit the
+// target type, or transform is empty (nothing to check). badValue is the
+// first offending raw value's string form when ok is false. err is a real
+// I/O/query failure, distinct from a found violation.
+func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform, targetType string) (ok bool, badValue string, err error) {
 	if transform == "" {
 		return true, "", nil
 	}
 
 	streamErr := sqlitereader.StreamTable(db, table, []string{column}, func(row []profiler.Value) error {
-		if _, err := copywriter.Transform(transform, row[0]); err != nil {
+		val, err := copywriter.Transform(transform, row[0])
+		if err != nil {
+			badValue = fmt.Sprintf("%v", row[0])
+			return errFullTableViolation
+		}
+		if !fitsTargetType(val, targetType) {
 			badValue = fmt.Sprintf("%v", row[0])
 			return errFullTableViolation
 		}
@@ -51,4 +64,33 @@ func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform string
 		return false, badValue, nil
 	}
 	return false, "", fmt.Errorf("verifying %s.%s against the full table: %w", table, column, streamErr)
+}
+
+// fitsTargetType reports whether a value a transform produced actually
+// fits the Postgres target column type — currently only "integer" (int4)
+// has a narrower range than the int64 a transform like
+// numeric_text_to_integer naturally produces, so this only range-checks
+// that case; every other target type is left to the transform's own
+// error handling.
+func fitsTargetType(val any, targetType string) bool {
+	if targetType != "integer" {
+		return true
+	}
+	n, ok := asInt64(val)
+	if !ok {
+		// Not an integer-shaped value at all; nothing for this check to say.
+		return true
+	}
+	return n >= math.MinInt32 && n <= math.MaxInt32
+}
+
+func asInt64(v any) (int64, bool) {
+	switch n := v.(type) {
+	case int64:
+		return n, true
+	case int:
+		return int64(n), true
+	default:
+		return 0, false
+	}
 }

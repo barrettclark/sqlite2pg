@@ -61,6 +61,34 @@ func TestDecideColumn_AutoApprovesWhenTheFullTableCheckFindsNoViolation(t *testi
 	}
 }
 
+func TestDecideColumn_FlagsForReviewWhenFullTableHasAnInt4OverflowTheSampleMissed(t *testing.T) {
+	// Issue #15: numeric_text's int4-vs-int8 sizing (sawOutOfInt4Range) is
+	// decided from the sample alone. A sample that only shows int4-range
+	// values auto-approves the column as "integer" even when the full
+	// table contains a value that would overflow it and fail at COPY time.
+	// The sample here deliberately omits the overflowing row, mirroring
+	// the uuid case above.
+	db, _ := openTestDB(t, `CREATE TABLE items (id INTEGER PRIMARY KEY, legacy_id TEXT);`)
+	db.Exec(`INSERT INTO items (legacy_id) VALUES ('100'), ('200'), ('9999999999')`)
+
+	col := sqlitereader.ColumnInfo{Name: "legacy_id", DeclaredType: "TEXT"}
+	sample := []any{"100", "200"}
+
+	cc, unresolved, err := decideColumn(db, "items", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.TargetType != "integer" {
+		t.Errorf("expected the suggested type integer to still be shown, got %q", cc.TargetType)
+	}
+	if cc.Confidence >= 0.9 {
+		t.Errorf("expected confidence dropped below threshold once the int4 overflow was found, got %f", cc.Confidence)
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase once the full-table check found an int4 overflow")
+	}
+}
+
 func TestDecideColumn_SkipsTheFullTableCheckWhenAlreadyFlaggedForReview(t *testing.T) {
 	// A column already below threshold (or with disagreeing heuristics)
 	// gets no benefit from a full-table check — it's already headed to

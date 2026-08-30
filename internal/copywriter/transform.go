@@ -146,11 +146,11 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			// elsewhere (e.g. uuid_format), not a disqualifying non-number.
 			return nil, nil
 		}
-		f, err := strconv.ParseFloat(s, 64)
+		n, err := parseWholeNumberText(s)
 		if err != nil {
 			return nil, fmt.Errorf("numeric_text_to_integer: %q: %w", s, err)
 		}
-		return int64(f), nil
+		return n, nil
 
 	case "numeric_text_to_double":
 		s, ok := raw.(string)
@@ -244,6 +244,33 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 	default:
 		return nil, fmt.Errorf("unknown transform %q", transform)
 	}
+}
+
+// parseWholeNumberText parses s as an exact int64 without ever routing
+// through float64 — issue #15: strconv.ParseFloat(s, 64) followed by an
+// int64 cast silently rounds to the nearest representable float64 once s
+// exceeds float64's ~15-17 significant digits (a real fixture,
+// bikes.db.legacy_id's 19-digit IDs, was corrupted by dozens of units this
+// way on an otherwise "successful" load), and saturates to
+// math.MaxInt64/MinInt64 with no error once the value is large enough to
+// overflow int64 entirely after that rounding.
+//
+// The numeric_text heuristic accepts whole numbers spelled with a
+// trailing ".0" (e.g. "1998.0") as well as plain digit strings — see its
+// sawFraction check — so a value containing a decimal point is only valid
+// here when everything after the point is zeros; that suffix is trimmed
+// before the exact integer parse, never fed through ParseFloat.
+func parseWholeNumberText(s string) (int64, error) {
+	intPart := s
+	if i := strings.IndexByte(s, '.'); i >= 0 {
+		for _, c := range s[i+1:] {
+			if c != '0' {
+				return 0, fmt.Errorf("has a non-zero fractional part")
+			}
+		}
+		intPart = s[:i]
+	}
+	return strconv.ParseInt(intPart, 10, 64)
 }
 
 func toInt64(v profiler.Value) (int64, bool) {
