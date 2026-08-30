@@ -1,6 +1,7 @@
 package ddl
 
 import (
+	"regexp"
 	"strings"
 	"testing"
 
@@ -111,6 +112,46 @@ func TestGenerateCreateTable_NoPrimaryKeyClauseWhenNoColumnIsAPrimaryKey(t *test
 
 	if strings.Contains(ddl, "PRIMARY KEY") {
 		t.Errorf("expected no PRIMARY KEY clause, got:\n%s", ddl)
+	}
+}
+
+func TestGenerateCreateTable_DisambiguatesColumnsCollidingAfter63ByteTruncation(t *testing.T) {
+	// Postgres truncates identifiers to 63 bytes (NAMEDATALEN). Two source
+	// columns identical in their first 63 bytes but differing after that
+	// (issue #21, reproduced by the collision.db fixture) must not collide
+	// in the generated DDL — CREATE TABLE would otherwise fail with
+	// "column ... specified more than once" (SQLSTATE 42701).
+	long := strings.Repeat("a", 60) + "_bbb" // 64 bytes
+	colX := long + "x"                       // shares first 63 bytes with colY
+	colY := long + "y"
+
+	tc := config.TableConfig{
+		ColumnOrder: []string{colX, colY},
+		Columns: map[string]config.ColumnConfig{
+			colX: {TargetType: "integer"},
+			colY: {TargetType: "text"},
+		},
+	}
+
+	ddlText := GenerateCreateTable("products", tc)
+
+	quoted := regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(ddlText, -1)
+	seen := map[string]bool{}
+	for _, m := range quoted {
+		ident := m[1]
+		if ident == "products" {
+			continue
+		}
+		if len(ident) > 63 {
+			t.Errorf("emitted identifier %q exceeds Postgres's 63-byte limit", ident)
+		}
+		if seen[ident] {
+			t.Fatalf("emitted duplicate identifier %q — colliding columns were not disambiguated, got:\n%s", ident, ddlText)
+		}
+		seen[ident] = true
+	}
+	if len(seen) != 2 {
+		t.Fatalf("expected 2 distinct column identifiers, got %d, DDL:\n%s", len(seen), ddlText)
 	}
 }
 

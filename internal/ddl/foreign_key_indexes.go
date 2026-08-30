@@ -31,19 +31,23 @@ func GenerateForeignKeyIndexes(cfg *config.MigrationConfig) (statements []string
 		}
 		included := includedSet(tc)
 
+		ids := PostgresColumnNames(tc)
 		for _, fk := range tc.ForeignKeys {
 			if invalidForeignKeyReason(cfg, table, included, fk) != "" {
 				continue
 			}
-			statements = append(statements, foreignKeyIndexStatement(table, fk))
+			statements = append(statements, foreignKeyIndexStatement(table, fk, ids))
 		}
 	}
 	return statements
 }
 
 // foreignKeyIndexStatement renders one CREATE INDEX statement covering
-// fk's local columns, in the order they're declared in fk.Columns.
-func foreignKeyIndexStatement(table string, fk config.ForeignKey) string {
+// fk's local columns, in the order they're declared in fk.Columns. ids
+// maps those declared names to the identifiers CREATE TABLE actually
+// emitted for them (see PostgresColumnNames) — kept consistent with
+// foreignKeyStatement for the same issue #21 reason.
+func foreignKeyIndexStatement(table string, fk config.ForeignKey, ids map[string]string) string {
 	name := fmt.Sprintf("idx_%s_%s", table, strings.Join(fk.Columns, "_"))
-	return fmt.Sprintf("CREATE INDEX %q ON %q (%s);", name, table, quoteJoin(fk.Columns))
+	return fmt.Sprintf("CREATE INDEX %q ON %q (%s);", name, table, quoteJoin(mapNames(fk.Columns, ids)))
 }

@@ -19,7 +19,12 @@ var _ pgx.CopyFromSource = (*TableSource)(nil)
 // here — this function has no logic of its own beyond delegating to pgx.
 func LoadTable(ctx context.Context, conn *pgx.Conn, dbTable string, tc config.TableConfig, src *TableSource) (int64, error) {
 	columns := ddl.IncludedColumns(tc)
-	n, err := conn.CopyFrom(ctx, pgx.Identifier{dbTable}, columns, src)
+	ids := ddl.PostgresColumnNames(tc)
+	pgColumns := make([]string, len(columns))
+	for i, name := range columns {
+		pgColumns[i] = ids[name]
+	}
+	n, err := conn.CopyFrom(ctx, pgx.Identifier{dbTable}, pgColumns, src)
 	if err != nil {
 		return n, fmt.Errorf("copying into %s: %w", dbTable, err)
 	}

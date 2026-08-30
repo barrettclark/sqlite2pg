@@ -36,7 +36,8 @@ func GenerateForeignKeyConstraints(cfg *config.MigrationConfig) (statements []st
 				skipped = append(skipped, reason)
 				continue
 			}
-			statements = append(statements, foreignKeyStatement(table, fk))
+			refTC := cfg.Tables[fk.RefTable]
+			statements = append(statements, foreignKeyStatement(table, fk, PostgresColumnNames(tc), PostgresColumnNames(refTC)))
 		}
 	}
 	return statements, skipped
@@ -65,6 +66,21 @@ func invalidForeignKeyReason(cfg *config.MigrationConfig, table string, localInc
 	return ""
 }
 
+// mapNames translates each of names through ids, leaving a name unchanged
+// if ids has no entry for it (defensive only — every included column
+// always has one; see PostgresColumnNames).
+func mapNames(names []string, ids map[string]string) []string {
+	out := make([]string, len(names))
+	for i, n := range names {
+		if id, ok := ids[n]; ok {
+			out[i] = id
+		} else {
+			out[i] = n
+		}
+	}
+	return out
+}
+
 func includedSet(tc config.TableConfig) map[string]bool {
 	set := make(map[string]bool)
 	for _, name := range IncludedColumns(tc) {
@@ -77,12 +93,16 @@ func includedSet(tc config.TableConfig) map[string]bool {
 // FOREIGN KEY statement. ON DELETE/ON UPDATE clauses are only included
 // when set to something other than NO ACTION, Postgres's own default —
 // omitting it produces the same behavior with cleaner generated SQL.
-func foreignKeyStatement(table string, fk config.ForeignKey) string {
+// localIDs and refIDs map fk's declared column names to the identifiers
+// actually emitted for them in CREATE TABLE (see PostgresColumnNames) —
+// necessary so a foreign key on a column that CREATE TABLE had to
+// disambiguate (issue #21) still references the column that really exists.
+func foreignKeyStatement(table string, fk config.ForeignKey, localIDs, refIDs map[string]string) string {
 	name := fmt.Sprintf("fk_%s_%s", table, strings.Join(fk.Columns, "_"))
 
 	var b strings.Builder
 	fmt.Fprintf(&b, "ALTER TABLE %q ADD CONSTRAINT %q FOREIGN KEY (%s) REFERENCES %q (%s)",
-		table, name, quoteJoin(fk.Columns), fk.RefTable, quoteJoin(fk.RefColumns))
+		table, name, quoteJoin(mapNames(fk.Columns, localIDs)), fk.RefTable, quoteJoin(mapNames(fk.RefColumns, refIDs)))
 	if fk.OnDelete != "" && fk.OnDelete != "NO ACTION" {
 		fmt.Fprintf(&b, " ON DELETE %s", fk.OnDelete)
 	}

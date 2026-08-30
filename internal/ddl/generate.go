@@ -18,18 +18,23 @@ const dropSentinel = "__drop__"
 // ColumnOrder, skipping any column whose TargetType is the drop sentinel,
 // with an inline PRIMARY KEY clause if any included column has a
 // PrimaryKeySeq — this is preserved source truth carried straight from
-// SQLite, not something a heuristic decides.
+// SQLite, not something a heuristic decides. Column identifiers are run
+// through PostgresColumnNames first, so two source columns that would
+// otherwise collide once Postgres truncates overlong identifiers (issue
+// #21) come out disambiguated instead.
 func GenerateCreateTable(table string, tc config.TableConfig) string {
+	ids := PostgresColumnNames(tc)
+
 	var cols []string
-	for _, name := range tc.ColumnOrder {
-		col, ok := tc.Columns[name]
-		if !ok || col.TargetType == dropSentinel {
-			continue
-		}
-		cols = append(cols, fmt.Sprintf("    %q %s", name, col.TargetType))
+	for _, name := range IncludedColumns(tc) {
+		cols = append(cols, fmt.Sprintf("    %q %s", ids[name], tc.Columns[name].TargetType))
 	}
 	if pk := primaryKeyColumns(tc); len(pk) > 0 {
-		cols = append(cols, fmt.Sprintf("    PRIMARY KEY (%s)", quoteJoin(pk)))
+		pkIDs := make([]string, len(pk))
+		for i, name := range pk {
+			pkIDs[i] = ids[name]
+		}
+		cols = append(cols, fmt.Sprintf("    PRIMARY KEY (%s)", quoteJoin(pkIDs)))
 	}
 
 	var b strings.Builder
