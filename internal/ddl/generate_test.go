@@ -155,6 +155,28 @@ func TestGenerateCreateTable_DisambiguatesColumnsCollidingAfter63ByteTruncation(
 	}
 }
 
+func TestGenerateCreateTable_QuotesEmbeddedDoubleQuoteAsSQLIdentifier(t *testing.T) {
+	// A column name containing an embedded double quote (issue #26) must be
+	// quoted the way SQL identifier quoting requires — the inner quote
+	// doubled — not the way Go's %q escapes it with a backslash, which
+	// Postgres rejects as a syntax error at the first inner quote.
+	tc := config.TableConfig{
+		ColumnOrder: []string{`Total "Disability" Recipients`},
+		Columns: map[string]config.ColumnConfig{
+			`Total "Disability" Recipients`: {TargetType: "text"},
+		},
+	}
+
+	ddl := GenerateCreateTable("counties", tc)
+
+	if strings.Contains(ddl, `\"`) {
+		t.Errorf("expected no backslash-escaped quotes (Go %%q style), got:\n%s", ddl)
+	}
+	if !strings.Contains(ddl, `"Total ""Disability"" Recipients" text`) {
+		t.Errorf("expected doubled-quote SQL identifier quoting, got:\n%s", ddl)
+	}
+}
+
 func TestGenerateCreateTable_ExcludesDroppedColumns(t *testing.T) {
 	tc := config.TableConfig{
 		ColumnOrder: []string{"OBJECTID", "SHAPE"},

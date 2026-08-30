@@ -101,8 +101,8 @@ func foreignKeyStatement(table string, fk config.ForeignKey, localIDs, refIDs ma
 	name := fmt.Sprintf("fk_%s_%s", table, strings.Join(fk.Columns, "_"))
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "ALTER TABLE %q ADD CONSTRAINT %q FOREIGN KEY (%s) REFERENCES %q (%s)",
-		table, name, quoteJoin(mapNames(fk.Columns, localIDs)), fk.RefTable, quoteJoin(mapNames(fk.RefColumns, refIDs)))
+	fmt.Fprintf(&b, "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s)",
+		quoteIdent(table), quoteIdent(name), quoteJoin(mapNames(fk.Columns, localIDs)), quoteIdent(fk.RefTable), quoteJoin(mapNames(fk.RefColumns, refIDs)))
 	if fk.OnDelete != "" && fk.OnDelete != "NO ACTION" {
 		fmt.Fprintf(&b, " ON DELETE %s", fk.OnDelete)
 	}

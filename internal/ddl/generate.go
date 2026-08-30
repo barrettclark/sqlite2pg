@@ -27,7 +27,7 @@ func GenerateCreateTable(table string, tc config.TableConfig) string {
 
 	var cols []string
 	for _, name := range IncludedColumns(tc) {
-		cols = append(cols, fmt.Sprintf("    %q %s", ids[name], tc.Columns[name].TargetType))
+		cols = append(cols, fmt.Sprintf("    %s %s", quoteIdent(ids[name]), tc.Columns[name].TargetType))
 	}
 	if pk := primaryKeyColumns(tc); len(pk) > 0 {
 		pkIDs := make([]string, len(pk))
@@ -38,7 +38,7 @@ func GenerateCreateTable(table string, tc config.TableConfig) string {
 	}
 
 	var b strings.Builder
-	fmt.Fprintf(&b, "CREATE TABLE %q (\n", table)
+	fmt.Fprintf(&b, "CREATE TABLE %s (\n", quoteIdent(table))
 	b.WriteString(strings.Join(cols, ",\n"))
 	b.WriteString("\n);\n")
 	return b.String()
@@ -70,12 +70,12 @@ func primaryKeyColumns(tc config.TableConfig) []string {
 	return names
 }
 
-// quoteJoin double-quotes each identifier and joins them with ", " — the
-// form both a column list and a composite key clause need.
+// quoteJoin quotes each identifier as SQL (see quoteIdent) and joins them
+// with ", " — the form both a column list and a composite key clause need.
 func quoteJoin(names []string) string {
 	quoted := make([]string, len(names))
 	for i, n := range names {
-		quoted[i] = fmt.Sprintf("%q", n)
+		quoted[i] = quoteIdent(n)
 	}
 	return strings.Join(quoted, ", ")
 }

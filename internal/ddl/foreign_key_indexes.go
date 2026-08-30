@@ -49,5 +49,5 @@ func GenerateForeignKeyIndexes(cfg *config.MigrationConfig) (statements []string
 // foreignKeyStatement for the same issue #21 reason.
 func foreignKeyIndexStatement(table string, fk config.ForeignKey, ids map[string]string) string {
 	name := fmt.Sprintf("idx_%s_%s", table, strings.Join(fk.Columns, "_"))
-	return fmt.Sprintf("CREATE INDEX %q ON %q (%s);", name, table, quoteJoin(mapNames(fk.Columns, ids)))
+	return fmt.Sprintf("CREATE INDEX %s ON %s (%s);", quoteIdent(name), quoteIdent(table), quoteJoin(mapNames(fk.Columns, ids)))
 }

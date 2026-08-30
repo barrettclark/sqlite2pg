@@ -4,6 +4,8 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 
+	"github.com/jackc/pgx/v5"
+
 	"sqlite2pg/internal/config"
 )
 
@@ -71,6 +73,20 @@ func disambiguateOne(name string) string {
 	suffix := "_" + hex.EncodeToString(sum[:])[:identifierHashLen]
 	base := truncateBytes(name, maxIdentifierLen-len(suffix))
 	return base + suffix
+}
+
+// quoteIdent double-quotes name as a SQL identifier, doubling any embedded
+// double quotes per SQL's identifier-quoting rule (e.g. `a"b` becomes
+// `"a""b"`). This must produce exactly what the COPY path's
+// pgx.Identifier.Sanitize() produces for the same name (see
+// internal/copywriter/load.go) — DDL and COPY have to agree on what
+// identifier they're naming, or Postgres accepts the CREATE TABLE but COPY
+// (or vice versa) fails or silently targets a different column (issue #26).
+// Go's fmt.Sprintf("%q", name) must never be used for a SQL identifier: it
+// backslash-escapes like a Go string literal, which is not valid SQL and
+// disagrees with Sanitize on any name containing a quote or backslash.
+func quoteIdent(name string) string {
+	return pgx.Identifier{name}.Sanitize()
 }
 
 // truncateBytes returns s truncated to at most max bytes. Postgres itself
