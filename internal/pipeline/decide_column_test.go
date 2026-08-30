@@ -218,6 +218,36 @@ func TestDecideColumn_PersistsDisagreementTieAsNeedsReview(t *testing.T) {
 	}
 }
 
+func TestDecideColumn_FlagsForReviewWhenNumericDeclaredColumnHasASentinelString(t *testing.T) {
+	// Issue #25: a NUMERIC(10,2)/DECIMAL-declared column with one
+	// catch-all sentinel row (e.g. 'Unknown') isn't recognized by
+	// sentinel_null.AppliesTo (it only checks for INT/REAL/FLOA/DOUB in
+	// the declared type), so no heuristic claims the column and it falls
+	// through to default_passthrough. fallbackTypeFor sees sawFloat and
+	// picks "double precision" before ever noticing the sentinel string
+	// was also sampled. This must not auto-approve at 0.99 confidence —
+	// either sentinel_null needs to recognize NUMERIC/DECIMAL, or (as
+	// verified here) issue #16's fallbackSampleMismatch check already
+	// catches the string value default_passthrough's own target can't
+	// hold, exactly as it does for the INTEGER-declared case.
+	db, _ := openTestDB(t, `CREATE TABLE payments (id INTEGER PRIMARY KEY, amount NUMERIC(10,2));`)
+	db.Exec(`INSERT INTO payments (amount) VALUES (100.50), (200.75), ('Unknown')`)
+
+	col := sqlitereader.ColumnInfo{Name: "amount", DeclaredType: "NUMERIC(10,2)"}
+	sample := []any{100.50, 200.75, "Unknown"}
+
+	cc, unresolved, err := decideColumn(db, "payments", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.Confidence >= 0.9 {
+		t.Errorf("expected confidence dropped below threshold once the sample showed a sentinel string in a NUMERIC-declared column, got %f", cc.Confidence)
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase once default_passthrough's own sample contradicted its NUMERIC declared-type guess")
+	}
+}
+
 func TestDecideColumn_ReviewedAlwaysStartsFalseRegardlessOfConfidence(t *testing.T) {
 	// Reviewed means "a human confirmed this," a separate concept from
 	// confidence/needs-review — profiling never sets it, whether a column
