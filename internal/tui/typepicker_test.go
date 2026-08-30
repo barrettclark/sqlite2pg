@@ -154,3 +154,67 @@ func TestOnTypeSelected_AppliesTheDecisionAndRefreshesTheGrid(t *testing.T) {
 		t.Errorf("expected the grid header to show the new type, got %v", cell)
 	}
 }
+
+// TestOnTypeSelected_ReselectingTheSameTypePreservesTheTransform guards
+// against issue #18: a human re-confirming the picker's own current
+// selection (the natural "yes, that's correct" gesture) must not clear a
+// transform the column actually needs at COPY time. Only a genuine change
+// to a different target type should clear a stale transform.
+func TestOnTypeSelected_ReselectingTheSameTypePreservesTheTransform(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		Tables: map[string]config.TableConfig{
+			"bikes": {
+				ColumnOrder: []string{"last_reported"},
+				Columns: map[string]config.ColumnConfig{
+					"last_reported": {
+						TargetType: "timestamptz",
+						Transform:  "unix_epoch_seconds",
+						Confidence: 0.85,
+						Source:     "heuristic:unix_epoch_seconds",
+					},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	st, err := review.NewState(path, 0.9)
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: st.Summary()}
+	m.status = tview.NewTextView()
+	m.buildTableList()
+	m.pages.AddPage("tablelist", m.tableList, true, true)
+	m.onTableSelected(0, "bikes", "", 0)
+	m.openTypePicker("last_reported")
+
+	// Simulate the natural "yes, that's correct" gesture: re-selecting the
+	// type already shown as current.
+	idx := -1
+	for i := 0; i < m.picker.GetItemCount(); i++ {
+		text, _ := m.picker.GetItemText(i)
+		if text == "timestamptz" {
+			idx = i
+		}
+	}
+	if idx == -1 {
+		t.Fatal("expected \"timestamptz\" to be a valid option for last_reported")
+	}
+	m.onTypeSelected(idx, "timestamptz", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["bikes"].Columns["last_reported"]
+	if col.TargetType != "timestamptz" {
+		t.Errorf("expected TargetType timestamptz, got %q", col.TargetType)
+	}
+	if col.Transform != "unix_epoch_seconds" {
+		t.Errorf("expected Transform preserved as unix_epoch_seconds when type unchanged, got %q", col.Transform)
+	}
+}

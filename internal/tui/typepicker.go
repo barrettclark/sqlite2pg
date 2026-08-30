@@ -85,13 +85,23 @@ func centered(p tview.Primitive, width, height int) tview.Primitive {
 
 // onTypeSelected applies typeName as m.pickerColumn's new target type,
 // refreshes the grid and status line, and closes the picker. Transform is
-// always cleared and Rationale always set to the fixed string below — a
-// stale transform from the prior heuristic guess is never implicitly
-// carried over to a new target type.
+// cleared whenever typeName differs from the column's current TargetType —
+// a stale transform from the prior heuristic guess is never implicitly
+// carried over to a genuinely new target type — but preserved when typeName
+// matches the current type: re-confirming the picker's own current
+// selection (issue #18) must not strip a transform the column still needs
+// at COPY time (e.g. timestamptz via unix_epoch_seconds).
 func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortcut rune) {
+	tv := findTable(m.summary, m.selectedTable)
+	col := columnByName(tv, m.pickerColumn)
+	transform := ""
+	if typeName == col.TargetType {
+		transform = col.Transform
+	}
+
 	err := m.st.ApplyDecision(m.selectedTable, m.pickerColumn, review.DecisionRequest{
 		TargetType: typeName,
-		Transform:  "",
+		Transform:  transform,
 		Rationale:  "human override via TUI",
 	})
 	if err != nil {
