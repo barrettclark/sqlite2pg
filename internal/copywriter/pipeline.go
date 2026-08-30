@@ -2,6 +2,7 @@ package copywriter
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 
 	"sqlite2pg/internal/config"
@@ -10,6 +11,13 @@ import (
 	"sqlite2pg/internal/sqlitereader"
 )
 
+// errClosed is StreamTable's callback's way of unwinding early once Close
+// has been called — it's never surfaced to a caller (Close doesn't record
+// it, and by the time it would matter TableSource has already been
+// abandoned), it only exists to make sqlitereader.StreamTable return so its
+// deferred rows.Close() runs and the SQLite cursor is released.
+var errClosed = errors.New("table source closed")
+
 // TableSource streams one table's rows from SQLite, applying each column's
 // configured Transform, and satisfies pgx's CopyFromSource interface
 // (Next() bool, Values() ([]any, error), Err() error) — the pull side of a
@@ -17,6 +25,7 @@ import (
 type TableSource struct {
 	rowsCh  chan []any
 	errCh   chan error
+	done    chan struct{}
 	current []any
 	err     error
 	onRow   func()
@@ -29,6 +38,7 @@ func NewTableSource(db *sql.DB, table string, tc config.TableConfig) *TableSourc
 	ts := &TableSource{
 		rowsCh: make(chan []any, 100),
 		errCh:  make(chan error, 1),
+		done:   make(chan struct{}),
 	}
 
 	go func() {
@@ -49,13 +59,33 @@ func NewTableSource(db *sql.DB, table string, tc config.TableConfig) *TableSourc
 				}
 				transformed[i] = out
 			}
-			ts.rowsCh <- transformed
-			return nil
+			select {
+			case ts.rowsCh <- transformed:
+				return nil
+			case <-ts.done:
+				// The consumer has abandoned this source (e.g. pgx gave
+				// up mid-COPY after a server-side failure). Unwind out of
+				// StreamTable instead of blocking here forever, so its
+				// deferred rows.Close() runs and the SQLite cursor and
+				// this goroutine are released.
+				return errClosed
+			}
 		})
-		ts.errCh <- err
+		if !errors.Is(err, errClosed) {
+			ts.errCh <- err
+		}
 	}()
 
 	return ts
+}
+
+// Close signals the producer goroutine to stop and release its SQLite
+// cursor. Callers that abandon a TableSource before draining it via Next()
+// — as LoadTable does whenever pgx's CopyFrom returns early — must call
+// Close so the goroutine doesn't leak parked on a full rowsCh. Close is a
+// no-op from Next's point of view: it never itself sets Err().
+func (ts *TableSource) Close() {
+	close(ts.done)
 }
 
 // OnRow registers fn to be called once per row Next() successfully pulls

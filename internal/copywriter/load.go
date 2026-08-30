@@ -18,6 +18,11 @@ var _ pgx.CopyFromSource = (*TableSource)(nil)
 // instance in the Tier 3 integration suite (build tag "integration"), not
 // here — this function has no logic of its own beyond delegating to pgx.
 func LoadTable(ctx context.Context, conn *pgx.Conn, dbTable string, tc config.TableConfig, src *TableSource) (int64, error) {
+	// If CopyFrom returns early — success or a mid-COPY failure — signal
+	// src's producer goroutine to stop rather than leaving it parked
+	// forever on a full rowsCh (issue #28).
+	defer src.Close()
+
 	columns := ddl.IncludedColumns(tc)
 	ids := ddl.PostgresColumnNames(tc)
 	pgColumns := make([]string, len(columns))

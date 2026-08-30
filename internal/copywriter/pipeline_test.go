@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	_ "modernc.org/sqlite"
 
@@ -198,5 +199,100 @@ func TestTableSource_TransformErrorNamesTheTableColumnAndSuggestsAFix(t *testing
 	}
 	if !strings.Contains(msg, "--sample-size") {
 		t.Errorf("expected the error to suggest re-profiling with a larger --sample-size, got %q", msg)
+	}
+}
+
+// Issue #28: once Next() has returned false and recorded a real error via
+// Err(), a subsequent call to Next() (e.g. a caller re-checking after
+// already seeing false) must not discard that recorded error.
+func TestTableSource_NextDoesNotClobberARecordedErrorOnSubsequentCalls(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE t (n TEXT);`)
+	if _, err := db.Exec(`INSERT INTO t VALUES ('not-a-number')`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	tc := config.TableConfig{
+		ColumnOrder: []string{"n"},
+		Columns: map[string]config.ColumnConfig{
+			"n": {TargetType: "integer", Transform: "strip_commas"},
+		},
+	}
+
+	src := NewTableSource(db, "t", tc)
+	for src.Next() {
+	}
+	first := src.Err()
+	if first == nil {
+		t.Fatal("expected a transform error to surface via Err()")
+	}
+
+	if src.Next() {
+		t.Fatal("expected Next() to keep returning false once the pipeline is exhausted")
+	}
+	second := src.Err()
+	if second == nil {
+		t.Fatal("Next() called again after exhaustion clobbered the recorded error with nil")
+	}
+	if second.Error() != first.Error() {
+		t.Fatalf("Err() changed across a subsequent Next() call: first %q, second %q", first, second)
+	}
+}
+
+// Issue #28: if the consumer stops calling Next() early (as pgx does when a
+// COPY fails server-side mid-table) the producer goroutine must not be left
+// permanently blocked sending on the full rowsCh — it should unblock and
+// exit once the source is closed, allowing StreamTable's deferred
+// rows.Close() to run and release the SQLite cursor.
+func TestTableSource_CloseUnblocksTheProducerGoroutine(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE t (n INTEGER);`)
+	// Far more rows than the 100-slot rowsCh buffer, so the producer is
+	// guaranteed to still be blocked on a send when we stop consuming.
+	const total = 500
+	for i := 0; i < total; i++ {
+		if _, err := db.Exec(`INSERT INTO t VALUES (?)`, i); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	tc := config.TableConfig{
+		ColumnOrder: []string{"n"},
+		Columns:     map[string]config.ColumnConfig{"n": {TargetType: "integer"}},
+	}
+
+	src := NewTableSource(db, "t", tc)
+	// Pull far fewer rows than were inserted, then stop — simulating pgx
+	// abandoning Next() after a mid-COPY failure.
+	const consumed = 5
+	for i := 0; i < consumed; i++ {
+		if !src.Next() {
+			t.Fatalf("expected at least %d rows, Err: %v", consumed, src.Err())
+		}
+	}
+
+	src.Close()
+
+	// Drain whatever the producer already had buffered/in-flight, without
+	// calling Next() again (the real-world caller never touches the
+	// source again after abandoning it mid-COPY). A producer that
+	// actually honors Close() exits after at most a bufferful more rows;
+	// one that ignores it just streams the rest of the table to
+	// completion, since nothing else in sqlitereader stops it.
+	drained := 0
+	timeout := time.After(2 * time.Second)
+loop:
+	for {
+		select {
+		case _, ok := <-src.rowsCh:
+			if !ok {
+				break loop
+			}
+			drained++
+		case <-timeout:
+			t.Fatalf("producer goroutine never exited: rowsCh did not close within timeout (drained %d rows)", drained)
+		}
+	}
+
+	if remaining := total - consumed; drained >= remaining {
+		t.Fatalf("producer streamed all %d remaining rows after Close() instead of exiting early (goroutine/cursor leak not fixed)", remaining)
 	}
 }
