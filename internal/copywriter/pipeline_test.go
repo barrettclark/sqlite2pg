@@ -3,6 +3,7 @@ package copywriter
 import (
 	"database/sql"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	_ "modernc.org/sqlite"
@@ -164,5 +165,38 @@ func TestTableSource_SurfacesTransformErrorsViaErr(t *testing.T) {
 	}
 	if src.Err() == nil {
 		t.Fatal("expected a transform error to surface via Err()")
+	}
+}
+
+func TestTableSource_TransformErrorNamesTheTableColumnAndSuggestsAFix(t *testing.T) {
+	// Issue #13: a transform failure at load time (residual case a
+	// profile-time full-table check can't cover, e.g. --force past a
+	// flagged column) previously surfaced only the raw transform error
+	// with no indication of which column, or what to do about it.
+	db := openTestDB(t, `CREATE TABLE albums (mb_id TEXT);`)
+	if _, err := db.Exec(`INSERT INTO albums VALUES ('not-a-uuid')`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	tc := config.TableConfig{
+		ColumnOrder: []string{"mb_id"},
+		Columns: map[string]config.ColumnConfig{
+			"mb_id": {TargetType: "uuid", Transform: "uuid_format"},
+		},
+	}
+
+	src := NewTableSource(db, "albums", tc)
+	for src.Next() {
+	}
+	err := src.Err()
+	if err == nil {
+		t.Fatal("expected a transform error")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "albums.mb_id") {
+		t.Errorf("expected the error to name albums.mb_id, got %q", msg)
+	}
+	if !strings.Contains(msg, "--sample-size") {
+		t.Errorf("expected the error to suggest re-profiling with a larger --sample-size, got %q", msg)
 	}
 }

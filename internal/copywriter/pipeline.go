@@ -2,6 +2,7 @@ package copywriter
 
 import (
 	"database/sql"
+	"fmt"
 
 	"sqlite2pg/internal/config"
 	"sqlite2pg/internal/ddl"
@@ -37,7 +38,14 @@ func NewTableSource(db *sql.DB, table string, tc config.TableConfig) *TableSourc
 			for i, v := range row {
 				out, err := Transform(tc.Columns[columns[i]].Transform, v)
 				if err != nil {
-					return err
+					// A profiled decision is verified against the whole
+					// table before being auto-approved (issue #13), so
+					// this should be rare in practice — the residual case
+					// is a column loaded via --force past a flagged,
+					// below-threshold decision. Name the column and
+					// suggest the fix rather than surfacing only the raw
+					// transform error.
+					return fmt.Errorf("%s.%s: %w (this column's type was chosen from a sample; consider re-profiling with a larger --sample-size, or run `migrate review` to override its type)", table, columns[i], err)
 				}
 				transformed[i] = out
 			}

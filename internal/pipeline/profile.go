@@ -120,47 +120,19 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 
 		for i, col := range table.Columns {
 			tc.ColumnOrder = append(tc.ColumnOrder, col.Name)
-			meta := profiler.ColumnMeta{Table: table.Name, Name: col.Name, DeclaredType: col.DeclaredType}
 			samples := columnSamples[i]
-			findings := profiler.Default.ProfileColumn(meta, samples)
+
+			var extra []profiler.Finding
 			if n, ok := varcharLens[col.Name]; ok {
-				findings = append(findings, varcharFinding(n))
+				extra = append(extra, varcharFinding(n))
 			}
 
-			var cc config.ColumnConfig
-			if len(findings) == 0 {
-				cc = config.ColumnConfig{
-					DeclaredType:  col.DeclaredType,
-					TargetType:    fallbackTypeFor(col.DeclaredType, samples),
-					Confidence:    0.99,
-					Source:        "heuristic:default_passthrough",
-					Rationale:     "no heuristic had an opinion; passed through via SQLite type affinity",
-					Reviewed:      false,
-					PrimaryKeySeq: col.PrimaryKeySeq,
-				}
-			} else {
-				best, needsReview := resolver.Decide(findings, threshold)
-				cc = config.ColumnConfig{
-					DeclaredType:  col.DeclaredType,
-					TargetType:    best.SuggestedType,
-					Transform:     best.TransformExpr,
-					Confidence:    best.Confidence,
-					Source:        "heuristic:" + best.Heuristic,
-					Rationale:     best.Rationale,
-					Reviewed:      false,
-					PrimaryKeySeq: col.PrimaryKeySeq,
-				}
-				if needsReview {
-					reason := fmt.Sprintf("confidence %.2f below auto-approve threshold %.2f, or heuristics disagreed", best.Confidence, threshold)
-					unresolved = append(unresolved, resolver.UnresolvedCase{
-						Table:        table.Name,
-						Column:       col.Name,
-						DeclaredType: col.DeclaredType,
-						Samples:      samples,
-						Findings:     findings,
-						Reason:       reason,
-					})
-				}
+			cc, uc, err := decideColumn(db, table.Name, col, samples, threshold, extra...)
+			if err != nil {
+				return nil, fmt.Errorf("deciding %s.%s: %w", table.Name, col.Name, err)
+			}
+			if uc != nil {
+				unresolved = append(unresolved, *uc)
 			}
 			tc.Columns[col.Name] = cc
 		}
