@@ -66,6 +66,7 @@ func decideColumn(db *sql.DB, table string, col sqlitereader.ColumnInfo, samples
 			Reviewed:      false,
 			NeedsReview:   uc != nil,
 			PrimaryKeySeq: col.PrimaryKeySeq,
+			NotNull:       col.NotNull,
 		}, uc, nil
 	}
 
@@ -96,6 +97,7 @@ func decideColumn(db *sql.DB, table string, col sqlitereader.ColumnInfo, samples
 		Reviewed:      false,
 		NeedsReview:   needsReview,
 		PrimaryKeySeq: col.PrimaryKeySeq,
+		NotNull:       col.NotNull,
 	}
 	if !needsReview {
 		return cc, nil, nil

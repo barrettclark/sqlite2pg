@@ -115,6 +115,12 @@ type ColumnConfig struct {
 	// primary key's declared column order into the generated DDL.
 	PrimaryKeySeq int `yaml:"primary_key_seq,omitempty"`
 
+	// NotNull mirrors sqlitereader.ColumnInfo.NotNull — preserved source
+	// truth carried straight from SQLite's declared `NOT NULL`, emitted as
+	// a NOT NULL constraint in the generated DDL rather than a heuristic
+	// decision requiring review.
+	NotNull bool `yaml:"not_null,omitempty"`
+
 	// OriginalSuggestion preserves the tool's original guess when a human
 	// (or future LLM resolver) overrides it, so the diff between "what the
 	// tool guessed" and "what shipped" is never lost.

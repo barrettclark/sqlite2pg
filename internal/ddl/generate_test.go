@@ -59,6 +59,35 @@ func TestGenerateCreateTable_EmitsParameterizedVarcharTypeVerbatim(t *testing.T)
 	}
 }
 
+func TestGenerateCreateTable_EmitsNotNullForSourceNotNullColumns(t *testing.T) {
+	// Issue #34: a source `NOT NULL` column must produce a Postgres
+	// column also declared NOT NULL, matching source constraints instead
+	// of silently dropping them.
+	tc := config.TableConfig{
+		ColumnOrder: []string{"id", "email", "nickname"},
+		Columns: map[string]config.ColumnConfig{
+			"id":       {TargetType: "integer", NotNull: true},
+			"email":    {TargetType: "text", NotNull: true},
+			"nickname": {TargetType: "text"},
+		},
+	}
+
+	ddl, err := GenerateCreateTable("users", tc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	if !strings.Contains(ddl, `"email" text NOT NULL`) {
+		t.Errorf("expected email column declared NOT NULL, got:\n%s", ddl)
+	}
+	if !strings.Contains(ddl, `"id" integer NOT NULL`) {
+		t.Errorf("expected id column declared NOT NULL, got:\n%s", ddl)
+	}
+	if strings.Contains(ddl, `"nickname" text NOT NULL`) {
+		t.Errorf("expected nickname column to stay nullable, got:\n%s", ddl)
+	}
+}
+
 func TestGenerateCreateTable_EmitsInlinePrimaryKey(t *testing.T) {
 	tc := config.TableConfig{
 		ColumnOrder: []string{"station_id", "num_bikes_available"},

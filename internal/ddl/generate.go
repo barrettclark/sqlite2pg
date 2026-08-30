@@ -38,7 +38,8 @@ var ErrMissingColumnOrder = errors.New("table has columns but no column_order �
 // GenerateCreateTable emits a CREATE TABLE statement for table using tc's
 // ColumnOrder, skipping any column whose TargetType is the drop sentinel,
 // with an inline PRIMARY KEY clause if any included column has a
-// PrimaryKeySeq — this is preserved source truth carried straight from
+// PrimaryKeySeq, and a NOT NULL constraint on any included column whose
+// NotNull is set — both are preserved source truth carried straight from
 // SQLite, not something a heuristic decides. Column identifiers are run
 // through PostgresColumnNames first, so two source columns that would
 // otherwise collide once Postgres truncates overlong identifiers (issue
@@ -60,7 +61,11 @@ func GenerateCreateTable(table string, tc config.TableConfig) (string, error) {
 
 	var cols []string
 	for _, name := range included {
-		cols = append(cols, fmt.Sprintf("    %s %s", quoteIdent(ids[name]), tc.Columns[name].TargetType))
+		col := fmt.Sprintf("    %s %s", quoteIdent(ids[name]), tc.Columns[name].TargetType)
+		if tc.Columns[name].NotNull {
+			col += " NOT NULL"
+		}
+		cols = append(cols, col)
 	}
 	if pk := primaryKeyColumns(tc); len(pk) > 0 {
 		pkIDs := make([]string, len(pk))

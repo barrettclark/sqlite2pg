@@ -297,3 +297,29 @@ func TestDecideColumn_ReviewedAlwaysStartsFalseRegardlessOfConfidence(t *testing
 		t.Error("expected Reviewed=false even for a clean default_passthrough decision")
 	}
 }
+
+func TestDecideColumn_CarriesNotNullThrough(t *testing.T) {
+	// Issue #34: NotNull is read from the source schema but was never
+	// carried through to config.ColumnConfig, so a source `NOT NULL`
+	// column silently lost that constraint in the generated DDL.
+	db, _ := openTestDB(t, `CREATE TABLE items (id INTEGER PRIMARY KEY, email TEXT NOT NULL, nickname TEXT);`)
+	db.Exec(`INSERT INTO items (email, nickname) VALUES ('a@example.com', 'a')`)
+
+	notNullCol := sqlitereader.ColumnInfo{Name: "email", DeclaredType: "TEXT", NotNull: true}
+	cc, _, err := decideColumn(db, "items", notNullCol, []any{"a@example.com"}, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if !cc.NotNull {
+		t.Error("expected NotNull=true carried through from the source column's declared NOT NULL")
+	}
+
+	nullableCol := sqlitereader.ColumnInfo{Name: "nickname", DeclaredType: "TEXT", NotNull: false}
+	cc, _, err = decideColumn(db, "items", nullableCol, []any{"a"}, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.NotNull {
+		t.Error("expected NotNull=false for a column with no source NOT NULL constraint")
+	}
+}
