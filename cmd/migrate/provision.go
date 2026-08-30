@@ -66,3 +66,60 @@ func provisionDatabase(ctx context.Context, serverURL, dbName string) (*pgx.Conn
 	targetCfg.Database = dbName
 	return targetCfg, nil
 }
+
+// connConfigForDatabase builds a ConnConfig pointed at an existing database
+// named dbName on the Postgres server identified by serverURL, without
+// creating it. Used by --resume to reconnect to the database a prior
+// partial run already provisioned, rather than creating a new one.
+func connConfigForDatabase(serverURL, dbName string) (*pgx.ConnConfig, error) {
+	cfg, err := pgx.ParseConfig(serverURL)
+	if err != nil {
+		return nil, fmt.Errorf("parsing --pg url: %w", err)
+	}
+	cfg.Database = dbName
+	return cfg, nil
+}
+
+// connectForLoad decides which database `migrate load` (and the load step
+// of `migrate run`) should target and returns a ConnConfig for it.
+//
+// On a fresh run it derives a new timestamped name, provisions it, and
+// records it in the state file at statePath so that a later --resume knows
+// which database to come back to.
+//
+// On --resume it reads that recorded name back out of statePath and
+// reconnects to it directly — it must never provision a new database, or
+// every table the state file marks completed would silently be missing
+// from wherever --resume actually lands (issue #19). If statePath carries
+// no recorded database (e.g. --resume was passed on a run that never got
+// far enough to provision one, or the state file is simply missing), it
+// refuses rather than guessing.
+func connectForLoad(ctx context.Context, serverURL, sourcePath string, resume bool, statePath string) (*pgx.ConnConfig, error) {
+	if resume {
+		st, err := readState(statePath)
+		if err != nil {
+			return nil, err
+		}
+		if st.Database == "" {
+			return nil, fmt.Errorf("--resume requires a prior run's state file %s recording which database it loaded into; run without --resume to start a new load", statePath)
+		}
+		connCfg, err := connConfigForDatabase(serverURL, st.Database)
+		if err != nil {
+			return nil, err
+		}
+		fmt.Printf("resuming database %s\n", st.Database)
+		return connCfg, nil
+	}
+
+	dbName := deriveDatabaseName(sourcePath, time.Now())
+	connCfg, err := provisionDatabase(ctx, serverURL, dbName)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("created database %s\n", dbName)
+
+	if err := writeState(statePath, loadState{Database: dbName}); err != nil {
+		return nil, fmt.Errorf("recording provisioned database in state %s: %w", statePath, err)
+	}
+	return connCfg, nil
+}

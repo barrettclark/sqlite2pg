@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -67,5 +69,41 @@ func TestDeriveDatabaseName_TruncatesLongNamesToFitPostgresIdentifierLimit(t *te
 	}
 	if !strings.HasSuffix(got, "_20260816_194508") {
 		t.Errorf("expected the timestamp suffix to survive truncation, got %q", got)
+	}
+}
+
+// TestConnectForLoad_ResumeReconnectsToRecordedDatabase is the regression
+// test for issue #19: --resume must reconnect to the database a prior run
+// recorded in the state file, never provision a fresh one. This never
+// touches a real Postgres server — the resume path only builds a
+// ConnConfig from the recorded name, it doesn't connect or create anything.
+func TestConnectForLoad_ResumeReconnectsToRecordedDatabase(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "cfg.migration.yaml.state.json")
+	if err := writeState(statePath, loadState{Database: "chinook_20260830_120000", Completed: []string{"albums", "artists"}}); err != nil {
+		t.Fatalf("writeState: %v", err)
+	}
+
+	connCfg, err := connectForLoad(context.Background(), "postgres://localhost:5432/?sslmode=disable", "chinook.db", true, statePath)
+	if err != nil {
+		t.Fatalf("connectForLoad: %v", err)
+	}
+	if connCfg.Database != "chinook_20260830_120000" {
+		t.Errorf("expected --resume to reconnect to the recorded database, got %q", connCfg.Database)
+	}
+}
+
+// TestConnectForLoad_ResumeWithoutRecordedDatabaseErrors covers --resume
+// passed with no prior state to resume from (missing state file, or one
+// that never got far enough to record a database) — it must refuse rather
+// than silently provisioning a new database out from under a resume.
+func TestConnectForLoad_ResumeWithoutRecordedDatabaseErrors(t *testing.T) {
+	statePath := filepath.Join(t.TempDir(), "nonexistent.state.json")
+
+	_, err := connectForLoad(context.Background(), "postgres://localhost:5432/?sslmode=disable", "chinook.db", true, statePath)
+	if err == nil {
+		t.Fatal("expected an error when --resume has no recorded database to reconnect to")
+	}
+	if !strings.Contains(err.Error(), "--resume") {
+		t.Errorf("expected the error to mention --resume, got %q", err.Error())
 	}
 }

@@ -12,7 +12,6 @@ import (
 	"fmt"
 	"os"
 	"sort"
-	"time"
 
 	"github.com/jackc/pgx/v5"
 	_ "modernc.org/sqlite"
@@ -125,14 +124,13 @@ func runRun(args []string) error {
 		return err
 	}
 
-	dbName := deriveDatabaseName(sourcePath, time.Now())
-	connCfg, err := provisionDatabase(context.Background(), *pgURL, dbName)
+	statePath := configPath + ".state.json"
+	connCfg, err := connectForLoad(context.Background(), *pgURL, sourcePath, false, statePath)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("created database %s\n", dbName)
 
-	return executeLoad(cfg, connCfg, false, configPath+".state.json")
+	return executeLoad(cfg, connCfg, false, statePath)
 }
 
 // --- profile ---------------------------------------------------------------
@@ -259,14 +257,13 @@ func runLoad(args []string) error {
 		return errors.New("--pg is required unless --dry-run is set")
 	}
 
-	dbName := deriveDatabaseName(cfg.Source.Path, time.Now())
-	connCfg, err := provisionDatabase(context.Background(), *pgURL, dbName)
+	statePath := configPath + ".state.json"
+	connCfg, err := connectForLoad(context.Background(), *pgURL, cfg.Source.Path, *resume, statePath)
 	if err != nil {
 		return err
 	}
-	fmt.Printf("created database %s\n", dbName)
 
-	return executeLoad(cfg, connCfg, *resume, configPath+".state.json")
+	return executeLoad(cfg, connCfg, *resume, statePath)
 }
 
 // executeLoad connects to Postgres and, for every included table, creates

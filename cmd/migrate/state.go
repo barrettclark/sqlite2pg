@@ -6,35 +6,70 @@ import (
 	"os"
 )
 
-// loadCompletedTables reads the per-run state file `migrate load --resume`
-// consults to skip tables already loaded after a prior failure. A missing
-// file just means no table has completed yet.
-func loadCompletedTables(path string) (map[string]bool, error) {
+// loadState is the schema of the per-run state file `migrate load --resume`
+// consults: which database the run provisioned (so a later --resume
+// reconnects to the very same database instead of provisioning a new,
+// empty one — see issue #19) and which tables have already been loaded
+// into it.
+type loadState struct {
+	Database  string   `json:"database"`
+	Completed []string `json:"completed"`
+}
+
+// readState reads the given state file. A missing file just means no run
+// has started yet, so it returns a zero-value state and no error.
+func readState(path string) (loadState, error) {
 	data, err := os.ReadFile(path)
 	if os.IsNotExist(err) {
-		return map[string]bool{}, nil
+		return loadState{}, nil
 	}
 	if err != nil {
-		return nil, fmt.Errorf("reading state %s: %w", path, err)
+		return loadState{}, fmt.Errorf("reading state %s: %w", path, err)
 	}
-	var names []string
-	if err := json.Unmarshal(data, &names); err != nil {
-		return nil, fmt.Errorf("parsing state %s: %w", path, err)
+	var st loadState
+	if err := json.Unmarshal(data, &st); err != nil {
+		return loadState{}, fmt.Errorf("parsing state %s: %w", path, err)
 	}
-	completed := make(map[string]bool, len(names))
-	for _, n := range names {
+	return st, nil
+}
+
+// writeState overwrites the state file with st in full.
+func writeState(path string, st loadState) error {
+	data, err := json.Marshal(st)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
+// loadCompletedTables reads the state file and returns the set of tables
+// already loaded, for `migrate load --resume` to skip.
+func loadCompletedTables(path string) (map[string]bool, error) {
+	st, err := readState(path)
+	if err != nil {
+		return nil, err
+	}
+	completed := make(map[string]bool, len(st.Completed))
+	for _, n := range st.Completed {
 		completed[n] = true
 	}
 	return completed, nil
 }
 
-// markTableCompleted appends table to the state file, so a later --resume
-// run skips it. Unlike pgloader's all-or-nothing LOAD DATABASE, each
-// table's COPY is its own unit of resumable work.
+// markTableCompleted appends table to the state file's completed list,
+// preserving whatever database name is already recorded there, so a later
+// --resume both skips this table and reconnects to the right database.
+// Unlike pgloader's all-or-nothing LOAD DATABASE, each table's COPY is its
+// own unit of resumable work.
 func markTableCompleted(path, table string) error {
-	completed, err := loadCompletedTables(path)
+	st, err := readState(path)
 	if err != nil {
 		return err
+	}
+
+	completed := make(map[string]bool, len(st.Completed)+1)
+	for _, n := range st.Completed {
+		completed[n] = true
 	}
 	completed[table] = true
 
@@ -42,9 +77,6 @@ func markTableCompleted(path, table string) error {
 	for n := range completed {
 		names = append(names, n)
 	}
-	data, err := json.Marshal(names)
-	if err != nil {
-		return err
-	}
-	return os.WriteFile(path, data, 0o644)
+	st.Completed = names
+	return writeState(path, st)
 }
