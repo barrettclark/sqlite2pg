@@ -154,7 +154,14 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("julian_day_to_date: unexpected type %T", raw)
 		}
-		return julianDayToDate(int64(f)), nil
+		// Round to the nearest whole Julian Day Number rather than
+		// truncating the fraction (issue #24). Astronomical Julian Day is
+		// noon-based (JD N.0 is noon UT on the calendar day JDN N
+		// represents), so a fractional JD in the midnight-to-noon half of
+		// the range belongs to the FOLLOWING day's JDN; math.Floor(f + 0.5)
+		// is the standard JD-to-JDN conversion that accounts for that,
+		// where int64(f) truncation always floored to the earlier day.
+		return julianDayToDate(int64(math.Floor(f + 0.5))), nil
 
 	case "yyyymmdd_to_date":
 		s, ok := toYYYYMMDDString(raw)

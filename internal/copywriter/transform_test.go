@@ -385,6 +385,76 @@ func TestTransform_JulianDayToDate(t *testing.T) {
 	}
 }
 
+// Issue #24: julian_day_to_date truncated the fractional Julian Day
+// (int64(f)) instead of rounding to the nearest whole Julian Day Number
+// (math.Floor(f + 0.5), the standard JD-to-JDN conversion). Astronomical
+// Julian Day is noon-based: JD N.0 is noon UT on the calendar day Fliegel
+// & Van Flandern's algorithm assigns to JDN N, so JD N.0..N.5 (noon to
+// midnight) still belongs to that same calendar day, while JD N.5..N+1.0
+// (midnight to the following noon) belongs to calendar day N+1. Truncation
+// always floors to N regardless of the fraction, so any value in the
+// midnight-to-noon half of the range came out one day too EARLY.
+func TestTransform_JulianDayToDate_RoundsFractionalDay(t *testing.T) {
+	// 2453975.25 is 18:00 UT on the calendar day JDN 2453975 represents
+	// (2006-08-27): still in the noon-to-midnight half, so both plain
+	// truncation and correct rounding agree on 2006-08-27. This confirms
+	// the rounding fix does not disturb the already-correct half of the
+	// range.
+	got, err := Transform("julian_day_to_date", float64(2453975.25))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() != 2006 || tm.Month() != time.August || tm.Day() != 27 {
+		t.Errorf("expected 2006-08-27, got %v", tm)
+	}
+
+	// 2453975.75 is 06:00 UT the following calendar day (2006-08-28): the
+	// midnight-to-noon half of the range. Truncating the fraction floors
+	// to JDN 2453975 (2006-08-27) — one day too early. Rounding to the
+	// nearest JDN (math.Floor(f + 0.5) = 2453976) gives the correct
+	// 2006-08-28.
+	got, err = Transform("julian_day_to_date", float64(2453975.75))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok = got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() != 2006 || tm.Month() != time.August || tm.Day() != 28 {
+		t.Errorf("expected 2006-08-28, got %v", tm)
+	}
+}
+
+// TestTransform_JulianDayToDate_ExactMidnightRoundsForward pins down the
+// exact-.5 (midnight) tie using a historically documented constant: JD
+// 2299160.5 is 00:00:00 UT on 1582-10-15, the Gregorian calendar reform
+// date, whose Julian Day Number is the equally well-documented 2299161
+// (not 2299160). This proves an exact .5 belongs to the day that BEGINS at
+// that instant, not the day that precedes it — so the geodatabase
+// fixtures' realdate columns, which store only exact-midnight .5 values,
+// were never "correct by luck" as issue #24 assumed; plain truncation
+// mapped every one of them to the day before the correct one. This is a
+// broader fix than "half of all fractional values": it corrects the exact
+// midnight case too.
+func TestTransform_JulianDayToDate_ExactMidnightRoundsForward(t *testing.T) {
+	got, err := Transform("julian_day_to_date", float64(2299160.5))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() != 1582 || tm.Month() != time.October || tm.Day() != 15 {
+		t.Errorf("expected 1582-10-15 (JDN 2299161), got %v", tm)
+	}
+}
+
 func TestTransform_YYYYMMDDToDate(t *testing.T) {
 	cases := []profiler.Value{int64(20210927), "20210927"}
 	for _, raw := range cases {
