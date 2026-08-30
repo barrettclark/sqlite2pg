@@ -29,6 +29,12 @@ type ProfileResult struct {
 	// #29) — not a failure, but not silently ignorable either, since the
 	// generated config simply has no entry for them.
 	SkippedTables []sqlitereader.SkippedTable
+
+	// FilteredSystemTables are tables FilterSystemTables excluded as Esri
+	// GDB_* or (on a confirmed Esri/Spatialite source) Spatialite st_*
+	// system tables — reported so the exclusion is visible rather than
+	// silent (issue #35).
+	FilteredSystemTables []sqlitereader.TableInfo
 }
 
 // ProfileDatabase reads db's schema, samples up to sampleSize rows per
@@ -45,10 +51,12 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 	}
 
 	kind := "sqlite"
-	if sqlitereader.IsEsriGeodatabase(tables) {
+	isEsri := sqlitereader.IsEsriGeodatabase(tables)
+	if isEsri {
 		kind = "esri_geodatabase"
 	}
-	tables = sqlitereader.FilterSystemTables(tables)
+	var filteredSystemTables []sqlitereader.TableInfo
+	tables, filteredSystemTables = sqlitereader.FilterSystemTables(tables, isEsri)
 
 	sourceHash, err := config.HashFile(sourcePath)
 	if err != nil {
@@ -151,7 +159,7 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 		cfg.Tables[table.Name] = tc
 	}
 
-	return &ProfileResult{Config: cfg, Unresolved: unresolved, SkippedTables: skippedTables}, nil
+	return &ProfileResult{Config: cfg, Unresolved: unresolved, SkippedTables: skippedTables, FilteredSystemTables: filteredSystemTables}, nil
 }
 
 // transposeToColumns turns rows (each a slice of numCols values, one row

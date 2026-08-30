@@ -101,6 +101,7 @@ func runRun(args []string) error {
 	}
 	fmt.Printf("profiled %s: %d table(s), %d column(s) need review\n", sourcePath, len(result.Config.Tables), len(result.Unresolved))
 	warnSkippedTables(result.SkippedTables)
+	warnFilteredSystemTables(result.FilteredSystemTables)
 
 	st, err := review.NewState(configPath, *threshold)
 	if err != nil {
@@ -171,6 +172,7 @@ func runProfile(args []string) error {
 	}
 	fmt.Printf("wrote draft config to %s (%d table(s))\n", *out, len(result.Config.Tables))
 	warnSkippedTables(result.SkippedTables)
+	warnFilteredSystemTables(result.FilteredSystemTables)
 
 	if len(result.Unresolved) > 0 {
 		reportPath := *out + ".unresolved_report.yaml"
@@ -194,6 +196,20 @@ func warnSkippedTables(skipped []sqlitereader.SkippedTable) {
 	fmt.Fprintf(os.Stderr, "warning: %d table(s) skipped (unsupported SQLite virtual table module) and left out of the config:\n", len(skipped))
 	for _, st := range skipped {
 		fmt.Fprintf(os.Stderr, "  - %s: %s\n", st.Name, st.Reason)
+	}
+}
+
+// warnFilteredSystemTables prints a stderr warning for every table
+// FilterSystemTables excluded as an Esri GDB_* or Spatialite st_* system
+// table (issue #35) — the generated config has no entry for these at all,
+// so without this warning the exclusion is invisible.
+func warnFilteredSystemTables(filtered []sqlitereader.TableInfo) {
+	if len(filtered) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: %d table(s) filtered out as Esri/Spatialite system tables and left out of the config:\n", len(filtered))
+	for _, t := range filtered {
+		fmt.Fprintf(os.Stderr, "  - %s\n", t.Name)
 	}
 }
 
