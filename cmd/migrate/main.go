@@ -124,6 +124,9 @@ func runRun(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := ddl.ValidateTableConfigs(cfg); err != nil {
+		return err
+	}
 
 	statePath := configPath + ".state.json"
 	connCfg, err := connectForLoad(context.Background(), *pgURL, sourcePath, false, statePath)
@@ -234,6 +237,9 @@ func runLoad(args []string) error {
 	if err != nil {
 		return err
 	}
+	if err := ddl.ValidateTableConfigs(cfg); err != nil {
+		return err
+	}
 
 	if !*force {
 		if drifted, err := config.DetectDrift(cfg); err != nil {
@@ -263,7 +269,17 @@ func runLoad(args []string) error {
 			if !tc.Include {
 				continue
 			}
-			fmt.Print(ddl.GenerateCreateTable(tableName, tc))
+			stmt, err := ddl.GenerateCreateTable(tableName, tc)
+			if err != nil {
+				// ValidateTableConfigs above already rejected the
+				// config-bug case (ErrMissingColumnOrder), so what's
+				// left here is a legitimately all-dropped table
+				// (issue #30) — skip it with a warning instead of
+				// printing invalid SQL.
+				fmt.Fprintf(os.Stderr, "skipping table %s: %v\n", tableName, err)
+				continue
+			}
+			fmt.Print(stmt)
 		}
 		statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
 		for _, stmt := range statements {
@@ -328,6 +344,18 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		if !tc.Include {
 			continue
 		}
+		// A table with zero included columns (issue #30 — e.g. an Esri
+		// table whose only column is a geometryblob mapped to
+		// __drop__) can't be created at all, so it's excluded here
+		// rather than left to fail later — both from the DDL/COPY loop
+		// below and from the row count that sizes the progress bar.
+		// ValidateTableConfigs already rejected the distinct
+		// config-bug case (columns present but column_order missing),
+		// so anything left here is a legitimate all-dropped table.
+		if len(ddl.IncludedColumns(tc)) == 0 {
+			fmt.Fprintf(os.Stderr, "skipping table %s: %v\n", tableName, ddl.ErrNoIncludedColumns)
+			continue
+		}
 		if resume && completed[tableName] {
 			fmt.Printf("%s: skipping (already completed)\n", tableName)
 			continue
@@ -348,7 +376,11 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 
 	for _, tableName := range tableNames {
 		tc := cfg.Tables[tableName]
-		if _, err := conn.Exec(ctx, ddl.GenerateCreateTable(tableName, tc)); err != nil {
+		stmt, err := ddl.GenerateCreateTable(tableName, tc)
+		if err != nil {
+			return fmt.Errorf("generating DDL for %s: %w", tableName, err)
+		}
+		if _, err := conn.Exec(ctx, stmt); err != nil {
 			return fmt.Errorf("creating table %s: %w", tableName, err)
 		}
 		progress.startTable(tableName)

@@ -81,7 +81,10 @@ func loadFixtureEndToEnd(t *testing.T, sourceName string) (*sql.DB, *pgx.Conn, *
 		if _, err := conn.Exec(ctx, fmt.Sprintf(`DROP TABLE IF EXISTS %q`, pgTable)); err != nil {
 			t.Fatalf("drop table: %v", err)
 		}
-		stmt := ddl.GenerateCreateTable(pgTable, tc)
+		stmt, err := ddl.GenerateCreateTable(pgTable, tc)
+		if err != nil {
+			t.Fatalf("generating DDL for %s: %v", pgTable, err)
+		}
 		if _, err := conn.Exec(ctx, stmt); err != nil {
 			t.Fatalf("creating table %s:\n%s\nerror: %v", pgTable, stmt, err)
 		}

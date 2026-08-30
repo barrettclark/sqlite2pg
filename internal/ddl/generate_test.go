@@ -1,6 +1,7 @@
 package ddl
 
 import (
+	"errors"
 	"regexp"
 	"strings"
 	"testing"
@@ -19,7 +20,10 @@ func TestGenerateCreateTable_EmitsColumnsInDeclaredOrder(t *testing.T) {
 		},
 	}
 
-	ddl := GenerateCreateTable("bikes", tc)
+	ddl, err := GenerateCreateTable("bikes", tc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	idxID := strings.Index(ddl, "bike_id")
 	idxLR := strings.Index(ddl, "last_reported")
@@ -45,7 +49,10 @@ func TestGenerateCreateTable_EmitsParameterizedVarcharTypeVerbatim(t *testing.T)
 		},
 	}
 
-	ddl := GenerateCreateTable("customers", tc)
+	ddl, err := GenerateCreateTable("customers", tc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if !strings.Contains(ddl, `"first_name" varchar(45)`) {
 		t.Errorf("expected first_name varchar(45) column definition, got:\n%s", ddl)
@@ -61,7 +68,10 @@ func TestGenerateCreateTable_EmitsInlinePrimaryKey(t *testing.T) {
 		},
 	}
 
-	ddl := GenerateCreateTable("bikes", tc)
+	ddl, err := GenerateCreateTable("bikes", tc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if !strings.Contains(ddl, `PRIMARY KEY ("station_id")`) {
 		t.Errorf("expected an inline PRIMARY KEY clause, got:\n%s", ddl)
@@ -77,7 +87,10 @@ func TestGenerateCreateTable_EmitsCompositePrimaryKeyInDeclaredSeqOrder(t *testi
 		},
 	}
 
-	ddl := GenerateCreateTable("playlist_track", tc)
+	ddl, err := GenerateCreateTable("playlist_track", tc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if !strings.Contains(ddl, `PRIMARY KEY ("PlaylistId", "TrackId")`) {
 		t.Errorf("expected composite primary key in seq order, got:\n%s", ddl)
@@ -95,7 +108,10 @@ func TestGenerateCreateTable_CompositePrimaryKeyRespectsSeqNotColumnOrder(t *tes
 		},
 	}
 
-	ddl := GenerateCreateTable("t", tc)
+	ddl, err := GenerateCreateTable("t", tc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if !strings.Contains(ddl, `PRIMARY KEY ("a", "b")`) {
 		t.Errorf("expected primary key ordered by seq (a, b), not column order (b, a), got:\n%s", ddl)
@@ -108,7 +124,10 @@ func TestGenerateCreateTable_NoPrimaryKeyClauseWhenNoColumnIsAPrimaryKey(t *test
 		Columns:     map[string]config.ColumnConfig{"a": {TargetType: "integer"}},
 	}
 
-	ddl := GenerateCreateTable("t", tc)
+	ddl, err := GenerateCreateTable("t", tc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if strings.Contains(ddl, "PRIMARY KEY") {
 		t.Errorf("expected no PRIMARY KEY clause, got:\n%s", ddl)
@@ -133,7 +152,10 @@ func TestGenerateCreateTable_DisambiguatesColumnsCollidingAfter63ByteTruncation(
 		},
 	}
 
-	ddlText := GenerateCreateTable("products", tc)
+	ddlText, err := GenerateCreateTable("products", tc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	quoted := regexp.MustCompile(`"([^"]+)"`).FindAllStringSubmatch(ddlText, -1)
 	seen := map[string]bool{}
@@ -167,7 +189,10 @@ func TestGenerateCreateTable_QuotesEmbeddedDoubleQuoteAsSQLIdentifier(t *testing
 		},
 	}
 
-	ddl := GenerateCreateTable("counties", tc)
+	ddl, err := GenerateCreateTable("counties", tc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if strings.Contains(ddl, `\"`) {
 		t.Errorf("expected no backslash-escaped quotes (Go %%q style), got:\n%s", ddl)
@@ -186,12 +211,87 @@ func TestGenerateCreateTable_ExcludesDroppedColumns(t *testing.T) {
 		},
 	}
 
-	ddl := GenerateCreateTable("SchoolSites2425", tc)
+	ddl, err := GenerateCreateTable("SchoolSites2425", tc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
 
 	if strings.Contains(ddl, "SHAPE") {
 		t.Errorf("expected __drop__ column to be excluded from DDL, got:\n%s", ddl)
 	}
 	if !strings.Contains(ddl, "OBJECTID") {
 		t.Errorf("expected OBJECTID to be included, got:\n%s", ddl)
+	}
+}
+
+func TestGenerateCreateTable_ErrorsWhenEveryColumnIsDropped(t *testing.T) {
+	// An Esri table whose only column is a geometryblob mapped to
+	// __drop__ ends up with zero included columns. GenerateCreateTable
+	// must not emit `CREATE TABLE "t" (\n\n);` — Postgres rejects that as
+	// a syntax error (issue #30) — it must signal the caller instead.
+	tc := config.TableConfig{
+		ColumnOrder: []string{"SHAPE"},
+		Columns: map[string]config.ColumnConfig{
+			"SHAPE": {TargetType: "__drop__"},
+		},
+	}
+
+	stmt, err := GenerateCreateTable("geometry_only", tc)
+
+	if err == nil {
+		t.Fatalf("expected an error, got DDL:\n%s", stmt)
+	}
+	if stmt != "" {
+		t.Errorf("expected no DDL on error, got:\n%s", stmt)
+	}
+	if !errors.Is(err, ErrNoIncludedColumns) {
+		t.Errorf("expected ErrNoIncludedColumns, got: %v", err)
+	}
+	if errors.Is(err, ErrMissingColumnOrder) {
+		t.Errorf("an intentionally all-dropped table is not a missing-column_order config bug, got: %v", err)
+	}
+}
+
+func TestGenerateCreateTable_ErrorsWhenColumnOrderEmptyButColumnsPopulated(t *testing.T) {
+	// column_order is `omitempty` in the YAML schema, so a hand-trimmed
+	// config can lose the key entirely while Columns still has entries —
+	// IncludedColumns then returns nil just like the legitimate
+	// all-dropped case above, but this one is almost certainly a config
+	// bug, not an intentionally column-less table, so it must be
+	// distinguishable and reported differently.
+	tc := config.TableConfig{
+		Columns: map[string]config.ColumnConfig{
+			"bike_id": {TargetType: "integer"},
+		},
+	}
+
+	stmt, err := GenerateCreateTable("bikes", tc)
+
+	if err == nil {
+		t.Fatalf("expected an error, got DDL:\n%s", stmt)
+	}
+	if stmt != "" {
+		t.Errorf("expected no DDL on error, got:\n%s", stmt)
+	}
+	if !errors.Is(err, ErrMissingColumnOrder) {
+		t.Errorf("expected ErrMissingColumnOrder, got: %v", err)
+	}
+}
+
+func TestGenerateCreateTable_ErrorsWhenNoColumnsAtAll(t *testing.T) {
+	// A table config with neither Columns nor ColumnOrder populated (e.g.
+	// a table with genuinely zero source columns) is the same "nothing
+	// to create" case as everything being dropped, not the
+	// missing-column_order config bug — there's nothing indicating
+	// column_order was ever meant to be populated.
+	tc := config.TableConfig{}
+
+	_, err := GenerateCreateTable("empty", tc)
+
+	if !errors.Is(err, ErrNoIncludedColumns) {
+		t.Errorf("expected ErrNoIncludedColumns, got: %v", err)
+	}
+	if errors.Is(err, ErrMissingColumnOrder) {
+		t.Errorf("expected not to be classified as a missing-column_order bug, got: %v", err)
 	}
 }
