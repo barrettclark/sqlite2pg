@@ -43,6 +43,34 @@ func TestTransform_UnixEpochSeconds(t *testing.T) {
 	}
 }
 
+func TestTransform_UnixEpochMillis(t *testing.T) {
+	got, err := Transform("unix_epoch_millis", int64(1735689600000))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() != 2025 || tm.Month() != time.January || tm.Day() != 1 {
+		t.Errorf("expected 2025-01-01, got %v", tm)
+	}
+}
+
+func TestTransform_UnixEpochMicros(t *testing.T) {
+	got, err := Transform("unix_epoch_micros", int64(1735689600000000))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() != 2025 || tm.Month() != time.January || tm.Day() != 1 {
+		t.Errorf("expected 2025-01-01, got %v", tm)
+	}
+}
+
 func TestTransform_ISO8601ToTimestamptz(t *testing.T) {
 	got, err := Transform("iso8601_to_timestamptz", "2026-08-14T18:01:38.401Z")
 	if err != nil {
@@ -95,6 +123,56 @@ func TestTransform_UUIDFormatTreatsEmptyStringAsNull(t *testing.T) {
 	}
 	if got != nil {
 		t.Errorf("expected nil (SQL NULL) for an empty string, got %v", got)
+	}
+}
+
+func TestTransform_ExcelSerialToTimestamptz(t *testing.T) {
+	// 44197 is the Excel serial number for 2021-01-01.
+	got, err := Transform("excel_serial_to_timestamptz", float64(44197))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() != 2021 || tm.Month() != time.January || tm.Day() != 1 {
+		t.Errorf("expected 2021-01-01, got %v", tm)
+	}
+}
+
+func TestTransform_ExcelSerialToTimestamptzKeepsFractionalTimeOfDay(t *testing.T) {
+	// 44197.5 is noon on 2021-01-01.
+	got, err := Transform("excel_serial_to_timestamptz", float64(44197.5))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Hour() != 12 {
+		t.Errorf("expected noon, got %v", tm)
+	}
+}
+
+func TestTransform_DayFirstToTimestamptz(t *testing.T) {
+	got, err := Transform("dayfirst_to_timestamptz", "31/07/2006")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() != 2006 || tm.Month() != time.July || tm.Day() != 31 {
+		t.Errorf("expected 2006-07-31, got %v", tm)
+	}
+}
+
+func TestTransform_DayFirstToTimestamptzRejectsUnparseableValues(t *testing.T) {
+	if _, err := Transform("dayfirst_to_timestamptz", "not-a-date"); err == nil {
+		t.Fatal("expected an error for an unparseable day-first date")
 	}
 }
 

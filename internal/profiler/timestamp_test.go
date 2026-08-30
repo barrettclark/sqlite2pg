@@ -47,6 +47,27 @@ func TestParseTimestamp_ReturnsTheParsedTime(t *testing.T) {
 	}
 }
 
+func TestParseTimestamp_ParsesMonthNameDates(t *testing.T) {
+	cases := []struct {
+		s     string
+		year  int
+		month time.Month
+		day   int
+	}{
+		{"Jan 2, 2006", 2006, time.January, 2},
+		{"2 January 2006", 2006, time.January, 2},
+	}
+	for _, c := range cases {
+		tm, ok := ParseTimestamp(c.s)
+		if !ok {
+			t.Fatalf("ParseTimestamp(%q) failed to parse", c.s)
+		}
+		if tm.Year() != c.year || tm.Month() != c.month || tm.Day() != c.day {
+			t.Errorf("ParseTimestamp(%q) = %v, want %d-%s-%d", c.s, tm, c.year, c.month, c.day)
+		}
+	}
+}
+
 func TestParseTimestamp_ParsesUSStyleAMPMCorrectly(t *testing.T) {
 	// neh-grants.db stores CouncilDate/BeginGrant/EndGrant this way —
 	// every sampled value at exactly midnight, but the format itself

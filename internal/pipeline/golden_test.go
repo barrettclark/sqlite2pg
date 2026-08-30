@@ -283,6 +283,34 @@ func TestGolden_SampleDates(t *testing.T) {
 	if targetType != "timestamptz" || source != "heuristic:iso8601_timestamp" {
 		t.Errorf("logged_at (US-style M/D/YYYY h:mm:ss AM/PM): expected timestamptz via iso8601_timestamp, got %q via %q", targetType, source)
 	}
+
+	// The remaining columns cover issue #2's date/time coverage gaps:
+	// month-name dates, day-first (D/M/YYYY) dates, Excel/Access serial
+	// dates, and epoch timestamps in milliseconds/microseconds.
+	targetType, source, _ = decisionFor(t, result, "date_demo", "month_name_date")
+	if targetType != "timestamptz" || source != "heuristic:iso8601_timestamp" {
+		t.Errorf("month_name_date: expected timestamptz via iso8601_timestamp, got %q via %q", targetType, source)
+	}
+
+	targetType, source, _ = decisionFor(t, result, "date_demo", "day_first_date")
+	if targetType != "timestamptz" || source != "heuristic:day_first_date" {
+		t.Errorf("day_first_date: expected timestamptz via day_first_date, got %q via %q", targetType, source)
+	}
+
+	targetType, source, _ = decisionFor(t, result, "date_demo", "excel_serial_date")
+	if targetType != "timestamptz" || source != "heuristic:excel_serial_date" {
+		t.Errorf("excel_serial_date: expected timestamptz via excel_serial_date, got %q via %q", targetType, source)
+	}
+
+	targetType, source, _ = decisionFor(t, result, "date_demo", "epoch_millis_at")
+	if targetType != "timestamptz" || source != "heuristic:unix_epoch_millis" {
+		t.Errorf("epoch_millis_at: expected timestamptz via unix_epoch_millis, got %q via %q", targetType, source)
+	}
+
+	targetType, source, _ = decisionFor(t, result, "date_demo", "epoch_micros_at")
+	if targetType != "timestamptz" || source != "heuristic:unix_epoch_micros" {
+		t.Errorf("epoch_micros_at: expected timestamptz via unix_epoch_micros, got %q via %q", targetType, source)
+	}
 }
 
 // TestGolden_SampleUUIDs covers a real-world shape with no fixture-backed

@@ -6,6 +6,7 @@ package copywriter
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -58,6 +59,20 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		}
 		return time.Unix(sec, 0).UTC(), nil
 
+	case "unix_epoch_millis":
+		ms, ok := toInt64(raw)
+		if !ok {
+			return nil, fmt.Errorf("unix_epoch_millis: unexpected type %T", raw)
+		}
+		return time.UnixMilli(ms).UTC(), nil
+
+	case "unix_epoch_micros":
+		us, ok := toInt64(raw)
+		if !ok {
+			return nil, fmt.Errorf("unix_epoch_micros: unexpected type %T", raw)
+		}
+		return time.UnixMicro(us).UTC(), nil
+
 	case "iso8601_to_timestamptz":
 		s, ok := raw.(string)
 		if !ok {
@@ -101,6 +116,28 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			return nil, fmt.Errorf("yyyymmdd_to_date: %q: %w", s, err)
 		}
 		return tm, nil
+
+	case "excel_serial_to_timestamptz":
+		f, ok := toFloat64(raw)
+		if !ok {
+			return nil, fmt.Errorf("excel_serial_to_timestamptz: unexpected type %T", raw)
+		}
+		return excelSerialToTime(f), nil
+
+	case "dayfirst_to_timestamptz":
+		s, ok := raw.(string)
+		if !ok {
+			return raw, nil
+		}
+		// Shares profiler.ParseDayFirstTimestamp with the day_first_date
+		// heuristic that assigns this transform, for the same reason
+		// iso8601_to_timestamptz shares ParseTimestamp with its heuristic:
+		// a format the heuristic accepts must always be one this transform
+		// can actually convert.
+		if tm, ok := profiler.ParseDayFirstTimestamp(s); ok {
+			return tm, nil
+		}
+		return nil, fmt.Errorf("dayfirst_to_timestamptz: cannot parse %q", s)
 
 	case "uuid_format":
 		s, ok := raw.(string)
@@ -200,6 +237,22 @@ func toFloat64(v profiler.Value) (float64, bool) {
 	default:
 		return 0, false
 	}
+}
+
+// excelEpoch is day zero of the Excel/Access serial-date system: 1899-12-30
+// (not 1900-01-01) to account for Lotus 1-2-3's fictitious 1900-02-29,
+// which Excel deliberately preserved for backward compatibility.
+var excelEpoch = time.Date(1899, time.December, 30, 0, 0, 0, 0, time.UTC)
+
+// excelSerialToTime converts an Excel/Access serial date number to a
+// time.Time, preserving any fractional part as a time-of-day offset (e.g.
+// 44197.5 is noon on the day 44197 alone represents).
+func excelSerialToTime(serial float64) time.Time {
+	days := math.Trunc(serial)
+	fracSeconds := (serial - days) * 24 * 60 * 60
+	return excelEpoch.
+		Add(time.Duration(days) * 24 * time.Hour).
+		Add(time.Duration(fracSeconds * float64(time.Second)))
 }
 
 // julianDayToDate converts an astronomical Julian Day Number to a Gregorian
