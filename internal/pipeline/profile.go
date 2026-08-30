@@ -316,6 +316,48 @@ func varcharFinding(n int) profiler.Finding {
 	}
 }
 
+// fallbackSampleMismatch reports a sample value whose Go runtime storage
+// class can't actually be stored as target, plus true when one was found.
+// fallbackTypeFor already prefers the sample's runtime type over the
+// declared type, but it only looks at what the *majority* of storage
+// classes present imply — SQLite's dynamic typing legally allows an
+// INTEGER-declared column to hold TEXT-storage values in any row (issue
+// #16: atomic_database.db's XRAY_ENERGIES.Inner/Outer, declared INT but
+// holding subshell codes like "K"/"L1"/"M3" alongside real integers;
+// type-mismatch.db's products.qty, declared INTEGER but holding
+// 'lots-of-it' in one row of three). Trusting the majority and assigning
+// default_passthrough's 0.99 confidence without this check crashes at
+// COPY time on the first row that doesn't conform. "text" is exempt: it's
+// the one target fallbackTypeFor ever picks that can hold any Go value's
+// string representation, so nothing sampled can disqualify it.
+func fallbackSampleMismatch(target string, samples []profiler.Value) (bad profiler.Value, found bool) {
+	if target == "text" {
+		return nil, false
+	}
+	for _, v := range samples {
+		if v == nil {
+			continue
+		}
+		switch target {
+		case "integer", "bigint", "double precision":
+			switch v.(type) {
+			case int64, int, float64, float32:
+			default:
+				return v, true
+			}
+		case "timestamptz":
+			if _, ok := v.(time.Time); !ok {
+				return v, true
+			}
+		case "bytea":
+			if _, ok := v.([]byte); !ok {
+				return v, true
+			}
+		}
+	}
+	return nil, false
+}
+
 func fallbackTypeFromDeclared(declared string) string {
 	d := strings.ToUpper(declared)
 	switch {

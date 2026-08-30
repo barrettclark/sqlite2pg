@@ -251,6 +251,31 @@ func TestGolden_AtomicDatabase(t *testing.T) {
 	if len(result.Config.Tables) != 12 {
 		t.Errorf("expected 12 tables, got %d: %v", len(result.Config.Tables), tableNames(result))
 	}
+
+	// Issue #16: XRAY_ENERGIES.Inner/Outer are declared INT but really
+	// hold a mix of integer atomic numbers and text subshell codes ("K",
+	// "L1", "M3", ...) — SQLite's dynamic typing allows this even though
+	// no heuristic claims the column, so it used to fall through to
+	// default_passthrough at a blind 0.99 and crash `load` on the first
+	// text value. It must now be flagged for review instead.
+	for _, col := range []string{"Inner", "Outer"} {
+		_, source, reviewed := decisionFor(t, result, "XRAY_ENERGIES", col)
+		if source != "heuristic:default_passthrough" {
+			t.Errorf("XRAY_ENERGIES.%s: expected source heuristic:default_passthrough, got %q", col, source)
+		}
+		if reviewed {
+			t.Errorf("XRAY_ENERGIES.%s: expected reviewed=false", col)
+		}
+		found := false
+		for _, u := range result.Unresolved {
+			if u.Table == "XRAY_ENERGIES" && u.Column == col {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("expected XRAY_ENERGIES.%s to appear in Unresolved once its sample contradicted the declared-type guess", col)
+		}
+	}
 }
 
 // TestGolden_SampleDates covers two real-world date/time shapes that had
@@ -395,6 +420,47 @@ func TestGolden_SampleNumericText(t *testing.T) {
 	targetType, _, _ = decisionFor(t, result, "company_demo", "postal_code")
 	if targetType != "text" {
 		t.Errorf("postal_code: expected numeric_text to leave a meaningful-leading-zero column alone, got %q", targetType)
+	}
+}
+
+// TestGolden_SampleTypeMismatch covers issue #16: a checked-in equivalent
+// of the type-mismatch.db repro (not itself in this repo). products.qty is
+// declared INTEGER, but one row of three holds the TEXT value
+// 'lots-of-it' — well within any real sample size. SQLite's dynamic typing
+// permits this even though no heuristic recognizes it as ambiguous, so it
+// used to fall through to default_passthrough's blind 0.99 confidence and
+// crash `load` encoding "lots-of-it" into int4. name is a negative
+// control: an ordinary TEXT column must still auto-approve normally.
+func TestGolden_SampleTypeMismatch(t *testing.T) {
+	db, path := openFixture(t, "sample-type-mismatch.sqlite")
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	targetType, source, reviewed := decisionFor(t, result, "products", "qty")
+	if targetType != "integer" {
+		t.Errorf("qty: expected the suggested type integer to still be shown, got %q", targetType)
+	}
+	if source != "heuristic:default_passthrough" {
+		t.Errorf("qty: expected source heuristic:default_passthrough, got %q", source)
+	}
+	if reviewed {
+		t.Error("qty: expected reviewed=false")
+	}
+	found := false
+	for _, u := range result.Unresolved {
+		if u.Table == "products" && u.Column == "qty" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("expected products.qty to appear in Unresolved once its sample contained a value integer can't hold")
+	}
+
+	targetType, _, _ = decisionFor(t, result, "products", "name")
+	if targetType != "text" {
+		t.Errorf("name: expected an ordinary TEXT column to still auto-approve as text, got %q", targetType)
 	}
 }
 

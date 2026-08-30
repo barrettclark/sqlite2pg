@@ -37,15 +37,35 @@ func decideColumn(db *sql.DB, table string, col sqlitereader.ColumnInfo, samples
 	findings := append(profiler.Default.ProfileColumn(meta, samples), extraFindings...)
 
 	if len(findings) == 0 {
+		target := fallbackTypeFor(col.DeclaredType, samples)
+		confidence := 0.99
+		rationale := "no heuristic had an opinion; passed through via SQLite type affinity"
+		var uc *resolver.UnresolvedCase
+		if bad, found := fallbackSampleMismatch(target, samples); found {
+			// Issue #16: SQLite's dynamic typing let this declared/sample
+			// type majority be wrong for at least one row in hand already
+			// — don't carry that false confidence to `load`, which would
+			// crash encoding bad into target's binary format.
+			confidence = fullTableViolationConfidence
+			rationale = fmt.Sprintf("no heuristic had an opinion; declared type and sample majority suggested %s, but the sample itself contains a value that can't be stored as %s: %#v (SQLite's dynamic typing allows this even though the column is declared %s)", target, target, bad, col.DeclaredType)
+			uc = &resolver.UnresolvedCase{
+				Table:        table,
+				Column:       col.Name,
+				DeclaredType: col.DeclaredType,
+				Samples:      samples,
+				Findings:     findings,
+				Reason:       rationale,
+			}
+		}
 		return config.ColumnConfig{
 			DeclaredType:  col.DeclaredType,
-			TargetType:    fallbackTypeFor(col.DeclaredType, samples),
-			Confidence:    0.99,
+			TargetType:    target,
+			Confidence:    confidence,
 			Source:        "heuristic:default_passthrough",
-			Rationale:     "no heuristic had an opinion; passed through via SQLite type affinity",
+			Rationale:     rationale,
 			Reviewed:      false,
 			PrimaryKeySeq: col.PrimaryKeySeq,
-		}, nil, nil
+		}, uc, nil
 	}
 
 	best, needsReview := resolver.Decide(findings, threshold)

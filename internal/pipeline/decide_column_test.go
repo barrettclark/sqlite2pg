@@ -111,6 +111,34 @@ func TestDecideColumn_SkipsTheFullTableCheckWhenAlreadyFlaggedForReview(t *testi
 	}
 }
 
+func TestDecideColumn_FlagsForReviewWhenDefaultPassthroughSampleMixesIncompatibleStorageClasses(t *testing.T) {
+	// Issue #16: SQLite's dynamic typing legally allows an
+	// INTEGER-declared column to hold TEXT-storage values in any row
+	// (e.g. atomic_database.db's XRAY_ENERGIES.Inner/Outer, declared INT
+	// but containing subshell codes like "K"/"L1"/"M3" alongside real
+	// integers). No heuristic claims this column, so it used to fall
+	// straight through to default_passthrough at a blind 0.99 confidence
+	// based only on the declared type / majority sample type — crashing
+	// at COPY time on the first text value. A sample containing both
+	// numeric and non-numeric-text values must not auto-approve.
+	db, _ := openTestDB(t, `CREATE TABLE items (id INTEGER PRIMARY KEY, qty INTEGER);`)
+	db.Exec(`INSERT INTO items (qty) VALUES (1), (2), ('lots-of-it')`)
+
+	col := sqlitereader.ColumnInfo{Name: "qty", DeclaredType: "INTEGER"}
+	sample := []any{int64(1), int64(2), "lots-of-it"}
+
+	cc, unresolved, err := decideColumn(db, "items", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.Confidence >= 0.9 {
+		t.Errorf("expected confidence dropped below threshold once the sample showed a non-numeric value in an integer-targeted column, got %f", cc.Confidence)
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase once default_passthrough's own sample contradicted its declared-type guess")
+	}
+}
+
 func TestDecideColumn_ReviewedAlwaysStartsFalseRegardlessOfConfidence(t *testing.T) {
 	// Reviewed means "a human confirmed this," a separate concept from
 	// confidence/needs-review — profiling never sets it, whether a column
