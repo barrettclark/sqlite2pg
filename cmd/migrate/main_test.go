@@ -71,6 +71,7 @@ func TestRunResolve_OverridingTargetTypeClearsAStaleTransform(t *testing.T) {
 	dir := t.TempDir()
 	configPath := filepath.Join(dir, "test.migration.yaml")
 	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
 		Tables: map[string]config.TableConfig{
 			"invoice_items": {
 				ColumnOrder: []string{"Quantity"},

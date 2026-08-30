@@ -86,6 +86,7 @@ func newTestState(t *testing.T) (*review.State, string) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.migration.yaml")
 	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
 		Tables: map[string]config.TableConfig{
 			"bikes": {
 				ColumnOrder: []string{"bike_id", "is_installed"},
@@ -163,6 +164,7 @@ func TestOnTypeSelected_AppliesTheDecisionAndRefreshesTheGrid(t *testing.T) {
 func TestOnTypeSelected_ReselectingTheSameTypePreservesTheTransform(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.migration.yaml")
 	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
 		Tables: map[string]config.TableConfig{
 			"bikes": {
 				ColumnOrder: []string{"last_reported"},

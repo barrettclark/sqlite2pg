@@ -8,6 +8,7 @@ import (
 
 func sampleConfig() *config.MigrationConfig {
 	return &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
 		Tables: map[string]config.TableConfig{
 			"bikes": {
 				ColumnOrder: []string{"bike_id", "is_installed"},

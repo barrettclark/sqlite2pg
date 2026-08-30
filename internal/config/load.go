@@ -17,5 +17,8 @@ func Load(path string) (*MigrationConfig, error) {
 	if err := yaml.Unmarshal(data, &cfg); err != nil {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
+	if cfg.ConfigVersion != CurrentConfigVersion {
+		return nil, fmt.Errorf("config %s has config_version %d, but this build of sqlite2pg understands version %d; re-run `migrate profile` to regenerate it", path, cfg.ConfigVersion, CurrentConfigVersion)
+	}
 	return &cfg, nil
 }

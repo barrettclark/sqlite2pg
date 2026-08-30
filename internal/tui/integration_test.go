@@ -41,7 +41,8 @@ func TestRun_FullFlowViaSimulationScreen(t *testing.T) {
 	}
 	path := filepath.Join(t.TempDir(), "test.migration.yaml")
 	cfg := &config.MigrationConfig{
-		Source: config.SourceInfo{Path: abs, Kind: "sqlite"},
+		ConfigVersion: config.CurrentConfigVersion,
+		Source:        config.SourceInfo{Path: abs, Kind: "sqlite"},
 		Tables: map[string]config.TableConfig{
 			"bikes": {
 				Include:     true,
