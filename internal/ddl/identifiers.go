@@ -47,31 +47,52 @@ func PostgresColumnNames(tc config.TableConfig) map[string]string {
 // group's members stay both unique and stable across runs, since the
 // truncation-plus-hash is a pure function of each name alone.
 func disambiguateIdentifiers(names []string) map[string]string {
-	groups := make(map[string][]int, len(names))
+	disambiguated := disambiguateNames(names, names)
+
+	result := make(map[string]string, len(names))
 	for i, name := range names {
+		result[name] = disambiguated[i]
+	}
+	return result
+}
+
+// disambiguateNames is disambiguateIdentifiers' index-parallel counterpart,
+// for callers that can't key a result map by displayNames alone because two
+// different entries may legitimately share the same display name (e.g. two
+// foreign keys on the same local columns that reference different tables —
+// see foreignKeyConstraintNames in foreign_keys.go). Every collision, from
+// truncation or from a shared display name, is disambiguated using the
+// corresponding entry in identities — a value guaranteed unique per entry —
+// so the hash suffix still distinguishes them even when their display names
+// are identical.
+func disambiguateNames(displayNames, identities []string) []string {
+	groups := make(map[string][]int, len(displayNames))
+	for i, name := range displayNames {
 		t := truncateBytes(name, maxIdentifierLen)
 		groups[t] = append(groups[t], i)
 	}
 
-	result := make(map[string]string, len(names))
+	result := make([]string, len(displayNames))
 	for truncated, idxs := range groups {
 		if len(idxs) == 1 {
-			result[names[idxs[0]]] = truncated
+			result[idxs[0]] = truncated
 			continue
 		}
 		for _, i := range idxs {
-			result[names[i]] = disambiguateOne(names[i])
+			result[i] = disambiguateOne(displayNames[i], identities[i])
 		}
 	}
 	return result
 }
 
-// disambiguateOne returns name's truncation-safe identifier plus a short
-// hash suffix of the full original name.
-func disambiguateOne(name string) string {
-	sum := sha1.Sum([]byte(name))
+// disambiguateOne returns display's truncation-safe identifier plus a short
+// hash suffix of identity — the value that actually distinguishes this
+// entry from the others it collided with (usually identity == display, but
+// see disambiguateNames).
+func disambiguateOne(display, identity string) string {
+	sum := sha1.Sum([]byte(identity))
 	suffix := "_" + hex.EncodeToString(sum[:])[:identifierHashLen]
-	base := truncateBytes(name, maxIdentifierLen-len(suffix))
+	base := truncateBytes(display, maxIdentifierLen-len(suffix))
 	return base + suffix
 }
 

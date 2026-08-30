@@ -173,6 +173,76 @@ func TestGenerateForeignKeyConstraints_SkipsForeignKeyOnADroppedLocalColumn(t *t
 	}
 }
 
+func TestGenerateForeignKeyConstraints_TruncatesAndDisambiguatesLongConstraintNames(t *testing.T) {
+	// A long table name plus a composite key's joined column names easily
+	// exceeds Postgres's 63-byte NAMEDATALEN limit. Two different
+	// composite foreign keys on the same long-named table, whose "fk_" +
+	// table + "_" + columns names would truncate to the same 63-byte
+	// prefix, must not collapse into the same constraint name (issue #36)
+	// — Postgres would silently truncate both to the same identifier and
+	// the second ALTER TABLE ... ADD CONSTRAINT would fail with
+	// "constraint ... already exists".
+	longTable := "a_very_long_table_name_that_pushes_generated_identifiers_over_the_limit"
+	cfg := &config.MigrationConfig{
+		Tables: map[string]config.TableConfig{
+			"parents": {
+				Include:     true,
+				ColumnOrder: []string{"column_one", "column_two"},
+				Columns: map[string]config.ColumnConfig{
+					"column_one": {TargetType: "integer"},
+					"column_two": {TargetType: "integer"},
+				},
+			},
+			"other_parents": {
+				Include:     true,
+				ColumnOrder: []string{"column_one", "column_two"},
+				Columns: map[string]config.ColumnConfig{
+					"column_one": {TargetType: "integer"},
+					"column_two": {TargetType: "integer"},
+				},
+			},
+			longTable: {
+				Include:     true,
+				ColumnOrder: []string{"column_one", "column_two", "column_three", "column_four"},
+				Columns: map[string]config.ColumnConfig{
+					"column_one":   {TargetType: "integer"},
+					"column_two":   {TargetType: "integer"},
+					"column_three": {TargetType: "integer"},
+					"column_four":  {TargetType: "integer"},
+				},
+				ForeignKeys: []config.ForeignKey{
+					{Columns: []string{"column_one", "column_two"}, RefTable: "parents", RefColumns: []string{"column_one", "column_two"}},
+					{Columns: []string{"column_three", "column_four"}, RefTable: "other_parents", RefColumns: []string{"column_one", "column_two"}},
+				},
+			},
+		},
+	}
+
+	statements, skipped := GenerateForeignKeyConstraints(cfg)
+
+	if len(skipped) != 0 {
+		t.Fatalf("expected no skipped foreign keys, got %v", skipped)
+	}
+	if len(statements) != 2 {
+		t.Fatalf("expected 2 statements, got %d: %v", len(statements), statements)
+	}
+
+	names := make(map[string]bool, len(statements))
+	for _, stmt := range statements {
+		start := strings.Index(stmt, "ADD CONSTRAINT \"") + len("ADD CONSTRAINT \"")
+		end := strings.Index(stmt[start:], "\"")
+		name := stmt[start : start+end]
+
+		if len(name) > 63 {
+			t.Errorf("constraint name %q is %d bytes, exceeds Postgres's 63-byte NAMEDATALEN limit", name, len(name))
+		}
+		if names[name] {
+			t.Errorf("constraint name %q was generated for more than one foreign key; Postgres would reject the second ADD CONSTRAINT as a duplicate", name)
+		}
+		names[name] = true
+	}
+}
+
 func TestGenerateForeignKeyConstraints_OmitsNoActionClauses(t *testing.T) {
 	cfg := &config.MigrationConfig{
 		Tables: map[string]config.TableConfig{

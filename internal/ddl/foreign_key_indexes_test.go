@@ -75,6 +75,69 @@ func TestGenerateForeignKeyIndexes_EmitsCompositeIndexForACompositeForeignKey(t 
 	}
 }
 
+func TestGenerateForeignKeyIndexes_TruncatesAndDisambiguatesLongIndexNames(t *testing.T) {
+	// Same collision hazard as the constraint-name case (issue #36):
+	// "idx_" + a long table name + joined composite-key column names can
+	// exceed Postgres's 63-byte NAMEDATALEN limit, and two different
+	// foreign keys on the same table can truncate to the same index name.
+	longTable := "a_very_long_table_name_that_pushes_generated_identifiers_over_the_limit"
+	cfg := &config.MigrationConfig{
+		Tables: map[string]config.TableConfig{
+			"parents": {
+				Include:     true,
+				ColumnOrder: []string{"column_one", "column_two"},
+				Columns: map[string]config.ColumnConfig{
+					"column_one": {TargetType: "integer"},
+					"column_two": {TargetType: "integer"},
+				},
+			},
+			"other_parents": {
+				Include:     true,
+				ColumnOrder: []string{"column_one", "column_two"},
+				Columns: map[string]config.ColumnConfig{
+					"column_one": {TargetType: "integer"},
+					"column_two": {TargetType: "integer"},
+				},
+			},
+			longTable: {
+				Include:     true,
+				ColumnOrder: []string{"column_one", "column_two", "column_three", "column_four"},
+				Columns: map[string]config.ColumnConfig{
+					"column_one":   {TargetType: "integer"},
+					"column_two":   {TargetType: "integer"},
+					"column_three": {TargetType: "integer"},
+					"column_four":  {TargetType: "integer"},
+				},
+				ForeignKeys: []config.ForeignKey{
+					{Columns: []string{"column_one", "column_two"}, RefTable: "parents", RefColumns: []string{"column_one", "column_two"}},
+					{Columns: []string{"column_three", "column_four"}, RefTable: "other_parents", RefColumns: []string{"column_one", "column_two"}},
+				},
+			},
+		},
+	}
+
+	statements := GenerateForeignKeyIndexes(cfg)
+
+	if len(statements) != 2 {
+		t.Fatalf("expected 2 statements, got %d: %v", len(statements), statements)
+	}
+
+	names := make(map[string]bool, len(statements))
+	for _, stmt := range statements {
+		start := strings.Index(stmt, "CREATE INDEX \"") + len("CREATE INDEX \"")
+		end := strings.Index(stmt[start:], "\"")
+		name := stmt[start : start+end]
+
+		if len(name) > 63 {
+			t.Errorf("index name %q is %d bytes, exceeds Postgres's 63-byte NAMEDATALEN limit", name, len(name))
+		}
+		if names[name] {
+			t.Errorf("index name %q was generated for more than one foreign key; Postgres would reject the second CREATE INDEX as a duplicate", name)
+		}
+		names[name] = true
+	}
+}
+
 func TestGenerateForeignKeyIndexes_SkipsAnInvalidForeignKey(t *testing.T) {
 	// Same shape as GenerateForeignKeyConstraints' skip tests: a foreign
 	// key referencing an excluded table never becomes a real constraint,
