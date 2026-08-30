@@ -42,6 +42,20 @@ type TableConfig struct {
 	// inference, so it's applied automatically rather than requiring human
 	// review the way an ambiguous type decision does.
 	ForeignKeys []ForeignKey `yaml:"foreign_keys,omitempty"`
+
+	// SuggestedForeignKeys are undeclared relationships inferred from
+	// column-naming convention plus a full-column value-containment check
+	// (issue #6) — unlike ForeignKeys, these are never applied
+	// automatically. Promote one by hand into ForeignKeys above (or edit
+	// it first) to accept it; delete the entry to reject it.
+	SuggestedForeignKeys []SuggestedForeignKey `yaml:"suggested_foreign_keys,omitempty"`
+}
+
+// SuggestedForeignKey is one inferred-but-unconfirmed foreign key, carrying
+// the rationale a human needs to judge it (see TableConfig.SuggestedForeignKeys).
+type SuggestedForeignKey struct {
+	ForeignKey `yaml:",inline"`
+	Rationale  string `yaml:"rationale"`
 }
 
 // ForeignKey is one declared foreign key constraint, which may span

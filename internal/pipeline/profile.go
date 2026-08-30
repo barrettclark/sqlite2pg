@@ -62,11 +62,17 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 
 	var unresolved []resolver.UnresolvedCase
 
+	suggestedFKs, err := inferForeignKeys(db, tables)
+	if err != nil {
+		return nil, fmt.Errorf("inferring foreign keys: %w", err)
+	}
+
 	for _, table := range tables {
 		tc := config.TableConfig{
-			Include:     true,
-			Columns:     map[string]config.ColumnConfig{},
-			ForeignKeys: convertForeignKeys(table.ForeignKeys),
+			Include:              true,
+			Columns:              map[string]config.ColumnConfig{},
+			ForeignKeys:          convertForeignKeys(table.ForeignKeys),
+			SuggestedForeignKeys: suggestedFKs[table.Name],
 		}
 
 		columnNames := make([]string, len(table.Columns))

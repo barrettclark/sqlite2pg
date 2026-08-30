@@ -179,6 +179,28 @@ func TestProfileDatabase_TreatsUniformVARCHARLengthAcrossATableAsAMechanicalDefa
 	}
 }
 
+func TestProfileDatabase_SurfacesAnInferredForeignKeyAsASuggestion(t *testing.T) {
+	db, path := openTestDB(t, `
+		CREATE TABLE Customers (CustomerId INTEGER PRIMARY KEY);
+		CREATE TABLE Invoices (InvoiceId INTEGER PRIMARY KEY, CustomerId INTEGER);
+	`)
+	db.Exec(`INSERT INTO Customers (CustomerId) VALUES (1), (2)`)
+	db.Exec(`INSERT INTO Invoices (CustomerId) VALUES (1), (2)`)
+
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	invoices := result.Config.Tables["Invoices"]
+	if len(invoices.SuggestedForeignKeys) != 1 {
+		t.Fatalf("expected 1 suggested foreign key on Invoices, got %d: %+v", len(invoices.SuggestedForeignKeys), invoices.SuggestedForeignKeys)
+	}
+	if len(invoices.ForeignKeys) != 0 {
+		t.Errorf("expected the suggestion to stay out of ForeignKeys until promoted by hand, got %+v", invoices.ForeignKeys)
+	}
+}
+
 func TestProfileDatabase_RescuesASparseColumnMissedByRandomSampling(t *testing.T) {
 	db, path := openTestDB(t, `
 		CREATE TABLE registry (
