@@ -6,6 +6,7 @@ package sqlitereader
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 )
 
 // ColumnInfo describes a column as declared in the SQLite source schema.
@@ -40,13 +41,54 @@ type TableInfo struct {
 	ForeignKeys []ForeignKeyInfo
 }
 
+// SkippedTable records a table ReadSchema deliberately left out of its
+// result because reading it hit the one error it recognizes as a genuinely
+// unsupported (not fatal) case: a virtual table backed by a SQLite module
+// modernc.org/sqlite doesn't implement. Reason preserves the underlying
+// driver error so a caller can report exactly what was skipped and why,
+// rather than the skip being invisible (issue #29).
+type SkippedTable struct {
+	Name   string
+	Reason string
+}
+
+// unsupportedVirtualTableModuleMarker is the substring modernc.org/sqlite
+// includes in the error returned for a CREATE VIRTUAL TABLE (or any later
+// access, like PRAGMA table_info) that names a module it has no
+// implementation for — e.g. "SQL logic error: no such module: some_module
+// (1)". This is the one column-read failure ReadSchema treats as an
+// intentional skip; verified directly against modernc.org/sqlite v1.56.0 by
+// creating a virtual table with a bogus module name and inspecting the
+// resulting error text (SQLite reports this case with the generic
+// SQLITE_ERROR code, so the error code alone can't distinguish it from any
+// other failure — only this message substring can).
+const unsupportedVirtualTableModuleMarker = "no such module:"
+
+// isUnsupportedVirtualTableModuleError reports whether err is the specific
+// "no such module" failure a genuinely-unsupported virtual table produces,
+// as opposed to any other column-read failure (a locked database,
+// corruption, a permissions error) that must not be silently swallowed.
+func isUnsupportedVirtualTableModuleError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), unsupportedVirtualTableModuleMarker)
+}
+
 // ReadSchema reads every user table (excluding SQLite's own sqlite_%
 // system tables), its columns via PRAGMA table_info, and its declared
 // foreign keys via PRAGMA foreign_key_list.
-func ReadSchema(db *sql.DB) ([]TableInfo, error) {
+//
+// A table whose column read fails because it's backed by a SQLite virtual
+// table module modernc.org/sqlite doesn't implement (some FGDB/Spatialite
+// exports declare these for spatial indexes and reference-system catalogs,
+// which aren't user data) is skipped rather than failing the whole schema
+// read, and reported back via the returned []SkippedTable so the skip is
+// visible to the caller rather than silent. Any other column-read failure
+// (a locked database, disk corruption, a permissions error) aborts with an
+// error instead — issue #29: it must never look like a clean, complete
+// migration when a table went unread for an unrelated reason.
+func ReadSchema(db *sql.DB) ([]TableInfo, []SkippedTable, error) {
 	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
-		return nil, fmt.Errorf("listing tables: %w", err)
+		return nil, nil, fmt.Errorf("listing tables: %w", err)
 	}
 	defer rows.Close()
 
@@ -54,31 +96,32 @@ func ReadSchema(db *sql.DB) ([]TableInfo, error) {
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return nil, fmt.Errorf("scanning table name: %w", err)
+			return nil, nil, fmt.Errorf("scanning table name: %w", err)
 		}
 		tableNames = append(tableNames, name)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	var tables []TableInfo
+	var skipped []SkippedTable
 	for _, name := range tableNames {
 		cols, err := readColumns(db, name)
 		if err != nil {
-			// Some FGDB/Spatialite exports declare virtual tables (spatial
-			// indexes, reference-system catalogs) backed by SQLite modules
-			// modernc.org/sqlite doesn't implement. They're not user data —
-			// skip them rather than failing the whole schema read.
-			continue
+			if isUnsupportedVirtualTableModuleError(err) {
+				skipped = append(skipped, SkippedTable{Name: name, Reason: err.Error()})
+				continue
+			}
+			return nil, nil, fmt.Errorf("reading columns for %s: %w", name, err)
 		}
 		fks, err := ReadForeignKeys(db, name)
 		if err != nil {
-			return nil, fmt.Errorf("reading foreign keys for %s: %w", name, err)
+			return nil, nil, fmt.Errorf("reading foreign keys for %s: %w", name, err)
 		}
 		tables = append(tables, TableInfo{Name: name, Columns: cols, ForeignKeys: fks})
 	}
-	return tables, nil
+	return tables, skipped, nil
 }
 
 func readColumns(db *sql.DB, table string) ([]ColumnInfo, error) {

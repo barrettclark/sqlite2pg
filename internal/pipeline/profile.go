@@ -23,6 +23,12 @@ import (
 type ProfileResult struct {
 	Config     *config.MigrationConfig
 	Unresolved []resolver.UnresolvedCase
+
+	// SkippedTables are tables ReadSchema deliberately left unread because
+	// they're backed by an unsupported SQLite virtual table module (issue
+	// #29) — not a failure, but not silently ignorable either, since the
+	// generated config simply has no entry for them.
+	SkippedTables []sqlitereader.SkippedTable
 }
 
 // ProfileDatabase reads db's schema, samples up to sampleSize rows per
@@ -33,7 +39,7 @@ type ProfileResult struct {
 // that need human review are both marked reviewed: false and included in
 // Unresolved.
 func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold float64) (*ProfileResult, error) {
-	tables, err := sqlitereader.ReadSchema(db)
+	tables, skippedTables, err := sqlitereader.ReadSchema(db)
 	if err != nil {
 		return nil, fmt.Errorf("reading schema: %w", err)
 	}
@@ -58,6 +64,12 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 		},
 		ToolVersion: "0.1.0",
 		Tables:      map[string]config.TableConfig{},
+	}
+	for _, st := range skippedTables {
+		cfg.SkippedTables = append(cfg.SkippedTables, config.SkippedTable{
+			Name:   st.Name,
+			Reason: st.Reason,
+		})
 	}
 
 	var unresolved []resolver.UnresolvedCase
@@ -139,7 +151,7 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 		cfg.Tables[table.Name] = tc
 	}
 
-	return &ProfileResult{Config: cfg, Unresolved: unresolved}, nil
+	return &ProfileResult{Config: cfg, Unresolved: unresolved, SkippedTables: skippedTables}, nil
 }
 
 // transposeToColumns turns rows (each a slice of numCols values, one row

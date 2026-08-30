@@ -99,6 +99,7 @@ func runRun(args []string) error {
 		defer os.Remove(configPath)
 	}
 	fmt.Printf("profiled %s: %d table(s), %d column(s) need review\n", sourcePath, len(result.Config.Tables), len(result.Unresolved))
+	warnSkippedTables(result.SkippedTables)
 
 	st, err := review.NewState(configPath, *threshold)
 	if err != nil {
@@ -165,6 +166,7 @@ func runProfile(args []string) error {
 		return err
 	}
 	fmt.Printf("wrote draft config to %s (%d table(s))\n", *out, len(result.Config.Tables))
+	warnSkippedTables(result.SkippedTables)
 
 	if len(result.Unresolved) > 0 {
 		reportPath := *out + ".unresolved_report.yaml"
@@ -174,6 +176,21 @@ func runProfile(args []string) error {
 		return resolveErr
 	}
 	return nil
+}
+
+// warnSkippedTables prints a stderr warning for every table ReadSchema
+// deliberately skipped (issue #29: a table backed by an unsupported SQLite
+// virtual table module) — the generated config has no entry for these at
+// all, so without this warning the only sign anything was skipped is a
+// missing table discovered after the fact in Postgres.
+func warnSkippedTables(skipped []sqlitereader.SkippedTable) {
+	if len(skipped) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: %d table(s) skipped (unsupported SQLite virtual table module) and left out of the config:\n", len(skipped))
+	for _, st := range skipped {
+		fmt.Fprintf(os.Stderr, "  - %s: %s\n", st.Name, st.Reason)
+	}
 }
 
 // --- review ------------------------------------------------------------

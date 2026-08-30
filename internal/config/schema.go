@@ -17,6 +17,21 @@ type MigrationConfig struct {
 	GeneratedAt   time.Time              `yaml:"generated_at,omitempty"`
 	ToolVersion   string                 `yaml:"tool_version,omitempty"`
 	Tables        map[string]TableConfig `yaml:"tables"`
+
+	// SkippedTables are source tables ReadSchema deliberately left out of
+	// Tables because they're backed by a SQLite virtual table module this
+	// tool doesn't implement (issue #29) — e.g. a spatial index or
+	// reference-system catalog from an FGDB/Spatialite export. Recorded here
+	// so a human reviewing this config can see exactly what wasn't migrated
+	// and why, rather than the omission being silent.
+	SkippedTables []SkippedTable `yaml:"skipped_tables,omitempty"`
+}
+
+// SkippedTable is one source table ReadSchema couldn't read and skipped —
+// see MigrationConfig.SkippedTables.
+type SkippedTable struct {
+	Name   string `yaml:"name"`
+	Reason string `yaml:"reason"`
 }
 
 // SourceInfo identifies the SQLite source file this config was generated
