@@ -3,6 +3,7 @@ package review
 import (
 	"database/sql"
 	"fmt"
+	"unicode/utf8"
 
 	"sqlite2pg/internal/config"
 	"sqlite2pg/internal/ddl"
@@ -63,7 +64,9 @@ func sampleGridData(cfg *config.MigrationConfig, limit int) GridData {
 }
 
 // formatSampleValue renders a raw sampled value for display, truncating
-// long text/binary values so the review grid stays scannable.
+// long text/binary values so the review grid stays scannable. Truncation
+// is by rune count, not byte count, so multi-byte UTF-8 characters are
+// never split mid-character.
 func formatSampleValue(v any) string {
 	const maxLen = 40
 	switch val := v.(type) {
@@ -73,8 +76,9 @@ func formatSampleValue(v any) string {
 		return fmt.Sprintf("<%d bytes>", len(val))
 	}
 	s := fmt.Sprintf("%v", v)
-	if len(s) > maxLen {
-		return s[:maxLen] + "…"
+	if utf8.RuneCountInString(s) > maxLen {
+		runes := []rune(s)
+		return string(runes[:maxLen]) + "…"
 	}
 	return s
 }

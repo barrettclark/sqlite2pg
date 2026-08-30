@@ -3,6 +3,7 @@ package review
 import (
 	"path/filepath"
 	"testing"
+	"unicode/utf8"
 
 	_ "modernc.org/sqlite"
 
@@ -91,5 +92,26 @@ func TestSampleGridData_ReturnsEmptySetWhenSourceIsUnreachable(t *testing.T) {
 	grid := sampleGridData(cfg, 5)
 	if len(grid) != 0 {
 		t.Errorf("expected no grid data when source is unreachable, got %v", grid)
+	}
+}
+
+func TestFormatSampleValue_TruncatesOnRuneBoundary(t *testing.T) {
+	// A naive s[:40] byte truncation lands mid-character in this string
+	// (inside the "í" and again in the em dash), producing invalid UTF-8.
+	s := "Museo Nacional Centro de Arte Reina Sofía — Colección"
+
+	got := formatSampleValue(s)
+
+	if !utf8.ValidString(got) {
+		t.Fatalf("formatSampleValue produced invalid UTF-8: %q", got)
+	}
+	if !utf8.ValidString(s[:40]) {
+		// Sanity check: confirm this fixture actually exercises the bug —
+		// a naive byte truncation at maxLen must itself be invalid.
+	} else {
+		t.Fatalf("fixture string does not exercise a mid-rune byte cut at maxLen=40; adjust the fixture")
+	}
+	if got != "Museo Nacional Centro de Arte Reina Sofí…" {
+		t.Errorf("unexpected truncation result: %q", got)
 	}
 }
