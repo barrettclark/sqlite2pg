@@ -37,6 +37,14 @@ table into Postgres via COPY; press `c` to cancel — nothing touches
 Postgres and the draft config is deleted. Either raises a Yes/No
 confirmation before doing anything irreversible.
 
+The grid always shows the *raw* source value, not what it converts to —
+by design, so review reflects exactly what's in the source rather than a
+preview of the transform. This can look odd for a column heading to
+`integer`: a source like `year_founded` exported from pandas (which
+upcasts a whole integer column to float the moment any row is missing a
+value) stores `1998.0` as text, and that's what the grid shows — but the
+loaded Postgres value is the clean integer `1998`, not `1998.0`.
+
 For scripted or staged use — profile now, review later, load in CI — the
 same steps are available as three separate commands. Note that the review
 step itself is interactive-only (it needs a real terminal for the TUI) and
