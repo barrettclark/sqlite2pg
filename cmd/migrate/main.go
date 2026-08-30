@@ -10,6 +10,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"sort"
 
@@ -265,32 +266,7 @@ func runLoad(args []string) error {
 	}
 
 	if *dryRun {
-		for tableName, tc := range cfg.Tables {
-			if !tc.Include {
-				continue
-			}
-			stmt, err := ddl.GenerateCreateTable(tableName, tc)
-			if err != nil {
-				// ValidateTableConfigs above already rejected the
-				// config-bug case (ErrMissingColumnOrder), so what's
-				// left here is a legitimately all-dropped table
-				// (issue #30) — skip it with a warning instead of
-				// printing invalid SQL.
-				fmt.Fprintf(os.Stderr, "skipping table %s: %v\n", tableName, err)
-				continue
-			}
-			fmt.Print(stmt)
-		}
-		statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
-		for _, stmt := range statements {
-			fmt.Println(stmt)
-		}
-		for _, reason := range skipped {
-			fmt.Fprintf(os.Stderr, "skipping foreign key: %s\n", reason)
-		}
-		for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
-			fmt.Println(stmt)
-		}
+		printDryRunDDL(os.Stdout, cfg)
 		return nil
 	}
 
@@ -305,6 +281,48 @@ func runLoad(args []string) error {
 	}
 
 	return executeLoad(cfg, connCfg, *resume, statePath)
+}
+
+// printDryRunDDL writes the CREATE TABLE statements, foreign key
+// constraints, and foreign key indexes generated from cfg to w. Table names
+// are sorted first — cfg.Tables is a Go map, and ranging over it directly
+// (as this used to do) produces a randomized table order on every run,
+// making a diff between two dry runs show spurious churn even when nothing
+// meaningful changed (issue #32). executeLoad sorts for the same reason.
+func printDryRunDDL(w io.Writer, cfg *config.MigrationConfig) {
+	tableNames := make([]string, 0, len(cfg.Tables))
+	for tableName := range cfg.Tables {
+		tableNames = append(tableNames, tableName)
+	}
+	sort.Strings(tableNames)
+
+	for _, tableName := range tableNames {
+		tc := cfg.Tables[tableName]
+		if !tc.Include {
+			continue
+		}
+		stmt, err := ddl.GenerateCreateTable(tableName, tc)
+		if err != nil {
+			// ValidateTableConfigs above already rejected the
+			// config-bug case (ErrMissingColumnOrder), so what's
+			// left here is a legitimately all-dropped table
+			// (issue #30) — skip it with a warning instead of
+			// printing invalid SQL.
+			fmt.Fprintf(os.Stderr, "skipping table %s: %v\n", tableName, err)
+			continue
+		}
+		fmt.Fprint(w, stmt)
+	}
+	statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
+	for _, stmt := range statements {
+		fmt.Fprintln(w, stmt)
+	}
+	for _, reason := range skipped {
+		fmt.Fprintf(os.Stderr, "skipping foreign key: %s\n", reason)
+	}
+	for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
+		fmt.Fprintln(w, stmt)
+	}
 }
 
 // executeLoad connects to Postgres and, for every included table, creates

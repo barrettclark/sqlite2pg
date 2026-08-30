@@ -1,8 +1,10 @@
 package main
 
 import (
+	"bytes"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 
@@ -102,5 +104,46 @@ func TestRunResolve_OverridingTargetTypeClearsAStaleTransform(t *testing.T) {
 	}
 	if col.Transform != "" {
 		t.Errorf("expected the stale int_to_bool transform to be cleared, got %q", col.Transform)
+	}
+}
+
+func TestPrintDryRunDDL_OrdersTablesAlphabeticallyRegardlessOfMapIteration(t *testing.T) {
+	// Regression (issue #32): cfg.Tables is a Go map, and ranging over it
+	// directly randomizes CREATE TABLE order between runs, so `migrate
+	// load --dry-run` on an unchanged config could produce a spuriously
+	// different diff each time. printDryRunDDL must always sort table
+	// names before iterating, the same way executeLoad already does.
+	names := []string{"zebra", "middle", "apple", "banana", "yak"}
+	tables := make(map[string]config.TableConfig, len(names))
+	for _, name := range names {
+		tables[name] = config.TableConfig{
+			Include:     true,
+			ColumnOrder: []string{"id"},
+			Columns: map[string]config.ColumnConfig{
+				"id": {TargetType: "integer"},
+			},
+		}
+	}
+	cfg := &config.MigrationConfig{Tables: tables}
+
+	var buf bytes.Buffer
+	printDryRunDDL(&buf, cfg)
+	output := buf.String()
+
+	want := append([]string(nil), names...)
+	sort.Strings(want)
+
+	var got []string
+	for _, name := range names {
+		got = append(got, name)
+	}
+	sort.Slice(got, func(i, j int) bool {
+		return strings.Index(output, `CREATE TABLE "`+got[i]+`"`) < strings.Index(output, `CREATE TABLE "`+got[j]+`"`)
+	})
+
+	for i, name := range want {
+		if got[i] != name {
+			t.Fatalf("expected table order %v (sorted), got %v", want, got)
+		}
 	}
 }
