@@ -14,7 +14,7 @@ import (
 // values means no real evidence of a relationship, so it must never be
 // suggested as one.
 func ColumnValuesContainedIn(db *sql.DB, table, column, refTable, refColumn string) (contained bool, nonNullCount int64, err error) {
-	err = db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %q WHERE %q IS NOT NULL`, table, column)).Scan(&nonNullCount)
+	err = db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %s WHERE %s IS NOT NULL`, quoteIdent(table), quoteIdent(column))).Scan(&nonNullCount)
 	if err != nil {
 		return false, 0, fmt.Errorf("counting non-null values in %s.%s: %w", table, column, err)
 	}
@@ -24,8 +24,8 @@ func ColumnValuesContainedIn(db *sql.DB, table, column, refTable, refColumn stri
 
 	var violations int64
 	err = db.QueryRow(fmt.Sprintf(
-		`SELECT COUNT(*) FROM %q WHERE %q IS NOT NULL AND %q NOT IN (SELECT %q FROM %q)`,
-		table, column, column, refColumn, refTable,
+		`SELECT COUNT(*) FROM %s WHERE %s IS NOT NULL AND %s NOT IN (SELECT %s FROM %s)`,
+		quoteIdent(table), quoteIdent(column), quoteIdent(column), quoteIdent(refColumn), quoteIdent(refTable),
 	)).Scan(&violations)
 	if err != nil {
 		return false, 0, fmt.Errorf("checking containment of %s.%s in %s.%s: %w", table, column, refTable, refColumn, err)

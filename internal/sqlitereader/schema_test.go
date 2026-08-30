@@ -354,3 +354,33 @@ func TestReadSchema_ReadsRealRtreeVirtualTableWithoutSkippingIt(t *testing.T) {
 		t.Errorf("expected rt (and its shadow tables) to be read normally, got: %+v", tables)
 	}
 }
+
+func TestReadSchema_HandlesTableAndColumnNamesWithEmbeddedDoubleQuote(t *testing.T) {
+	db := openTestDB(t, `
+		CREATE TABLE "stats ""weird""" (
+			id INTEGER PRIMARY KEY,
+			"Total ""Disability"" Recipients" INTEGER
+		);
+	`)
+
+	tables, _, err := ReadSchema(db)
+	if err != nil {
+		t.Fatalf("ReadSchema: %v", err)
+	}
+	if len(tables) != 1 {
+		t.Fatalf("expected 1 table, got %d: %+v", len(tables), tables)
+	}
+	if tables[0].Name != `stats "weird"` {
+		t.Fatalf("expected table name with embedded quote, got %q", tables[0].Name)
+	}
+
+	var found bool
+	for _, c := range tables[0].Columns {
+		if c.Name == `Total "Disability" Recipients` {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected column with embedded quote to be read, got columns: %+v", tables[0].Columns)
+	}
+}

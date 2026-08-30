@@ -20,7 +20,7 @@ import (
 // in the table at once. SampleColumn remains for callers that only need a
 // single column.
 func SampleColumn(db *sql.DB, table, column string, limit int) ([]profiler.Value, error) {
-	rows, err := db.Query(fmt.Sprintf(`SELECT %q FROM %q ORDER BY RANDOM() LIMIT ?`, column, table), limit)
+	rows, err := db.Query(fmt.Sprintf(`SELECT %s FROM %s ORDER BY RANDOM() LIMIT ?`, quoteIdent(column), quoteIdent(table)), limit)
 	if err != nil {
 		return nil, fmt.Errorf("sampling %s.%s: %w", table, column, err)
 	}
@@ -51,7 +51,7 @@ func SampleColumn(db *sql.DB, table, column string, limit int) ([]profiler.Value
 // when the ordinary sample already came back entirely empty-handed, so it
 // isn't paid for every column, only the ones that need it.
 func SampleNonNullColumn(db *sql.DB, table, column string, limit int) ([]profiler.Value, error) {
-	rows, err := db.Query(fmt.Sprintf(`SELECT %q FROM %q WHERE %q IS NOT NULL ORDER BY RANDOM() LIMIT ?`, column, table, column), limit)
+	rows, err := db.Query(fmt.Sprintf(`SELECT %s FROM %s WHERE %s IS NOT NULL ORDER BY RANDOM() LIMIT ?`, quoteIdent(column), quoteIdent(table), quoteIdent(column)), limit)
 	if err != nil {
 		return nil, fmt.Errorf("rescuing sparse column %s.%s: %w", table, column, err)
 	}
@@ -84,10 +84,10 @@ func SampleRows(db *sql.DB, table string, columns []string, limit int) ([][]prof
 		if i > 0 {
 			colList += ", "
 		}
-		colList += fmt.Sprintf("%q", c)
+		colList += quoteIdent(c)
 	}
 
-	rows, err := db.Query(fmt.Sprintf(`SELECT %s FROM %q ORDER BY RANDOM() LIMIT ?`, colList, table), limit)
+	rows, err := db.Query(fmt.Sprintf(`SELECT %s FROM %s ORDER BY RANDOM() LIMIT ?`, colList, quoteIdent(table)), limit)
 	if err != nil {
 		return nil, fmt.Errorf("sampling rows from %s: %w", table, err)
 	}
@@ -114,7 +114,7 @@ func SampleRows(db *sql.DB, table string, columns []string, limit int) ([][]prof
 // CountRows returns table's total row count.
 func CountRows(db *sql.DB, table string) (int, error) {
 	var n int
-	err := db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %q`, table)).Scan(&n)
+	err := db.QueryRow(fmt.Sprintf(`SELECT COUNT(*) FROM %s`, quoteIdent(table))).Scan(&n)
 	if err != nil {
 		return 0, fmt.Errorf("counting rows in %s: %w", table, err)
 	}
@@ -131,10 +131,10 @@ func StreamTable(db *sql.DB, table string, columns []string, fn func(row []profi
 		if i > 0 {
 			colList += ", "
 		}
-		colList += fmt.Sprintf("%q", c)
+		colList += quoteIdent(c)
 	}
 
-	rows, err := db.Query(fmt.Sprintf(`SELECT %s FROM %q`, colList, table))
+	rows, err := db.Query(fmt.Sprintf(`SELECT %s FROM %s`, colList, quoteIdent(table)))
 	if err != nil {
 		return fmt.Errorf("streaming %s: %w", table, err)
 	}

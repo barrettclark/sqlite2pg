@@ -9,6 +9,19 @@ import (
 	"strings"
 )
 
+// quoteIdent double-quotes name as a SQL identifier, doubling any embedded
+// double quotes per SQL's identifier-quoting rule (e.g. `a"b` becomes
+// `"a""b"`) — the same convention SQLite itself uses for quoted identifiers.
+// This must be used for every source table/column name interpolated into a
+// query string here: Go's fmt.Sprintf("%q", name) backslash-escapes like a
+// Go string literal, which SQLite's parser rejects outright for a name
+// containing a double quote (issue #39 — the SQLite-side counterpart of
+// issue #26's Postgres DDL fix; see internal/ddl/identifiers.go's quoteIdent
+// for the analogous Postgres helper).
+func quoteIdent(name string) string {
+	return `"` + strings.ReplaceAll(name, `"`, `""`) + `"`
+}
+
 // ColumnInfo describes a column as declared in the SQLite source schema.
 type ColumnInfo struct {
 	Name         string
@@ -125,7 +138,7 @@ func ReadSchema(db *sql.DB) ([]TableInfo, []SkippedTable, error) {
 }
 
 func readColumns(db *sql.DB, table string) ([]ColumnInfo, error) {
-	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%q)`, table))
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA table_info(%s)`, quoteIdent(table)))
 	if err != nil {
 		return nil, err
 	}
@@ -158,7 +171,7 @@ func readColumns(db *sql.DB, table string) ([]ColumnInfo, error) {
 // foreign_key_list, grouping multi-column (composite) constraints by their
 // shared id and ordering each constraint's columns by seq.
 func ReadForeignKeys(db *sql.DB, table string) ([]ForeignKeyInfo, error) {
-	rows, err := db.Query(fmt.Sprintf(`PRAGMA foreign_key_list(%q)`, table))
+	rows, err := db.Query(fmt.Sprintf(`PRAGMA foreign_key_list(%s)`, quoteIdent(table)))
 	if err != nil {
 		return nil, err
 	}

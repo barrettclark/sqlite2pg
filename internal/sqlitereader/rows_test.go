@@ -235,3 +235,37 @@ func TestStreamTable_YieldsEveryRowWithoutBufferingTheWholeTable(t *testing.T) {
 		t.Fatalf("expected to visit %d rows, visited %d", rowCount, seen)
 	}
 }
+
+func TestSampleColumn_HandlesColumnAndTableNamesWithEmbeddedDoubleQuote(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE "stats ""weird""" (id INTEGER PRIMARY KEY, "Total ""Disability"" Recipients" INTEGER);`)
+	if _, err := db.Exec(`INSERT INTO "stats ""weird""" ("Total ""Disability"" Recipients") VALUES (42)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	samples, err := SampleColumn(db, `stats "weird"`, `Total "Disability" Recipients`, 5)
+	if err != nil {
+		t.Fatalf("SampleColumn: %v", err)
+	}
+	if len(samples) != 1 {
+		t.Fatalf("expected 1 sample, got %d", len(samples))
+	}
+}
+
+func TestStreamTable_HandlesColumnAndTableNamesWithEmbeddedDoubleQuote(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE "stats ""weird""" (id INTEGER PRIMARY KEY, "Total ""Disability"" Recipients" INTEGER);`)
+	if _, err := db.Exec(`INSERT INTO "stats ""weird""" ("Total ""Disability"" Recipients") VALUES (42)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	var got []profiler.Value
+	err := StreamTable(db, `stats "weird"`, []string{`Total "Disability" Recipients`}, func(row []profiler.Value) error {
+		got = append(got, row[0])
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamTable: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(got))
+	}
+}
