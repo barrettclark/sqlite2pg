@@ -39,6 +39,27 @@ func TestVerifyTransformAgainstFullTable_FindsAViolationOutsideTheSample(t *test
 	}
 }
 
+func TestVerifyTransformAgainstFullTable_FindsInvalidJSONOutsideTheSample(t *testing.T) {
+	// Issue #22: text_to_jsonb used to pass every value through unchanged
+	// and could never fail, making this full-table check a no-op for
+	// geojson_text columns.
+	db, _ := openTestDB(t, `CREATE TABLE t (id INTEGER PRIMARY KEY, geom TEXT);`)
+	db.Exec(`INSERT INTO t (geom) VALUES
+		('{"type":"Point","coordinates":[1,2]}'),
+		('N/A')`)
+
+	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "geom", "text_to_jsonb", "jsonb")
+	if err != nil {
+		t.Fatalf("verifyTransformAgainstFullTable: %v", err)
+	}
+	if ok {
+		t.Fatal("expected a violation to be found")
+	}
+	if badValue != "N/A" {
+		t.Errorf("expected the offending value N/A reported, got %q", badValue)
+	}
+}
+
 func TestVerifyTransformAgainstFullTable_OKWhenTransformIsEmpty(t *testing.T) {
 	db, _ := openTestDB(t, `CREATE TABLE t (id INTEGER PRIMARY KEY, name TEXT);`)
 	db.Exec(`INSERT INTO t (name) VALUES ('anything at all')`)

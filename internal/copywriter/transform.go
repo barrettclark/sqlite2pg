@@ -5,6 +5,7 @@
 package copywriter
 
 import (
+	"encoding/json"
 	"fmt"
 	"math"
 	"strconv"
@@ -39,6 +40,11 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 
 	switch transform {
 	case "", "esri_typename":
+		// esri_typename (issue #22 audit) is a genuine pass-through by
+		// design, not a gap: EsriTypeName's decision comes entirely from
+		// the column's declared type, never from sampled/streamed values
+		// (see its doc comment), so there is nothing about a given raw
+		// value for this transform to validate.
 		return raw, nil
 
 	case "strip_commas":
@@ -115,6 +121,21 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return n != 0, nil
 
 	case "text_to_jsonb":
+		s, ok := raw.(string)
+		if !ok {
+			return raw, nil
+		}
+		// Issue #22: this used to be a bare `return raw, nil` that could
+		// never fail, which made full-table verification (issue #13) a
+		// silent no-op for geojson_text columns — a rare non-JSON value
+		// (e.g. "N/A") outside the sample would "pass" the full-table
+		// check and only surface once COPY itself rejected it with
+		// "invalid input syntax for type json". Validating the JSON here
+		// keeps the "verify by running the real transform" model intact
+		// instead of duplicating this check in the verifier.
+		if !json.Valid([]byte(s)) {
+			return nil, fmt.Errorf("text_to_jsonb: %q is not valid JSON", s)
+		}
 		return raw, nil
 
 	case "julian_day_to_date":
@@ -233,6 +254,10 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return raw, nil
 
 	case "nullif_empty":
+		// No heuristic currently assigns this transform (issue #22
+		// audit); it's dead code, not a validation gap in the sense the
+		// audit was looking for. Left as a true pass-through, matching
+		// its name: it only ever nulls out an empty string.
 		if s, ok := raw.(string); ok && s == "" {
 			return nil, nil
 		}

@@ -19,6 +19,28 @@ func TestTransform_Passthrough_WhenNoTransformNamed(t *testing.T) {
 	}
 }
 
+func TestTransform_TextToJsonb_ValidGeoJSONPassesThrough(t *testing.T) {
+	got, err := Transform("text_to_jsonb", `{"type":"Point","coordinates":[1,2]}`)
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != `{"type":"Point","coordinates":[1,2]}` {
+		t.Errorf("expected the raw JSON text passed through unchanged, got %v", got)
+	}
+}
+
+func TestTransform_TextToJsonb_RejectsInvalidJSON(t *testing.T) {
+	// Issue #22: text_to_jsonb used to be a bare pass-through
+	// (`return raw, nil`) that could never fail, which made full-table
+	// verification (issue #13) a no-op for geojson_text columns — a value
+	// like "N/A" outside the sample would "pass" the full-table check and
+	// then blow up COPY with "invalid input syntax for type json".
+	_, err := Transform("text_to_jsonb", "N/A")
+	if err == nil {
+		t.Fatal("expected an error for a value that isn't valid JSON")
+	}
+}
+
 func TestTransform_StripCommas(t *testing.T) {
 	got, err := Transform("strip_commas", "2,949")
 	if err != nil {

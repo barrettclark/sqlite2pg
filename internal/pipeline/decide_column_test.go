@@ -38,6 +38,42 @@ func TestDecideColumn_FlagsForReviewWhenFullTableCheckFindsAViolationOutsideTheS
 	}
 }
 
+func TestDecideColumn_FlagsForReviewWhenFullTableHasInvalidJSONTheSampleMissed(t *testing.T) {
+	// Issue #22: text_to_jsonb used to be a bare pass-through that could
+	// never fail, so the geojson_text heuristic's auto-approval survived a
+	// full-table check that was actually a no-op. Here 499 sampled rows
+	// (represented by the two below, standing in for a sample the
+	// geojson_text heuristic finds 100% clean) are valid GeoJSON, but one
+	// full-table row holds "N/A" — a real-world value the sample never
+	// drew. That row must now be caught and routed to review instead of
+	// silently auto-approved.
+	db, _ := openTestDB(t, `CREATE TABLE places (id INTEGER PRIMARY KEY, geom TEXT);`)
+	db.Exec(`INSERT INTO places (geom) VALUES
+		('{"type":"Point","coordinates":[1,2]}'),
+		('{"type":"Point","coordinates":[3,4]}'),
+		('N/A')`)
+
+	col := sqlitereader.ColumnInfo{Name: "geom", DeclaredType: "TEXT"}
+	sample := []any{
+		`{"type":"Point","coordinates":[1,2]}`,
+		`{"type":"Point","coordinates":[3,4]}`,
+	}
+
+	cc, unresolved, err := decideColumn(db, "places", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.TargetType != "jsonb" {
+		t.Errorf("expected the suggested type jsonb to still be shown, got %q", cc.TargetType)
+	}
+	if cc.Confidence >= 0.9 {
+		t.Errorf("expected confidence dropped below threshold once a violation was found, got %f", cc.Confidence)
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase once the full-table check found the invalid-JSON row")
+	}
+}
+
 func TestDecideColumn_AutoApprovesWhenTheFullTableCheckFindsNoViolation(t *testing.T) {
 	db, _ := openTestDB(t, `CREATE TABLE items (id INTEGER PRIMARY KEY, mb_id TEXT);`)
 	db.Exec(`INSERT INTO items (mb_id) VALUES
