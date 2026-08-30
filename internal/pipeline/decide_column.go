@@ -64,6 +64,7 @@ func decideColumn(db *sql.DB, table string, col sqlitereader.ColumnInfo, samples
 			Source:        "heuristic:default_passthrough",
 			Rationale:     rationale,
 			Reviewed:      false,
+			NeedsReview:   uc != nil,
 			PrimaryKeySeq: col.PrimaryKeySeq,
 		}, uc, nil
 	}
@@ -93,6 +94,7 @@ func decideColumn(db *sql.DB, table string, col sqlitereader.ColumnInfo, samples
 		Source:        "heuristic:" + best.Heuristic,
 		Rationale:     best.Rationale,
 		Reviewed:      false,
+		NeedsReview:   needsReview,
 		PrimaryKeySeq: col.PrimaryKeySeq,
 	}
 	if !needsReview {

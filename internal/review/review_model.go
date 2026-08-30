@@ -89,7 +89,11 @@ func BuildReviewSummary(cfg *config.MigrationConfig, threshold float64, grid Gri
 			if !ok {
 				continue
 			}
-			needsReview := col.Confidence < threshold
+			// col.NeedsReview persists resolver.Decide's disagreement-tie
+			// verdict (issue #20): a contested decision can leave
+			// Confidence at the winning finding's original value, above
+			// threshold, so Confidence alone isn't a reliable signal here.
+			needsReview := col.Confidence < threshold || col.NeedsReview
 			if needsReview {
 				summary.NeedsReviewCount++
 			} else {

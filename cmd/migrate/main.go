@@ -226,8 +226,16 @@ func runLoad(args []string) error {
 		}
 		for tableName, tc := range cfg.Tables {
 			for colName, col := range tc.Columns {
+				// col.NeedsReview persists resolver.Decide's
+				// disagreement-tie verdict (issue #20): a contested
+				// decision can leave Confidence at the winning finding's
+				// original value, above threshold, so Confidence alone
+				// isn't a reliable gate here.
 				if !col.Reviewed && col.Confidence < *threshold {
 					return fmt.Errorf("%s.%s is unreviewed (confidence %.2f < %.2f); run `migrate review` or pass --force", tableName, colName, col.Confidence, *threshold)
+				}
+				if !col.Reviewed && col.NeedsReview {
+					return fmt.Errorf("%s.%s is unreviewed (heuristics disagreed); run `migrate review` or pass --force", tableName, colName)
 				}
 			}
 		}

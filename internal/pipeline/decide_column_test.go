@@ -3,6 +3,7 @@ package pipeline
 import (
 	"testing"
 
+	"sqlite2pg/internal/profiler"
 	"sqlite2pg/internal/sqlitereader"
 )
 
@@ -136,6 +137,48 @@ func TestDecideColumn_FlagsForReviewWhenDefaultPassthroughSampleMixesIncompatibl
 	}
 	if unresolved == nil {
 		t.Fatal("expected an UnresolvedCase once default_passthrough's own sample contradicted its declared-type guess")
+	}
+}
+
+func TestDecideColumn_PersistsDisagreementTieAsNeedsReview(t *testing.T) {
+	// Issue #20 bug 2: when resolver.Decide flags needsReview because two
+	// findings genuinely tie (as opposed to one being simply below
+	// threshold), decideColumn used to store best.Confidence unchanged —
+	// e.g. 0.95, above any sane --threshold — so `migrate load`'s
+	// confidence-only gate and the TUI's confidence-only NeedsReview both
+	// silently missed it. NeedsReview must persist the verdict
+	// independently of Confidence.
+	//
+	// last_validation_date naturally produces a single yyyymmdd_date
+	// finding at 0.95 with no real competitor (numeric_text sits 0.05
+	// below it, a deliberate clean win — see yyyymmdd_date.go). To
+	// reproduce a genuine tie without relying on two real heuristics
+	// happening to collide, an extraFinding at the identical 0.95
+	// confidence is injected directly.
+	db, _ := openTestDB(t, `CREATE TABLE date_demo (id INTEGER PRIMARY KEY, last_validation_date TEXT);`)
+	db.Exec(`INSERT INTO date_demo (last_validation_date) VALUES ('20210927'), ('20211015')`)
+
+	col := sqlitereader.ColumnInfo{Name: "last_validation_date", DeclaredType: "TEXT"}
+	sample := []any{"20210927", "20211015"}
+	tiedFinding := profiler.Finding{
+		Heuristic:     "synthetic_tie",
+		SuggestedType: "integer",
+		Confidence:    0.95,
+		Rationale:     "synthetic finding forcing an exact-confidence tie for test purposes",
+	}
+
+	cc, unresolved, err := decideColumn(db, "date_demo", col, sample, 0.9, tiedFinding)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.Confidence < 0.9 {
+		t.Errorf("expected Confidence to stay at the winning finding's original value (>= 0.9), got %f — Confidence alone must not be the only signal", cc.Confidence)
+	}
+	if !cc.NeedsReview {
+		t.Error("expected NeedsReview=true to persist the disagreement-tie verdict even though Confidence stayed above threshold")
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase once two findings tied")
 	}
 }
 

@@ -82,6 +82,18 @@ type ColumnConfig struct {
 	ReviewedBy   string     `yaml:"reviewed_by,omitempty"`
 	ReviewedAt   *time.Time `yaml:"reviewed_at,omitempty"`
 
+	// NeedsReview persists resolver.Decide's needsReview verdict
+	// explicitly, independent of Confidence (issue #20): the
+	// disagreement-tie case leaves Confidence at the winning finding's
+	// original value (e.g. 0.95), which can sit above threshold even
+	// though the decision was contested — so Confidence alone can't be
+	// trusted to signal "review this" the way it can for the
+	// below-threshold and full-table-violation cases (which also rewrite
+	// Confidence to a sentinel below threshold). Both BuildReviewSummary
+	// and `migrate load`'s gate must consult this in addition to
+	// Confidence, not instead of it.
+	NeedsReview bool `yaml:"needs_review,omitempty"`
+
 	// PrimaryKeySeq is 0 if this column isn't part of the table's primary
 	// key, or its 1-based position within it otherwise — mirrors
 	// sqlitereader.ColumnInfo.PrimaryKeySeq, preserving a composite
