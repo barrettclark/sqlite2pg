@@ -258,6 +258,43 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		}
 		return u, nil
 
+	case "uuid_list_format":
+		s, ok := raw.(string)
+		if !ok {
+			return nil, fmt.Errorf("uuid_list_format: unexpected type %T", raw)
+		}
+		if s == "" {
+			// Same "no value" convention as uuid_format (see its case
+			// above): an empty string means "no value", not a
+			// disqualifying non-UUID.
+			return nil, nil
+		}
+		// pgx's array codec finds a Go slice's element type by
+		// reflection and wraps each element with that element type's
+		// own codec (UUIDCodec here) — a []pgtype.UUID therefore
+		// encodes directly into a uuid[] column via ArrayCodec, the
+		// same way a single pgtype.UUID encodes into uuid.
+		//
+		// heuristics.escapedNulSeparator (mirrored here, since this
+		// package can't import the heuristics package) is the literal
+		// "\␀" (backslash + U+2400) form the real beets_library.db
+		// evidence for this transform actually stores instead of a raw
+		// NUL byte — see that constant's doc comment for the full
+		// story. Normalizing it to 0x00 first means a hypothetical
+		// column that genuinely NUL-joins with a raw byte still works
+		// unchanged.
+		s = strings.ReplaceAll(s, "\\␀", "\x00")
+		parts := strings.Split(s, "\x00")
+		list := make([]pgtype.UUID, len(parts))
+		for i, p := range parts {
+			var u pgtype.UUID
+			if err := u.Scan(p); err != nil {
+				return nil, fmt.Errorf("uuid_list_format: part %d (%q): %w", i, p, err)
+			}
+			list[i] = u
+		}
+		return list, nil
+
 	case "nullif_sentinels":
 		if s, ok := raw.(string); ok {
 			if sentinelTokens[strings.ToLower(s)] {

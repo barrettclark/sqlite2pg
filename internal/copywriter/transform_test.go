@@ -289,6 +289,95 @@ func TestTransform_UUIDFormatTreatsEmptyStringAsNull(t *testing.T) {
 	}
 }
 
+func TestTransform_UUIDListFormatSingleUUIDRoundTrips(t *testing.T) {
+	got, err := Transform("uuid_list_format", "90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	list, ok := got.([]pgtype.UUID)
+	if !ok {
+		t.Fatalf("expected []pgtype.UUID, got %T", got)
+	}
+	if len(list) != 1 {
+		t.Fatalf("expected a 1-element list, got %d elements", len(list))
+	}
+	if !list[0].Valid {
+		t.Fatal("expected a valid UUID")
+	}
+	if got, want := list[0].String(), "90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10"; got != want {
+		t.Errorf("expected round-trip %q, got %q", want, got)
+	}
+}
+
+func TestTransform_UUIDListFormatThreeUUIDsRoundTrip(t *testing.T) {
+	raw := "cc75b164-273c-4dce-9cdf-292045a0d38b\x003422ac1a-8dbb-4f23-a337-0bd0a0150022\x0090b141b9-c39f-4a26-8f5d-9d3c1e2a7b10"
+	got, err := Transform("uuid_list_format", raw)
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	list, ok := got.([]pgtype.UUID)
+	if !ok {
+		t.Fatalf("expected []pgtype.UUID, got %T", got)
+	}
+	want := []string{
+		"cc75b164-273c-4dce-9cdf-292045a0d38b",
+		"3422ac1a-8dbb-4f23-a337-0bd0a0150022",
+		"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10",
+	}
+	if len(list) != len(want) {
+		t.Fatalf("expected %d elements, got %d", len(want), len(list))
+	}
+	for i, w := range want {
+		if got := list[i].String(); got != w {
+			t.Errorf("element %d: expected %q, got %q", i, w, got)
+		}
+	}
+}
+
+func TestTransform_UUIDListFormatHandlesRealBeetsEscapedSeparator(t *testing.T) {
+	// Real beets_library.db evidence: the actual separator on disk is the
+	// literal "\␀" (backslash + U+2400) escape, not a raw NUL byte — see
+	// heuristics.escapedNulSeparator's doc comment.
+	raw := "7113aab7-628f-4050-ae49-dbecac110ca8\\␀a5d79c54-81c3-4a73-af6a-ad5c143d3f21"
+	got, err := Transform("uuid_list_format", raw)
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	list, ok := got.([]pgtype.UUID)
+	if !ok {
+		t.Fatalf("expected []pgtype.UUID, got %T", got)
+	}
+	want := []string{
+		"7113aab7-628f-4050-ae49-dbecac110ca8",
+		"a5d79c54-81c3-4a73-af6a-ad5c143d3f21",
+	}
+	if len(list) != len(want) {
+		t.Fatalf("expected %d elements, got %d", len(want), len(list))
+	}
+	for i, w := range want {
+		if got := list[i].String(); got != w {
+			t.Errorf("element %d: expected %q, got %q", i, w, got)
+		}
+	}
+}
+
+func TestTransform_UUIDListFormatRejectsInvalidPart(t *testing.T) {
+	raw := "cc75b164-273c-4dce-9cdf-292045a0d38b\x00not-a-uuid"
+	if _, err := Transform("uuid_list_format", raw); err == nil {
+		t.Fatal("expected an error for an unparseable UUID part")
+	}
+}
+
+func TestTransform_UUIDListFormatTreatsEmptyStringAsNull(t *testing.T) {
+	got, err := Transform("uuid_list_format", "")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != nil {
+		t.Errorf("expected nil (SQL NULL) for an empty string, got %v", got)
+	}
+}
+
 func TestTransform_ExcelSerialToTimestamptz(t *testing.T) {
 	// 44197 is the Excel serial number for 2021-01-01.
 	got, err := Transform("excel_serial_to_timestamptz", float64(44197))
