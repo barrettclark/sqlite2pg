@@ -8,8 +8,9 @@ The classic sample and real-world databases in this directory came from:
 - https://github.com/codecrafters-io/sample-sqlite-databases
 - https://catalog.data.gov/
 
-The `sample-*.sqlite` files (`sample-types`, `sample-dates`, `sample-uuids`,
-`sample-varchar`, `sample-type-mismatch`, `sample-implicit-fk`) are small handcrafted fixtures
+The `sample-*.sqlite` files (`sample-types`, `sample-dates`, `sample-large`,
+`sample-numeric-text`, `sample-uuids`, `sample-varchar`,
+`sample-type-mismatch`, `sample-implicit-fk`) are small handcrafted fixtures
 authored for this project, not sourced externally — each targets one
 specific data shape the test suite needs coverage for and is documented at
 its point of use in `internal/pipeline/golden_test.go`.
