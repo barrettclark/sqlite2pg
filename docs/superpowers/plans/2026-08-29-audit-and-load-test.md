@@ -437,6 +437,26 @@ config actually works. No new issues found.
 
 **Item 6 — fixtures README: done** (`7c935ed`).
 
-**Items 3 (targeted regression re-run) and 5 (performance check): in
-progress**, re-dispatched 2026-08-31 after their first attempt was
-interrupted mid-work by a session usage limit.
+**Item 3 — targeted regression re-run: done.**
+`docs/superpowers/plans/audit-phase4-regression-results.md` — no genuine
+regression found across all 8 checks (sakila.db, beets_library.db, the
+16 remaining fixtures + `go test`, and the four `../more data/` crash
+fixtures for #16/#17/#21). Both #1's and #12's real-data claims held up
+on fresh profiling; every apparent discrepancy investigated turned out
+to be a fix working correctly or documented sampling variance, not a
+bug.
+
+**Item 5 — performance check: done, real regression found.**
+`docs/superpowers/plans/audit-phase4-performance-results.md` — full-table
+verification now costs ~30-35% of profile wall-clock time on wide,
+mostly-clean tables (`employee.db` ~32% slower, `beets_library.db` ~35%
+slower vs. pre-2026-08-30 baselines), because it scans the source table
+once per auto-approving column instead of once per table. Filed as
+[#55](https://github.com/barrettclark/sqlite2pg/issues/55).
+
+Phase 4's original scope is now complete. All 15 diff-review findings
+(#40-#54) plus #55 are being fixed on the `phase4-fixes` branch
+(worktree at `../sqlite2pg-phase4-fixes`), alongside a new permanent
+`migrate verify` subcommand (exhaustive row/column data-integrity check,
+Barrett's request) — to be run against the full 41-database local set
+before opening a PR to `main`.
