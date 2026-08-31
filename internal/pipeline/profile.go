@@ -61,11 +61,12 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 
 	kind := "sqlite"
 	isEsri := sqlitereader.IsEsriGeodatabase(tables)
+	isSpatialite := sqlitereader.IsSpatialite(tables)
 	if isEsri {
 		kind = "esri_geodatabase"
 	}
 	var filteredSystemTables []sqlitereader.TableInfo
-	tables, filteredSystemTables = sqlitereader.FilterSystemTables(tables, isEsri)
+	tables, filteredSystemTables = sqlitereader.FilterSystemTables(tables, isEsri, isSpatialite)
 
 	sourceHash, err := config.HashFile(sourcePath)
 	if err != nil {

@@ -26,7 +26,7 @@ func TestFilterSystemTables_ExcludesGDBAndSpatialiteTablesWhenEsri(t *testing.T)
 		{Name: "st_spatial_ref_sys"},
 		{Name: "SchoolSites2425"},
 	}
-	kept, filtered := FilterSystemTables(tables, true)
+	kept, filtered := FilterSystemTables(tables, true, false)
 	if len(kept) != 1 || kept[0].Name != "SchoolSites2425" {
 		t.Errorf("expected only SchoolSites2425 to remain, got %+v", kept)
 	}
@@ -46,7 +46,7 @@ func TestFilterSystemTables_KeepsStPrefixedUserTablesWhenNotEsri(t *testing.T) {
 		{Name: "st_2024_results"},
 		{Name: "bikes"},
 	}
-	kept, filtered := FilterSystemTables(tables, false)
+	kept, filtered := FilterSystemTables(tables, false, false)
 	if len(kept) != 3 {
 		t.Errorf("expected all 3 tables to be kept for a non-Esri database, got %+v", kept)
 	}
@@ -63,11 +63,58 @@ func TestFilterSystemTables_AlwaysExcludesGDBTables(t *testing.T) {
 		{Name: "GDB_SystemCatalog"},
 		{Name: "bikes"},
 	}
-	kept, filtered := FilterSystemTables(tables, false)
+	kept, filtered := FilterSystemTables(tables, false, false)
 	if len(kept) != 1 || kept[0].Name != "bikes" {
 		t.Errorf("expected only bikes to remain, got %+v", kept)
 	}
 	if len(filtered) != 1 || filtered[0].Name != "GDB_SystemCatalog" {
 		t.Errorf("expected GDB_SystemCatalog to be reported as filtered, got %+v", filtered)
+	}
+}
+
+// Issue #47: a genuine Spatialite database (identified by its own real
+// system-table markers, spatial_ref_sys / geometry_columns /
+// spatialite_history) has no GDB_* tables at all, so IsEsriGeodatabase
+// reports false for it. Its st_* system tables must still be filtered —
+// gating the st_* filter on the Esri-only predicate misses this case, the
+// regression in the opposite direction from #35.
+func TestIsSpatialite_DetectsSpatialiteMarkerTables(t *testing.T) {
+	tables := []TableInfo{
+		{Name: "spatial_ref_sys"},
+		{Name: "geometry_columns"},
+		{Name: "roads"},
+	}
+	if !IsSpatialite(tables) {
+		t.Error("expected a table set containing spatial_ref_sys/geometry_columns to be detected as Spatialite")
+	}
+}
+
+func TestIsSpatialite_FalseForOrdinaryDatabase(t *testing.T) {
+	tables := []TableInfo{{Name: "bikes"}, {Name: "st_locations"}}
+	if IsSpatialite(tables) {
+		t.Error("expected an ordinary table set to not be detected as Spatialite")
+	}
+}
+
+func TestFilterSystemTables_ExcludesStTablesForGenuineSpatialiteNotEsri(t *testing.T) {
+	tables := []TableInfo{
+		{Name: "spatial_ref_sys"},
+		{Name: "geometry_columns"},
+		{Name: "st_roads_data"},
+		{Name: "roads"},
+	}
+	kept, filtered := FilterSystemTables(tables, false, true)
+	names := map[string]bool{}
+	for _, t := range kept {
+		names[t.Name] = true
+	}
+	if !names["roads"] {
+		t.Errorf("expected roads to be kept, got %+v", kept)
+	}
+	if names["st_roads_data"] {
+		t.Errorf("expected st_roads_data to be filtered as a Spatialite system table, got kept in %+v", kept)
+	}
+	if len(filtered) == 0 {
+		t.Errorf("expected at least one table reported as filtered, got none")
 	}
 }
