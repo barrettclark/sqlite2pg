@@ -1,7 +1,9 @@
 package heuristics
 
 import (
+	"math"
 	"regexp"
+	"strconv"
 	"strings"
 
 	"sqlite2pg/internal/profiler"
@@ -24,6 +26,7 @@ func (CommaNumber) AppliesTo(meta profiler.ColumnMeta) bool { return true }
 func (CommaNumber) Evaluate(meta profiler.ColumnMeta, samples []profiler.Value) (profiler.Finding, bool) {
 	seenComma := false
 	sawFraction := false
+	sawOutOfInt4Range := false
 	for _, v := range samples {
 		s, ok := v.(string)
 		if !ok || s == "" {
@@ -34,6 +37,10 @@ func (CommaNumber) Evaluate(meta profiler.ColumnMeta, samples []profiler.Value) 
 			seenComma = true
 			if strings.Contains(s, ".") {
 				sawFraction = true
+			} else if n, err := strconv.ParseInt(strings.ReplaceAll(s, ",", ""), 10, 64); err == nil {
+				if n < math.MinInt32 || n > math.MaxInt32 {
+					sawOutOfInt4Range = true
+				}
 			}
 		case plainNumberPattern.MatchString(s):
 			// consistent with a numeric column; doesn't itself trigger the
@@ -63,10 +70,16 @@ func (CommaNumber) Evaluate(meta profiler.ColumnMeta, samples []profiler.Value) 
 			TransformExpr: "strip_commas_float",
 		}, true
 	}
+	suggested := "integer"
+	rationale := "sampled values are thousand-separator-formatted numbers (e.g. \"2,949\")"
+	if sawOutOfInt4Range {
+		suggested = "bigint"
+		rationale = "sampled values are thousand-separator-formatted numbers, and at least one is too large for int4 (e.g. \"9,999,999,999\")"
+	}
 	return profiler.Finding{
-		SuggestedType: "integer",
+		SuggestedType: suggested,
 		Confidence:    0.95,
-		Rationale:     "sampled values are thousand-separator-formatted numbers (e.g. \"2,949\")",
+		Rationale:     rationale,
 		TransformExpr: "strip_commas",
 	}, true
 }

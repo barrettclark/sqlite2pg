@@ -29,6 +29,24 @@ func TestCommaNumber_DetectsCommaFormattedIntegers(t *testing.T) {
 	}
 }
 
+func TestCommaNumber_SuggestsBigintWhenSampleExceedsInt4Range(t *testing.T) {
+	h := CommaNumber{}
+	samples := []profiler.Value{"9,999,999,999", "12,345,678,901", "500", nil}
+	finding, ok := h.Evaluate(profiler.ColumnMeta{}, samples)
+	if !ok {
+		t.Fatal("expected a finding for comma-formatted numbers")
+	}
+	if finding.SuggestedType != "bigint" {
+		t.Errorf("expected suggested type bigint, got %q", finding.SuggestedType)
+	}
+	if finding.TransformExpr != "strip_commas" {
+		t.Errorf("expected transform strip_commas, got %q", finding.TransformExpr)
+	}
+	if finding.Confidence < 0.9 {
+		t.Errorf("expected high confidence, got %f", finding.Confidence)
+	}
+}
+
 func TestCommaNumber_TargetsDoublePrecisionWhenSampleHasFraction(t *testing.T) {
 	h := CommaNumber{}
 	samples := []profiler.Value{"1,234.56", "2,500.00", "500", nil}
