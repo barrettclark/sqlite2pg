@@ -141,13 +141,32 @@ func runRun(args []string) error {
 }
 
 // cleanupConfigAfterLoad decides what becomes of a `run`-generated config
-// once the load step has run its course (issue #38). The config is only
-// ever removed after a load that actually succeeded — on any load error it
-// is left in place, independent of --keep-config, so a user who hits a
-// failure without having anticipated --keep-config up front can still
-// inspect what was decided or retry via `migrate load --resume` against the
-// surviving config and its state file. loadErr, when non-nil, is returned
-// unchanged so callers still see the real failure.
+// (and its companion state file) once the load step has run its course
+// (issue #38, extended by issue #52). The config is only ever removed after
+// a load that actually succeeded — on any load error it is left in place,
+// independent of --keep-config, so a user who hits a failure without having
+// anticipated --keep-config up front can still inspect what was decided or
+// retry via `migrate load --resume` against the surviving config and its
+// state file. loadErr, when non-nil, is returned unchanged so callers still
+// see the real failure.
+//
+// The state file (<configPath>.state.json) is removed alongside the config
+// on success, keeping the invariant "the state file exists if and only if
+// the config file exists" — the two files describe the same run and neither
+// is useful without the other. This is deliberately scoped to `run`'s
+// single-shot flow only (executeLoad, reached from the separate `migrate
+// load` command, never calls this function and so never touches its state
+// file): `migrate verify` locates its target database by reading
+// <configPath>.state.json, but it also needs configPath itself to load the
+// table definitions it verifies against (config.Load in runVerify) — and
+// `run`'s success path already deletes that config file, independent of
+// this fix. So `verify` was already unusable after a plain `migrate run`
+// succeeded; removing the state file here doesn't take away any capability
+// `verify` users actually had. Someone who wants to `verify` after `run`
+// must already pass --keep-config to keep the config around, and that same
+// flag now keeps the state file too. The separate profile/review/load flow
+// — where `verify` is meant to be used — is untouched: `load` leaves both
+// its config and its state file in place after success, exactly as before.
 func cleanupConfigAfterLoad(loadErr error, configPath string, keepConfig bool) error {
 	if loadErr != nil {
 		return loadErr
@@ -157,6 +176,10 @@ func cleanupConfigAfterLoad(loadErr error, configPath string, keepConfig bool) e
 	}
 	if err := os.Remove(configPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing generated config %s: %w", configPath, err)
+	}
+	statePath := configPath + ".state.json"
+	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing generated state file %s: %w", statePath, err)
 	}
 	return nil
 }
@@ -548,6 +571,13 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	// FKsApplied — so there's no correctness reason to remove it once
 	// nothing is left to resume, only the (deliberately declined) tidiness
 	// of an unused file lying around.
+	//
+	// This applies to executeLoad unconditionally — including when it's
+	// reached from `migrate load`, the flow `verify` is meant to be used
+	// with. `migrate run`'s single-shot flow additionally cleans up its
+	// state file after a successful run, but only from cleanupConfigAfterLoad
+	// in main.go, once run has already decided (independent of this
+	// function) to delete its generated config too — see issue #52.
 	return nil
 }
 
