@@ -105,6 +105,82 @@ func TestDecide_TextBoolean01ForcesReviewAgainstNumericText(t *testing.T) {
 	}
 }
 
+// TestDecide_9995GapResolvesCleanlyRegardlessOfFloatRepresentation
+// reproduces issue #48 bug 2: 0.99-0.95 happens to evaluate to
+// 0.040000000000000036 in Go (landing just above the old
+// disagreementMargin-1e-9 boundary by luck of which direction the float
+// rounding error went), while the nominally-identical-sized gap
+// 0.95-0.90 evaluates to 0.049999999999999933 (rounding the other way).
+// A correct fix must resolve the same nominal gap the same way no matter
+// how the confidence values were constructed bit-for-bit, so this test
+// feeds in several float64 pairs that all nominally represent a 0.04 gap
+// (i.e. 0.95 vs 0.99) but are built via different arithmetic paths, and
+// asserts every single one resolves cleanly (no forced review).
+func TestDecide_9995GapResolvesCleanlyRegardlessOfFloatRepresentation(t *testing.T) {
+	// Runtime variables (not const expressions) so the Go compiler can't
+	// constant-fold these to identical bit patterns at compile time — each
+	// must actually go through float64 arithmetic at test-run time to be a
+	// real test of representation independence.
+	one, hundred := 1.0, 100.0
+	ninetyNine, ninetyFive := 99.0, 95.0
+	viaSubtraction := 1.0
+	for i := 0; i < 1; i++ {
+		viaSubtraction -= 0.01
+	}
+	viaDivision99 := ninetyNine / hundred
+	viaDivision95 := ninetyFive / hundred
+	var viaSum99, viaSum95 float64
+	parts99 := []float64{0.33, 0.33, 0.33}
+	for _, x := range parts99 {
+		viaSum99 += x
+	}
+	parts95 := []float64{0.19, 0.19, 0.19, 0.19, 0.19}
+	for _, x := range parts95 {
+		viaSum95 += x
+	}
+
+	pairs := [][2]float64{
+		{0.99, 0.95},                   // plain literals
+		{viaSubtraction, one - 0.05},   // constructed via runtime subtraction
+		{viaDivision99, viaDivision95}, // constructed via runtime division
+		{viaSum99, viaSum95},           // constructed via runtime summation
+	}
+	for _, p := range pairs {
+		findings := []profiler.Finding{
+			{Heuristic: "esri_typename_mapping", SuggestedType: "integer", Confidence: p[0]},
+			{Heuristic: "comma_formatted_number", SuggestedType: "integer", Confidence: p[1]},
+		}
+		_, needsReview := Decide(findings, 0.5)
+		if needsReview {
+			t.Errorf("confidence pair %v: expected the ~0.04 gap to resolve cleanly regardless of float representation, but review was forced", p)
+		}
+	}
+}
+
+// TestDecide_8885GapResolvesCleanlyAfterRespacing reproduces issue #48
+// bug 1: boolean01's TEXT/CHAR rung (0.88) sits only 0.03 away from the
+// INT-only 0.85 rung shared by sentinel_null, unix_epoch*, and
+// excel_serial_date. Under the old disagreementMargin (0.04) that 0.03
+// gap fell *inside* the margin, so a 0.88 boolean01 finding and an 0.85
+// finding were defined to "disagree" by construction — latent today only
+// because no heuristic pair at those two confidences can currently
+// co-occur on the same column, but exactly the kind of gap a future
+// heuristic could trip over silently. After respacing, this gap must
+// resolve cleanly (the 0.88 finding wins outright, no forced review).
+func TestDecide_8885GapResolvesCleanlyAfterRespacing(t *testing.T) {
+	findings := []profiler.Finding{
+		{Heuristic: "boolean01", SuggestedType: "boolean", Confidence: 0.88},
+		{Heuristic: "sentinel_null", SuggestedType: "integer", Confidence: 0.85},
+	}
+	decision, needsReview := Decide(findings, 0.5)
+	if needsReview {
+		t.Fatal("expected boolean01's 0.88 to beat sentinel_null's 0.85 cleanly without forcing review")
+	}
+	if decision.SuggestedType != "boolean" {
+		t.Errorf("expected boolean01's 0.88 finding to win, got %q", decision.SuggestedType)
+	}
+}
+
 func TestDecide_PicksHighestConfidenceAsThePrimaryDecision(t *testing.T) {
 	findings := []profiler.Finding{
 		{Heuristic: "boolean01", SuggestedType: "boolean", Confidence: 0.55},
