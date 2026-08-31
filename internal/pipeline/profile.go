@@ -160,6 +160,24 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 
 		varcharLens := varcharSuggestions(table.Columns)
 
+		// Issue #55: phase 1 decides every column from its sample alone
+		// (decideColumnTentative never touches db), collecting a
+		// *pendingColumnDecision for any column that would otherwise
+		// auto-approve with a transform attached — instead of each such
+		// column immediately paying its own full-table scan the way
+		// decideColumn used to. Phase 2 below then runs ONE batched
+		// verifyTransformsAgainstFullTable call covering every pending
+		// column in this table, so a table with N auto-approving
+		// transform-bearing columns pays one sequential scan of the
+		// table's rows total, not N.
+		type columnOutcome struct {
+			cc      config.ColumnConfig
+			uc      *resolver.UnresolvedCase
+			pending *pendingColumnDecision
+		}
+		outcomes := make([]columnOutcome, len(table.Columns))
+		var specs []columnVerifySpec
+
 		for i, col := range table.Columns {
 			tc.ColumnOrder = append(tc.ColumnOrder, col.Name)
 			samples := columnSamples[i]
@@ -169,14 +187,30 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 				extra = append(extra, varcharFinding(n))
 			}
 
-			cc, uc, err := decideColumn(db, table.Name, col, samples, threshold, extra...)
+			cc, uc, pending := decideColumnTentative(table.Name, col, samples, threshold, extra...)
+			outcomes[i] = columnOutcome{cc: cc, uc: uc, pending: pending}
+			if pending != nil {
+				specs = append(specs, pending.verifySpec)
+			}
+		}
+
+		var verifyResults map[string]verifyResult
+		if len(specs) > 0 {
+			verifyResults, err = verifyTransformsAgainstFullTable(db, table.Name, specs)
 			if err != nil {
-				return nil, fmt.Errorf("deciding %s.%s: %w", table.Name, col.Name, err)
+				return nil, fmt.Errorf("verifying %s: %w", table.Name, err)
 			}
-			if uc != nil {
-				unresolved = append(unresolved, *uc)
+		}
+
+		for i, col := range table.Columns {
+			o := outcomes[i]
+			if o.pending != nil {
+				o.cc, o.uc = finalizeColumnDecision(o.pending, verifyResults[o.pending.verifySpec.Column])
 			}
-			tc.Columns[col.Name] = cc
+			if o.uc != nil {
+				unresolved = append(unresolved, *o.uc)
+			}
+			tc.Columns[col.Name] = o.cc
 		}
 		cfg.Tables[table.Name] = tc
 	}
