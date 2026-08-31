@@ -322,7 +322,12 @@ type flaggedColumn struct {
 // never changes once a human overrides a column (only Reviewed does), so
 // this list is stable for the life of a session: a column already
 // resolved stays on it, so jumping back to something already decided is
-// always possible, not just the columns still outstanding.
+// always possible, not just the columns still outstanding. This is a
+// documented, shared contract, not local to the TUI: review.State.ApplyDecision
+// and `migrate resolve --apply` (cmd/migrate/main.go's runResolve, issue
+// #53) both leave NeedsReview untouched on override for the same reason —
+// it's a permanent profiler verdict, and Reviewed is what tracks whether a
+// human has acted on the column.
 func flaggedColumns(summary review.ReviewSummary) []flaggedColumn {
 	var flagged []flaggedColumn
 	for _, t := range summary.Tables {

@@ -120,6 +120,10 @@ func (s *State) ApplyDecision(table, column string, req DecisionRequest) error {
 	col.Rationale = req.Rationale
 	col.Source = "human_override"
 	col.Reviewed = true
+	// col.NeedsReview is deliberately left untouched (issue #53): it's a
+	// permanently-stable profiler verdict, not a to-do flag cleared by
+	// resolution — see internal/tui/logic.go's flaggedColumns comment and
+	// cmd/migrate/main.go's runResolve, which share this same contract.
 
 	tc.Columns[column] = col
 	s.cfg.Tables[table] = tc

@@ -624,6 +624,17 @@ func runResolve(args []string) error {
 		col.Confidence = res.Confidence
 		col.Source = res.Source
 		col.Reviewed = true
+		// col.NeedsReview is deliberately left untouched (issue #53):
+		// it's a permanently-stable profiler verdict ("heuristics
+		// disagreed" at profile time), not a to-do flag that clears once
+		// a human or Claude Code resolves the column — Reviewed already
+		// carries that meaning. This mirrors internal/tui/logic.go's
+		// flaggedColumns comment and review.State.ApplyDecision, which
+		// make the same choice for the same reason: a column that was
+		// once flagged stays discoverable/auditable via NeedsReview
+		// (e.g. in review.BuildReviewSummary's NeedsReviewCount) even
+		// after it's been decided, rather than silently disappearing
+		// from that signal the moment it's resolved.
 		tc.Columns[column] = col
 		cfg.Tables[table] = tc
 	}
