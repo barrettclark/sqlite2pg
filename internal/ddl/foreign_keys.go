@@ -24,6 +24,12 @@ func GenerateForeignKeyConstraints(cfg *config.MigrationConfig) (statements []st
 	}
 	sort.Strings(tableNames)
 
+	// The identifier CREATE TABLE actually emitted for each table (see
+	// PostgresTableNames/issue #44) — REFERENCES and the constrained
+	// table itself must both name the same disambiguated relation CREATE
+	// TABLE created, not the raw source table name.
+	pgTableNames := PostgresTableNames(cfg)
+
 	for _, table := range tableNames {
 		tc := cfg.Tables[table]
 		if !tc.Include {
@@ -42,7 +48,7 @@ func GenerateForeignKeyConstraints(cfg *config.MigrationConfig) (statements []st
 		names := foreignKeyConstraintNames(table, valid)
 		for i, fk := range valid {
 			refTC := cfg.Tables[fk.RefTable]
-			statements = append(statements, foreignKeyStatement(table, fk, names[i], PostgresColumnNames(tc), PostgresColumnNames(refTC)))
+			statements = append(statements, foreignKeyStatement(pgTableNames[table], pgTableNames[fk.RefTable], fk, names[i], PostgresColumnNames(tc), PostgresColumnNames(refTC)))
 		}
 	}
 	return statements, skipped
@@ -126,10 +132,15 @@ func includedSet(tc config.TableConfig) map[string]bool {
 // actually emitted for them in CREATE TABLE (see PostgresColumnNames) —
 // necessary so a foreign key on a column that CREATE TABLE had to
 // disambiguate (issue #21) still references the column that really exists.
-func foreignKeyStatement(table string, fk config.ForeignKey, name string, localIDs, refIDs map[string]string) string {
+// table and refTable must likewise already be the resolved identifiers
+// CREATE TABLE emitted for the constrained and referenced tables (see
+// PostgresTableNames/issue #44) — not necessarily the raw source table
+// names — so the ALTER TABLE and REFERENCES clauses both name a relation
+// that actually exists under that name.
+func foreignKeyStatement(table, refTable string, fk config.ForeignKey, name string, localIDs, refIDs map[string]string) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s)",
-		quoteIdent(table), quoteIdent(name), quoteJoin(mapNames(fk.Columns, localIDs)), quoteIdent(fk.RefTable), quoteJoin(mapNames(fk.RefColumns, refIDs)))
+		quoteIdent(table), quoteIdent(name), quoteJoin(mapNames(fk.Columns, localIDs)), quoteIdent(refTable), quoteJoin(mapNames(fk.RefColumns, refIDs)))
 	if fk.OnDelete != "" && fk.OnDelete != "NO ACTION" {
 		fmt.Fprintf(&b, " ON DELETE %s", fk.OnDelete)
 	}

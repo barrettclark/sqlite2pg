@@ -166,7 +166,7 @@ func TestVerifyTable_ExactMatch_NoMismatches(t *testing.T) {
 	fixture := loadVerifyFixture(t, pgConn, "verify_exact_match", verifyFixtureConfig(), fixtureInsert("verify_exact_match"))
 	defer fixture.Close()
 
-	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_exact_match", verifyFixtureConfig())
+	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_exact_match", "verify_exact_match", verifyFixtureConfig())
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -195,7 +195,7 @@ func TestVerifyTable_DetectsRowCountMismatch(t *testing.T) {
 		t.Fatalf("deleting row to induce mismatch: %v", err)
 	}
 
-	result, err := VerifyTable(ctx, fixture, pgConn, "verify_row_count_mismatch", tc)
+	result, err := VerifyTable(ctx, fixture, pgConn, "verify_row_count_mismatch", "verify_row_count_mismatch", tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestVerifyTable_DetectsWrongTextValue(t *testing.T) {
 	row1 := pgFixtureRow(1, "corrupted", true, 1700000000, []string{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10"}, "deadbeef")
 	corruptOneRow(t, pgConn, "verify_wrong_text", row1)
 
-	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_wrong_text", tc)
+	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_wrong_text", "verify_wrong_text", tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -238,7 +238,7 @@ func TestVerifyTable_DetectsWrongBooleanValue(t *testing.T) {
 	row1 := pgFixtureRow(1, "alpha", false, 1700000000, []string{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10"}, "deadbeef")
 	corruptOneRow(t, pgConn, "verify_wrong_bool", row1)
 
-	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_wrong_bool", tc)
+	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_wrong_bool", "verify_wrong_bool", tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestVerifyTable_DetectsWrongTimestamptzValue(t *testing.T) {
 	row1 := pgFixtureRow(1, "alpha", true, 1893456000, []string{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10"}, "deadbeef")
 	corruptOneRow(t, pgConn, "verify_wrong_timestamptz", row1)
 
-	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_wrong_timestamptz", tc)
+	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_wrong_timestamptz", "verify_wrong_timestamptz", tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -283,7 +283,7 @@ func TestVerifyTable_DetectsWrongUUIDListValue(t *testing.T) {
 	row1 := pgFixtureRow(1, "alpha", true, 1700000000, []string{"00000000-0000-0000-0000-000000000000"}, "deadbeef")
 	corruptOneRow(t, pgConn, "verify_wrong_uuid_list", row1)
 
-	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_wrong_uuid_list", tc)
+	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_wrong_uuid_list", "verify_wrong_uuid_list", tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -299,7 +299,7 @@ func TestVerifyTable_DetectsWrongByteaValue(t *testing.T) {
 	row1 := pgFixtureRow(1, "alpha", true, 1700000000, []string{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10"}, "00000000")
 	corruptOneRow(t, pgConn, "verify_wrong_bytea", row1)
 
-	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_wrong_bytea", tc)
+	result, err := VerifyTable(context.Background(), fixture, pgConn, "verify_wrong_bytea", "verify_wrong_bytea", tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -327,7 +327,7 @@ func TestVerifyTable_CapsExamplesButCountsEveryMismatch(t *testing.T) {
 		t.Fatalf("corrupting rows: %v", err)
 	}
 
-	result, err := VerifyTable(ctx, fixture, pgConn, "verify_many_mismatches", tc)
+	result, err := VerifyTable(ctx, fixture, pgConn, "verify_many_mismatches", "verify_many_mismatches", tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -355,7 +355,7 @@ func TestVerifyTable_SkipsTableWithNoIncludedColumns(t *testing.T) {
 	sqliteDB, _ := openTestDB(t, `CREATE TABLE nogeom (geom BLOB);`)
 	defer sqliteDB.Close()
 
-	result, err := VerifyTable(context.Background(), sqliteDB, pgConn, "nogeom", tc)
+	result, err := VerifyTable(context.Background(), sqliteDB, pgConn, "nogeom", "nogeom", tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -413,7 +413,7 @@ func TestVerifyTable_PrimaryKeyOrdering_SurvivesPhysicalReorderingOfIdenticalDat
 
 	reinsertRowsReversed(t, pgConn, table, correctRow2(), correctRow1())
 
-	result, err := VerifyTable(context.Background(), fixture, pgConn, table, tc)
+	result, err := VerifyTable(context.Background(), fixture, pgConn, table, table, tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -445,7 +445,7 @@ func TestVerifyTable_PrimaryKeyOrdering_StillDetectsRealCorruption(t *testing.T)
 	corruptedRow1 := pgFixtureRow(1, "corrupted", true, 1700000000, []string{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10"}, "deadbeef")
 	reinsertRowsReversed(t, pgConn, table, correctRow2(), corruptedRow1)
 
-	result, err := VerifyTable(context.Background(), fixture, pgConn, table, tc)
+	result, err := VerifyTable(context.Background(), fixture, pgConn, table, table, tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -469,7 +469,7 @@ func TestVerifyTable_NoPrimaryKey_AggregateComparisonSurvivesScanOrderDrift(t *t
 
 	reinsertRowsReversed(t, pgConn, table, correctRow2(), correctRow1())
 
-	result, err := VerifyTable(context.Background(), fixture, pgConn, table, tc)
+	result, err := VerifyTable(context.Background(), fixture, pgConn, table, table, tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}
@@ -500,7 +500,7 @@ func TestVerifyTable_NoPrimaryKey_AggregateComparisonStillDetectsRealCorruption(
 	corruptedRow1 := pgFixtureRow(1, "corrupted", true, 1700000000, []string{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10"}, "deadbeef")
 	corruptOneRow(t, pgConn, table, corruptedRow1)
 
-	result, err := VerifyTable(context.Background(), fixture, pgConn, table, tc)
+	result, err := VerifyTable(context.Background(), fixture, pgConn, table, table, tc)
 	if err != nil {
 		t.Fatalf("VerifyTable: %v", err)
 	}

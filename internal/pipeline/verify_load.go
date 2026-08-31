@@ -152,7 +152,16 @@ func (r TableVerifyResult) Passed() bool {
 //     primary-key path — but that cost is only paid for tables that lack a
 //     primary key, and is the accepted price for exhaustive, false-positive-
 //     free verification on tables without one.
-func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table string, tc config.TableConfig) (TableVerifyResult, error) {
+// pgTable must be the identifier CREATE TABLE actually emitted for table
+// (see ddl.PostgresTableNames/issue #44) — not necessarily table itself —
+// since two source tables identical in their first 63 bytes are
+// disambiguated for Postgres the same way colliding column names are;
+// querying by table's raw name would connect to the wrong relation (or
+// none at all) whenever disambiguation actually kicked in. table is still
+// what's used for every SQLite-side read, and for TableVerifyResult.Table
+// and error messages, since the source name is what a human reading a
+// verify report needs to recognize.
+func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table, pgTable string, tc config.TableConfig) (TableVerifyResult, error) {
 	result := TableVerifyResult{Table: table, ColumnResults: map[string]*ColumnVerifyResult{}}
 
 	included := ddl.IncludedColumns(tc)
@@ -167,8 +176,8 @@ func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table 
 	result.SourceRowCount = sourceCount
 
 	var targetCount int
-	if err := pgConn.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s`, pgx.Identifier{table}.Sanitize())).Scan(&targetCount); err != nil {
-		return result, fmt.Errorf("counting rows in Postgres table %s: %w", table, err)
+	if err := pgConn.QueryRow(ctx, fmt.Sprintf(`SELECT COUNT(*) FROM %s`, pgx.Identifier{pgTable}.Sanitize())).Scan(&targetCount); err != nil {
+		return result, fmt.Errorf("counting rows in Postgres table %s: %w", pgTable, err)
 	}
 	result.TargetRowCount = targetCount
 
@@ -179,15 +188,15 @@ func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table 
 
 	pk := ddl.PrimaryKeyColumns(tc)
 	if len(pk) > 0 {
-		return verifyTableOrdered(ctx, sourceDB, pgConn, table, tc, included, pk, result)
+		return verifyTableOrdered(ctx, sourceDB, pgConn, table, pgTable, tc, included, pk, result)
 	}
-	return verifyTableUnordered(ctx, sourceDB, pgConn, table, tc, included, result)
+	return verifyTableUnordered(ctx, sourceDB, pgConn, table, pgTable, tc, included, result)
 }
 
 // verifyTableOrdered runs VerifyTable's primary-key comparison path: both
 // sides read in matching ORDER BY <pk> order, compared row-by-row by
 // position. See VerifyTable's doc comment for the full rationale.
-func verifyTableOrdered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table string, tc config.TableConfig, included, pk []string, result TableVerifyResult) (TableVerifyResult, error) {
+func verifyTableOrdered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table, pgTable string, tc config.TableConfig, included, pk []string, result TableVerifyResult) (TableVerifyResult, error) {
 	result.Ordered = true
 
 	ids := ddl.PostgresColumnNames(tc)
@@ -200,11 +209,11 @@ func verifyTableOrdered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn,
 		quotedPK[i] = pgx.Identifier{ids[name]}.Sanitize()
 	}
 	query := fmt.Sprintf(`SELECT %s FROM %s ORDER BY %s`,
-		strings.Join(quotedCols, ", "), pgx.Identifier{table}.Sanitize(), strings.Join(quotedPK, ", "))
+		strings.Join(quotedCols, ", "), pgx.Identifier{pgTable}.Sanitize(), strings.Join(quotedPK, ", "))
 
 	pgRows, err := pgConn.Query(ctx, query)
 	if err != nil {
-		return result, fmt.Errorf("querying Postgres table %s: %w", table, err)
+		return result, fmt.Errorf("querying Postgres table %s: %w", pgTable, err)
 	}
 	defer pgRows.Close()
 
@@ -218,10 +227,10 @@ func verifyTableOrdered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn,
 	rowIndex := 0
 	streamErr := sqlitereader.StreamTableOrdered(sourceDB, table, included, pk, func(row []profiler.Value) error {
 		if !pgRows.Next() {
-			return fmt.Errorf("postgres table %s ran out of rows at row %d despite matching row counts (concurrent write during verify?)", table, rowIndex)
+			return fmt.Errorf("postgres table %s ran out of rows at row %d despite matching row counts (concurrent write during verify?)", pgTable, rowIndex)
 		}
 		if err := pgRows.Scan(scanDests...); err != nil {
-			return fmt.Errorf("scanning postgres row %d of %s: %w", rowIndex, table, err)
+			return fmt.Errorf("scanning postgres row %d of %s: %w", rowIndex, pgTable, err)
 		}
 
 		for i, name := range included {
@@ -256,7 +265,7 @@ func verifyTableOrdered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn,
 		return result, streamErr
 	}
 	if err := pgRows.Err(); err != nil {
-		return result, fmt.Errorf("reading Postgres table %s: %w", table, err)
+		return result, fmt.Errorf("reading Postgres table %s: %w", pgTable, err)
 	}
 	return result, nil
 }
@@ -264,7 +273,7 @@ func verifyTableOrdered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn,
 // verifyTableUnordered runs VerifyTable's no-primary-key fallback: each
 // included column is compared independently via compareColumnUnordered.
 // See VerifyTable's doc comment for the full rationale.
-func verifyTableUnordered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table string, tc config.TableConfig, included []string, result TableVerifyResult) (TableVerifyResult, error) {
+func verifyTableUnordered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table, pgTable string, tc config.TableConfig, included []string, result TableVerifyResult) (TableVerifyResult, error) {
 	result.Ordered = false
 	result.RowsCompared = result.SourceRowCount
 
@@ -291,11 +300,11 @@ func verifyTableUnordered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Con
 	for i, name := range included {
 		quotedCols[i] = pgx.Identifier{ids[name]}.Sanitize()
 	}
-	query := fmt.Sprintf(`SELECT %s FROM %s`, strings.Join(quotedCols, ", "), pgx.Identifier{table}.Sanitize())
+	query := fmt.Sprintf(`SELECT %s FROM %s`, strings.Join(quotedCols, ", "), pgx.Identifier{pgTable}.Sanitize())
 
 	pgRows, err := pgConn.Query(ctx, query)
 	if err != nil {
-		return result, fmt.Errorf("querying Postgres table %s: %w", table, err)
+		return result, fmt.Errorf("querying Postgres table %s: %w", pgTable, err)
 	}
 	defer pgRows.Close()
 
@@ -309,14 +318,14 @@ func verifyTableUnordered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Con
 	actual := make(map[string][]any, len(included))
 	for pgRows.Next() {
 		if err := pgRows.Scan(scanDests...); err != nil {
-			return result, fmt.Errorf("scanning postgres row of %s: %w", table, err)
+			return result, fmt.Errorf("scanning postgres row of %s: %w", pgTable, err)
 		}
 		for i, name := range included {
 			actual[name] = append(actual[name], scanners[i].value())
 		}
 	}
 	if err := pgRows.Err(); err != nil {
-		return result, fmt.Errorf("reading Postgres table %s: %w", table, err)
+		return result, fmt.Errorf("reading Postgres table %s: %w", pgTable, err)
 	}
 
 	for _, name := range included {

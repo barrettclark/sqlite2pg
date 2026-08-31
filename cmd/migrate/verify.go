@@ -89,6 +89,13 @@ func runVerify(args []string) error {
 	}
 	sort.Strings(tableNames)
 
+	// The identifier `migrate load` actually created this table under
+	// (see ddl.PostgresTableNames/issue #44) — computed the same way over
+	// the same full cfg, so a table that was disambiguated at load time is
+	// looked up by the name that really exists rather than its raw source
+	// name.
+	pgTableNames := ddl.PostgresTableNames(cfg)
+
 	var results []pipeline.TableVerifyResult
 	var skipped []string
 	for _, name := range tableNames {
@@ -100,7 +107,7 @@ func runVerify(args []string) error {
 			continue
 		}
 		fmt.Printf("verifying %s...\n", name)
-		result, err := pipeline.VerifyTable(ctx, sourceDB, conn, name, tc)
+		result, err := pipeline.VerifyTable(ctx, sourceDB, conn, name, pgTableNames[name], tc)
 		if err != nil {
 			return fmt.Errorf("verifying %s: %w", name, err)
 		}

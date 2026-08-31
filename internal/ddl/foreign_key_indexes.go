@@ -66,10 +66,16 @@ func GenerateForeignKeyIndexes(cfg *config.MigrationConfig) (statements []string
 	}
 	names := disambiguateNames(display, identity)
 
+	// The identifier CREATE TABLE actually emitted for each table (see
+	// PostgresTableNames/issue #44) — the index's ON clause must name the
+	// same disambiguated relation CREATE TABLE created, not the raw
+	// source table name.
+	pgTableNames := PostgresTableNames(cfg)
+
 	i := 0
 	for _, pt := range perTable {
 		for _, fk := range pt.fks {
-			statements = append(statements, foreignKeyIndexStatement(pt.table, fk, names[i], pt.ids))
+			statements = append(statements, foreignKeyIndexStatement(pgTableNames[pt.table], fk, names[i], pt.ids))
 			i++
 		}
 	}
@@ -81,7 +87,9 @@ func GenerateForeignKeyIndexes(cfg *config.MigrationConfig) (statements []string
 // they're declared in fk.Columns. ids maps those declared names to the
 // identifiers CREATE TABLE actually emitted for them (see
 // PostgresColumnNames) — kept consistent with foreignKeyStatement for the
-// same issue #21 reason.
+// same issue #21 reason. table must likewise already be the resolved
+// identifier CREATE TABLE emitted for it (see PostgresTableNames/issue
+// #44), not necessarily the raw source table name.
 func foreignKeyIndexStatement(table string, fk config.ForeignKey, name string, ids map[string]string) string {
 	return fmt.Sprintf("CREATE INDEX %s ON %s (%s);", quoteIdent(name), quoteIdent(table), quoteJoin(mapNames(fk.Columns, ids)))
 }

@@ -3,6 +3,7 @@ package ddl
 import (
 	"crypto/sha1"
 	"encoding/hex"
+	"sort"
 
 	"github.com/jackc/pgx/v5"
 
@@ -23,18 +24,63 @@ const identifierHashLen = 8
 
 // PostgresColumnNames maps every one of tc's included columns (see
 // IncludedColumns) to the identifier that must actually appear in
-// generated DDL and in the COPY protocol's target column list. Postgres
-// truncates any identifier over maxIdentifierLen bytes at the wire/parser
-// level (NAMEDATALEN), so two source columns whose names are identical in
-// their first 63 bytes but differ after that — e.g. two very long,
-// near-duplicate names — collide the moment Postgres truncates them,
-// producing "column ... specified more than once" (issue #21). Names
-// already within the limit are returned unchanged; only within-table
-// collisions after truncation get a short hash suffix, applied
-// deterministically so the same source config always maps to the same
-// identifiers across separate `profile`/`review`/`load` runs.
+// generated DDL and in the COPY protocol's target column list. A Postgres
+// column name only has to be unique within its own table (attrelid,
+// attname), so this is deliberately scoped per-table — called once per
+// TableConfig — unlike PostgresTableNames below, which has to consider
+// every table in a config at once. Postgres truncates any identifier over
+// maxIdentifierLen bytes at the wire/parser level (NAMEDATALEN), so two
+// source columns whose names are identical in their first 63 bytes but
+// differ after that — e.g. two very long, near-duplicate names — collide
+// the moment Postgres truncates them, producing "column ... specified more
+// than once" (issue #21). Names already within the limit are returned
+// unchanged; only within-table collisions after truncation get a short
+// hash suffix, applied deterministically so the same source config always
+// maps to the same identifiers across separate `profile`/`review`/`load`
+// runs.
 func PostgresColumnNames(tc config.TableConfig) map[string]string {
 	return disambiguateIdentifiers(IncludedColumns(tc))
+}
+
+// PostgresTableNames maps every included table in cfg (see
+// config.TableConfig.Include) to the identifier that must actually appear
+// everywhere a table name reaches Postgres: the CREATE TABLE statement
+// itself, the COPY protocol's target table, any ALTER TABLE / REFERENCES
+// clause naming it, and any CREATE INDEX ... ON clause naming it. Unlike
+// PostgresColumnNames, this has to be computed across cfg's WHOLE table
+// set at once, not per-table: a Postgres relation name (like an index
+// name, see foreignKeyIndexNames/issue #43) lives in a single
+// schema-scoped namespace (pg_class) shared by every table, so two
+// different source tables can collide with each other the same way two
+// columns on the same table can. Postgres truncates any identifier over
+// maxIdentifierLen bytes at the wire/parser level (NAMEDATALEN), so two
+// source tables whose names are identical in their first 63 bytes but
+// differ after that collide the moment Postgres truncates them, producing
+// "relation ... already exists" for the second CREATE TABLE (issue #44) —
+// the identical hazard issue #21 fixed for columns, one level up. Names
+// already within the limit are returned unchanged; only schema-wide
+// collisions after truncation get a short hash suffix, applied
+// deterministically (same disambiguateNames primitive as PostgresColumnNames
+// and foreignKeyIndexNames) so the same source config always maps to the
+// same identifiers across separate `profile`/`review`/`load`/`verify` runs,
+// and every generator that calls this function agrees on the same name for
+// the same table.
+func PostgresTableNames(cfg *config.MigrationConfig) map[string]string {
+	names := make([]string, 0, len(cfg.Tables))
+	for name, tc := range cfg.Tables {
+		if !tc.Include {
+			continue
+		}
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	disambiguated := disambiguateNames(names, names)
+	result := make(map[string]string, len(names))
+	for i, name := range names {
+		result[name] = disambiguated[i]
+	}
+	return result
 }
 
 // disambiguateIdentifiers maps each name in names (in declared order) to a

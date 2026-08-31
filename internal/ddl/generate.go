@@ -45,6 +45,15 @@ var ErrMissingColumnOrder = errors.New("table has columns but no column_order �
 // otherwise collide once Postgres truncates overlong identifiers (issue
 // #21) come out disambiguated instead.
 //
+// table must already be the identifier CREATE TABLE should actually emit
+// — i.e. cfg's PostgresTableNames(cfg)[sourceTableName], not necessarily
+// the raw source table name — so that two source tables colliding after
+// Postgres's 63-byte truncation come out disambiguated the same way
+// columns do (issue #44). Every caller that also needs to reference this
+// same table elsewhere (COPY's target, an FK's REFERENCES/ON clause) must
+// use the identical resolved name, or the two references will disagree
+// about which relation they mean.
+//
 // It returns ErrMissingColumnOrder or ErrNoIncludedColumns (see both) if tc
 // has no columns to emit, rather than the invalid `CREATE TABLE "t" ();`
 // issue #30 reported.

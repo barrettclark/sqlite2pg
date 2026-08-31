@@ -333,12 +333,18 @@ func printDryRunDDL(w io.Writer, cfg *config.MigrationConfig) {
 	}
 	sort.Strings(tableNames)
 
+	// The identifier CREATE TABLE must actually emit for each table (see
+	// ddl.PostgresTableNames/issue #44) — computed once here so every
+	// generator below (CREATE TABLE, foreign keys, foreign key indexes)
+	// agrees on the same disambiguated name for the same table.
+	pgTableNames := ddl.PostgresTableNames(cfg)
+
 	for _, tableName := range tableNames {
 		tc := cfg.Tables[tableName]
 		if !tc.Include {
 			continue
 		}
-		stmt, err := ddl.GenerateCreateTable(tableName, tc)
+		stmt, err := ddl.GenerateCreateTable(pgTableNames[tableName], tc)
 		if err != nil {
 			// ValidateTableConfigs above already rejected the
 			// config-bug case (ErrMissingColumnOrder), so what's
@@ -419,6 +425,17 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	}
 	sort.Strings(tableNames)
 
+	// The identifier CREATE TABLE and COPY must actually target for each
+	// table (see ddl.PostgresTableNames/issue #44) — computed once here
+	// (schema-wide, over the full config, not just the tables this run
+	// will touch) so DDL, COPY, and the foreign key/index step below all
+	// agree on the same disambiguated name for the same table. tableName
+	// (the source name) is still what's used for progress reporting, the
+	// state file, and error messages below — those stay human-readable
+	// and are unaffected by truncation since source table names are never
+	// themselves ambiguous, only their Postgres-truncated form can be.
+	pgTableNames := ddl.PostgresTableNames(cfg)
+
 	var totalRows int64
 	for _, tableName := range tableNames {
 		n, err := sqlitereader.CountRows(sourceDB, tableName)
@@ -431,7 +448,8 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 
 	for _, tableName := range tableNames {
 		tc := cfg.Tables[tableName]
-		stmt, err := ddl.GenerateCreateTable(tableName, tc)
+		pgTable := pgTableNames[tableName]
+		stmt, err := ddl.GenerateCreateTable(pgTable, tc)
 		if err != nil {
 			return fmt.Errorf("generating DDL for %s: %w", tableName, err)
 		}
@@ -440,7 +458,7 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		}
 		progress.startTable(tableName)
 		src := copywriter.NewTableSource(sourceDB, tableName, tc).OnRow(progress.row)
-		n, err := copywriter.LoadTable(ctx, conn, tableName, tc, src)
+		n, err := copywriter.LoadTable(ctx, conn, pgTable, tc, src)
 		if err != nil {
 			progress.abort()
 			return err
