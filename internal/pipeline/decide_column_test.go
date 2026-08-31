@@ -281,6 +281,39 @@ func TestDecideColumn_FlagsForReviewWhenAPrimaryKeyColumnHasAnEmptyStringUUID(t 
 	}
 }
 
+func TestDecideColumn_FlagsForReviewWhenANonPrimaryKeyNotNullColumnResolvesToNULL(t *testing.T) {
+	// Issue #40: issue #34's fix started emitting a real NOT NULL DDL
+	// constraint for *any* column with ColumnConfig.NotNull set, not just
+	// primary keys — but issue #31's full-table NULL-rejection guard was
+	// only ever widened to cover PrimaryKeySeq > 0 columns. A source NOT
+	// NULL (non-PK) column whose sample looks like clean UUIDs but whose
+	// full table holds an empty string (mirroring beets' albums.mb_albumid)
+	// must still be caught here, or the generated "NOT NULL" DDL aborts the
+	// whole COPY when uuid_format turns that row into NULL.
+	db, _ := openTestDB(t, `CREATE TABLE albums (id INTEGER PRIMARY KEY, mb_albumid TEXT NOT NULL);`)
+	db.Exec(`INSERT INTO albums (mb_albumid) VALUES
+		('90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10'),
+		('e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10'),
+		('')`)
+
+	col := sqlitereader.ColumnInfo{Name: "mb_albumid", DeclaredType: "TEXT", NotNull: true}
+	sample := []any{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10"}
+
+	cc, unresolved, err := decideColumn(db, "albums", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.TargetType != "uuid" {
+		t.Errorf("expected the suggested type uuid to still be shown, got %q", cc.TargetType)
+	}
+	if cc.Confidence >= 0.9 {
+		t.Errorf("expected confidence dropped below threshold once a NOT NULL column resolving to NULL was found, got %f", cc.Confidence)
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase once the full-table check found a non-primary-key NOT NULL column resolving to NULL")
+	}
+}
+
 func TestDecideColumn_FlagsForReviewWhenACharOneFlagColumnStoresTextZeroOne(t *testing.T) {
 	// Issue #1 real-data gap (sakila.db customer.active): a CHAR(1)
 	// column storing only '0'/'1' as text used to be silently claimed by

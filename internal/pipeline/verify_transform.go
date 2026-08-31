@@ -35,20 +35,23 @@ var errFullTableViolation = errors.New("full-table verification found a value th
 // lets verifyTransformAgainstFullTable range-check the *produced* value
 // against the target, not just detect a transform error.
 //
-// isPrimaryKey additionally rejects any value the transform maps to NULL
-// (issue #31): uuid_format, numeric_text_to_integer, numeric_text_to_double,
-// and nullif_empty all map an empty string to NULL by design — a
-// reasonable default for an ordinary column, but internal/ddl/generate.go
-// emits an inline PRIMARY KEY (...) clause for any PrimaryKeySeq > 0
-// column, so a transform-produced NULL there would abort the whole COPY
-// with a not-null violation instead of merely losing one column's value.
+// rejectNull additionally rejects any value the transform maps to NULL
+// (issue #31, widened by issue #40): uuid_format, numeric_text_to_integer,
+// numeric_text_to_double, and nullif_empty all map an empty string to NULL
+// by design — a reasonable default for an ordinary nullable column, but
+// internal/ddl/generate.go emits a NOT NULL constraint (either the inline
+// PRIMARY KEY (...) clause for any PrimaryKeySeq > 0 column, or an explicit
+// NOT NULL for any column with ColumnConfig.NotNull set) — so a
+// transform-produced NULL on either kind of column would abort the whole
+// COPY with a not-null violation instead of merely losing one column's
+// value. Callers pass col.PrimaryKeySeq > 0 || col.NotNull.
 //
 // ok is true when every value converted cleanly, fit the target type, and
-// (for a primary-key column) never came out NULL — or transform is empty
+// (when rejectNull is set) never came out NULL — or transform is empty
 // (nothing to check). badValue is the first offending raw value's string
 // form when ok is false. err is a real I/O/query failure, distinct from a
 // found violation.
-func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform, targetType string, isPrimaryKey bool) (ok bool, badValue string, err error) {
+func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform, targetType string, rejectNull bool) (ok bool, badValue string, err error) {
 	if transform == "" {
 		return true, "", nil
 	}
@@ -59,7 +62,7 @@ func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform, targe
 			badValue = fmt.Sprintf("%v", row[0])
 			return errFullTableViolation
 		}
-		if isPrimaryKey && val == nil {
+		if rejectNull && val == nil {
 			badValue = fmt.Sprintf("%v", row[0])
 			return errFullTableViolation
 		}

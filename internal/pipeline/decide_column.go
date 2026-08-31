@@ -74,7 +74,7 @@ func decideColumn(db *sql.DB, table string, col sqlitereader.ColumnInfo, samples
 	reason := fmt.Sprintf("confidence %.2f below auto-approve threshold %.2f, or heuristics disagreed", best.Confidence, threshold)
 
 	if !needsReview && best.TransformExpr != "" {
-		ok, badValue, err := verifyTransformAgainstFullTable(db, table, col.Name, best.TransformExpr, best.SuggestedType, col.PrimaryKeySeq > 0)
+		ok, badValue, err := verifyTransformAgainstFullTable(db, table, col.Name, best.TransformExpr, best.SuggestedType, col.PrimaryKeySeq > 0 || col.NotNull)
 		if err != nil {
 			return config.ColumnConfig{}, nil, err
 		}
