@@ -30,6 +30,15 @@ type ProfileResult struct {
 	// generated config simply has no entry for them.
 	SkippedTables []sqlitereader.SkippedTable
 
+	// SkippedForeignKeys are declared foreign keys ReadForeignKeys
+	// deliberately dropped because they're an implicit `REFERENCES parent`
+	// clause whose target column couldn't be resolved — either parent
+	// doesn't have exactly one declared primary key column, or parent is
+	// itself an unsupported virtual table (issue #46). Not a failure, but
+	// not silently ignorable either, since the generated config simply has
+	// no entry for the relationship.
+	SkippedForeignKeys []sqlitereader.SkippedForeignKey
+
 	// FilteredSystemTables are tables FilterSystemTables excluded as Esri
 	// GDB_* or (on a confirmed Esri/Spatialite source) Spatialite st_*
 	// system tables — reported so the exclusion is visible rather than
@@ -45,7 +54,7 @@ type ProfileResult struct {
 // that need human review are both marked reviewed: false and included in
 // Unresolved.
 func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold float64) (*ProfileResult, error) {
-	tables, skippedTables, err := sqlitereader.ReadSchema(db)
+	tables, skippedTables, skippedFKs, err := sqlitereader.ReadSchema(db)
 	if err != nil {
 		return nil, fmt.Errorf("reading schema: %w", err)
 	}
@@ -77,6 +86,13 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 		cfg.SkippedTables = append(cfg.SkippedTables, config.SkippedTable{
 			Name:   st.Name,
 			Reason: st.Reason,
+		})
+	}
+	for _, sfk := range skippedFKs {
+		cfg.SkippedForeignKeys = append(cfg.SkippedForeignKeys, config.SkippedForeignKey{
+			Table:    sfk.Table,
+			RefTable: sfk.RefTable,
+			Reason:   sfk.Reason,
 		})
 	}
 
@@ -159,7 +175,7 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 		cfg.Tables[table.Name] = tc
 	}
 
-	return &ProfileResult{Config: cfg, Unresolved: unresolved, SkippedTables: skippedTables, FilteredSystemTables: filteredSystemTables}, nil
+	return &ProfileResult{Config: cfg, Unresolved: unresolved, SkippedTables: skippedTables, SkippedForeignKeys: skippedFKs, FilteredSystemTables: filteredSystemTables}, nil
 }
 
 // transposeToColumns turns rows (each a slice of numCols values, one row

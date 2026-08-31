@@ -5,6 +5,7 @@ package sqlitereader
 
 import (
 	"database/sql"
+	"errors"
 	"fmt"
 	"strings"
 )
@@ -65,6 +66,36 @@ type SkippedTable struct {
 	Reason string
 }
 
+// SkippedForeignKey records one declared foreign key ReadForeignKeys
+// deliberately dropped rather than resolved, because it's an implicit
+// (column-list-less) `REFERENCES parent` clause whose target column
+// couldn't be determined — either RefTable doesn't have exactly one
+// declared primary key column (a plain rowid table with no PRIMARY KEY at
+// all is perfectly valid SQLite, and SQLite itself doesn't enforce such an
+// implicit reference either), or RefTable is itself backed by an
+// unsupported virtual table module (issue #29's case, reached indirectly
+// here). Reason preserves the underlying cause so the drop is visible
+// rather than silent (issue #46).
+type SkippedForeignKey struct {
+	Table    string
+	RefTable string
+	Reason   string
+}
+
+// ambiguousPrimaryKeyError reports that primaryKeyColumn's target table
+// doesn't have exactly one declared primary key column. This is a normal,
+// expected table shape (not a driver failure), so it's a distinct type
+// rather than a plain fmt.Errorf — callers use errors.As to recognize it
+// and degrade gracefully instead of treating it as fatal.
+type ambiguousPrimaryKeyError struct {
+	table string
+	count int
+}
+
+func (e *ambiguousPrimaryKeyError) Error() string {
+	return fmt.Sprintf("table %s has %d primary key columns, expected exactly 1", e.table, e.count)
+}
+
 // unsupportedVirtualTableModuleMarker is the substring modernc.org/sqlite
 // includes in the error returned for a CREATE VIRTUAL TABLE (or any later
 // access, like PRAGMA table_info) that names a module it has no
@@ -98,10 +129,10 @@ func isUnsupportedVirtualTableModuleError(err error) bool {
 // (a locked database, disk corruption, a permissions error) aborts with an
 // error instead — issue #29: it must never look like a clean, complete
 // migration when a table went unread for an unrelated reason.
-func ReadSchema(db *sql.DB) ([]TableInfo, []SkippedTable, error) {
+func ReadSchema(db *sql.DB) ([]TableInfo, []SkippedTable, []SkippedForeignKey, error) {
 	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
-		return nil, nil, fmt.Errorf("listing tables: %w", err)
+		return nil, nil, nil, fmt.Errorf("listing tables: %w", err)
 	}
 	defer rows.Close()
 
@@ -109,16 +140,17 @@ func ReadSchema(db *sql.DB) ([]TableInfo, []SkippedTable, error) {
 	for rows.Next() {
 		var name string
 		if err := rows.Scan(&name); err != nil {
-			return nil, nil, fmt.Errorf("scanning table name: %w", err)
+			return nil, nil, nil, fmt.Errorf("scanning table name: %w", err)
 		}
 		tableNames = append(tableNames, name)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 
 	var tables []TableInfo
 	var skipped []SkippedTable
+	var skippedFKs []SkippedForeignKey
 	for _, name := range tableNames {
 		cols, err := readColumns(db, name)
 		if err != nil {
@@ -126,15 +158,16 @@ func ReadSchema(db *sql.DB) ([]TableInfo, []SkippedTable, error) {
 				skipped = append(skipped, SkippedTable{Name: name, Reason: err.Error()})
 				continue
 			}
-			return nil, nil, fmt.Errorf("reading columns for %s: %w", name, err)
+			return nil, nil, nil, fmt.Errorf("reading columns for %s: %w", name, err)
 		}
-		fks, err := ReadForeignKeys(db, name)
+		fks, fkSkipped, err := ReadForeignKeys(db, name)
 		if err != nil {
-			return nil, nil, fmt.Errorf("reading foreign keys for %s: %w", name, err)
+			return nil, nil, nil, fmt.Errorf("reading foreign keys for %s: %w", name, err)
 		}
+		skippedFKs = append(skippedFKs, fkSkipped...)
 		tables = append(tables, TableInfo{Name: name, Columns: cols, ForeignKeys: fks})
 	}
-	return tables, skipped, nil
+	return tables, skipped, skippedFKs, nil
 }
 
 func readColumns(db *sql.DB, table string) ([]ColumnInfo, error) {
@@ -170,15 +203,20 @@ func readColumns(db *sql.DB, table string) ([]ColumnInfo, error) {
 // ReadForeignKeys reads table's declared foreign keys via PRAGMA
 // foreign_key_list, grouping multi-column (composite) constraints by their
 // shared id and ordering each constraint's columns by seq.
-func ReadForeignKeys(db *sql.DB, table string) ([]ForeignKeyInfo, error) {
+func ReadForeignKeys(db *sql.DB, table string) ([]ForeignKeyInfo, []SkippedForeignKey, error) {
 	rows, err := db.Query(fmt.Sprintf(`PRAGMA foreign_key_list(%s)`, quoteIdent(table)))
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 	defer rows.Close()
 
 	byID := map[int]*ForeignKeyInfo{}
 	var order []int
+	var skipped []SkippedForeignKey
+	// skippedRefTables tracks a referenced table whose primary key already
+	// failed to resolve once in this call, so a second FK row targeting the
+	// same table doesn't repeat the same lookup (and the same skip record).
+	skippedRefTables := map[string]bool{}
 	// refPKCache memoizes each referenced table's primary key column name,
 	// looked up only when an implicit (column-list-less) REFERENCES clause
 	// needs it — most foreign keys declare their target column explicitly.
@@ -191,7 +229,7 @@ func ReadForeignKeys(db *sql.DB, table string) ([]ForeignKeyInfo, error) {
 			onUpdate, onDelete, matchOn string
 		)
 		if err := rows.Scan(&id, &seq, &refTable, &from, &to, &onUpdate, &onDelete, &matchOn); err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		toCol := to.String
 		if !to.Valid {
@@ -199,12 +237,33 @@ func ReadForeignKeys(db *sql.DB, table string) ([]ForeignKeyInfo, error) {
 			// refers to the parent table's declared primary key rather
 			// than naming a column explicitly. PRAGMA foreign_key_list
 			// reports this case with a NULL "to" — resolve it ourselves.
+			if skippedRefTables[refTable] {
+				continue
+			}
 			pk, ok := refPKCache[refTable]
 			if !ok {
 				var err error
 				pk, err = primaryKeyColumn(db, refTable)
 				if err != nil {
-					return nil, fmt.Errorf("resolving implicit foreign key reference to %s: %w", refTable, err)
+					// Neither of primaryKeyColumn's failure modes — the
+					// referenced table not having exactly one declared
+					// primary key column (a plain rowid table with no
+					// PRIMARY KEY at all is perfectly valid SQLite), or
+					// the referenced table being backed by a SQLite
+					// virtual table module this tool doesn't implement
+					// (issue #29's case, reached indirectly here via
+					// readColumns) — is a driver-level failure. Both are
+					// expected, recoverable shapes: drop just this one FK
+					// relationship rather than aborting the whole read
+					// (issue #46). Anything else (a locked database,
+					// corruption) still aborts.
+					var ambiguous *ambiguousPrimaryKeyError
+					if errors.As(err, &ambiguous) || isUnsupportedVirtualTableModuleError(err) {
+						skipped = append(skipped, SkippedForeignKey{Table: table, RefTable: refTable, Reason: err.Error()})
+						skippedRefTables[refTable] = true
+						continue
+					}
+					return nil, nil, fmt.Errorf("resolving implicit foreign key reference to %s: %w", refTable, err)
 				}
 				refPKCache[refTable] = pk
 			}
@@ -220,14 +279,14 @@ func ReadForeignKeys(db *sql.DB, table string) ([]ForeignKeyInfo, error) {
 		fk.RefColumns = append(fk.RefColumns, toCol)
 	}
 	if err := rows.Err(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	fks := make([]ForeignKeyInfo, 0, len(order))
 	for _, id := range order {
 		fks = append(fks, *byID[id])
 	}
-	return fks, nil
+	return fks, skipped, nil
 }
 
 // primaryKeyColumn returns table's single declared primary key column name,
@@ -245,7 +304,7 @@ func primaryKeyColumn(db *sql.DB, table string) (string, error) {
 		}
 	}
 	if len(pkCols) != 1 {
-		return "", fmt.Errorf("table %s has %d primary key columns, expected exactly 1", table, len(pkCols))
+		return "", &ambiguousPrimaryKeyError{table: table, count: len(pkCols)}
 	}
 	return pkCols[0], nil
 }

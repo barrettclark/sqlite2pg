@@ -100,6 +100,7 @@ func runRun(args []string) error {
 	}
 	fmt.Printf("profiled %s: %d table(s), %d column(s) need review\n", sourcePath, len(result.Config.Tables), len(result.Unresolved))
 	warnSkippedTables(result.SkippedTables)
+	warnSkippedForeignKeys(result.SkippedForeignKeys)
 	warnFilteredSystemTables(result.FilteredSystemTables)
 
 	st, err := review.NewState(configPath, *threshold)
@@ -193,6 +194,7 @@ func runProfile(args []string) error {
 	}
 	fmt.Printf("wrote draft config to %s (%d table(s))\n", *out, len(result.Config.Tables))
 	warnSkippedTables(result.SkippedTables)
+	warnSkippedForeignKeys(result.SkippedForeignKeys)
 	warnFilteredSystemTables(result.FilteredSystemTables)
 
 	if len(result.Unresolved) > 0 {
@@ -217,6 +219,23 @@ func warnSkippedTables(skipped []sqlitereader.SkippedTable) {
 	fmt.Fprintf(os.Stderr, "warning: %d table(s) skipped (unsupported SQLite virtual table module) and left out of the config:\n", len(skipped))
 	for _, st := range skipped {
 		fmt.Fprintf(os.Stderr, "  - %s: %s\n", st.Name, st.Reason)
+	}
+}
+
+// warnSkippedForeignKeys prints a stderr warning for every declared foreign
+// key ReadForeignKeys deliberately dropped (issue #46: an implicit
+// `REFERENCES parent` clause whose target column couldn't be resolved,
+// either because parent doesn't have exactly one declared primary key
+// column or because parent is itself an unsupported virtual table) — the
+// generated config simply has no entry for these relationships, so without
+// this warning the drop is invisible.
+func warnSkippedForeignKeys(skipped []sqlitereader.SkippedForeignKey) {
+	if len(skipped) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: %d foreign key relationship(s) skipped (couldn't resolve implicit reference) and left out of the config:\n", len(skipped))
+	for _, sfk := range skipped {
+		fmt.Fprintf(os.Stderr, "  - %s -> %s: %s\n", sfk.Table, sfk.RefTable, sfk.Reason)
 	}
 }
 

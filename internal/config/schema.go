@@ -25,6 +25,15 @@ type MigrationConfig struct {
 	// so a human reviewing this config can see exactly what wasn't migrated
 	// and why, rather than the omission being silent.
 	SkippedTables []SkippedTable `yaml:"skipped_tables,omitempty"`
+
+	// SkippedForeignKeys are declared foreign keys ReadForeignKeys couldn't
+	// resolve and dropped — an implicit `REFERENCES parent` clause whose
+	// target column couldn't be determined, either because parent doesn't
+	// have exactly one declared primary key column or because parent is
+	// itself an unsupported virtual table (issue #46). Recorded here so a
+	// human reviewing this config can see exactly what relationship wasn't
+	// migrated and why, rather than the omission being silent.
+	SkippedForeignKeys []SkippedForeignKey `yaml:"skipped_foreign_keys,omitempty"`
 }
 
 // SkippedTable is one source table ReadSchema couldn't read and skipped —
@@ -32,6 +41,14 @@ type MigrationConfig struct {
 type SkippedTable struct {
 	Name   string `yaml:"name"`
 	Reason string `yaml:"reason"`
+}
+
+// SkippedForeignKey is one declared foreign key ReadForeignKeys couldn't
+// resolve and dropped — see MigrationConfig.SkippedForeignKeys.
+type SkippedForeignKey struct {
+	Table    string `yaml:"table"`
+	RefTable string `yaml:"ref_table"`
+	Reason   string `yaml:"reason"`
 }
 
 // SourceInfo identifies the SQLite source file this config was generated
