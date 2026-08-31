@@ -356,20 +356,6 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 	}
 }
 
-// parseWholeNumberText parses s as an exact int64 without ever routing
-// through float64 — issue #15: strconv.ParseFloat(s, 64) followed by an
-// int64 cast silently rounds to the nearest representable float64 once s
-// exceeds float64's ~15-17 significant digits (a real fixture,
-// bikes.db.legacy_id's 19-digit IDs, was corrupted by dozens of units this
-// way on an otherwise "successful" load), and saturates to
-// math.MaxInt64/MinInt64 with no error once the value is large enough to
-// overflow int64 entirely after that rounding.
-//
-// The numeric_text heuristic accepts whole numbers spelled with a
-// trailing ".0" (e.g. "1998.0") as well as plain digit strings — see its
-// sawFraction check — so a value containing a decimal point is only valid
-// here when everything after the point is zeros; that suffix is trimmed
-// before the exact integer parse, never fed through ParseFloat.
 // FitsRange reports whether n fits the Postgres integer type targetType
 // names ("smallint"/int2, "integer"/int4, "bigint"/int8) — any int64
 // always fits "bigint" since that's exactly int64's own range. Every other
@@ -394,6 +380,20 @@ func FitsRange(n int64, targetType string) bool {
 	}
 }
 
+// parseWholeNumberText parses s as an exact int64 without ever routing
+// through float64 — issue #15: strconv.ParseFloat(s, 64) followed by an
+// int64 cast silently rounds to the nearest representable float64 once s
+// exceeds float64's ~15-17 significant digits (a real fixture,
+// bikes.db.legacy_id's 19-digit IDs, was corrupted by dozens of units this
+// way on an otherwise "successful" load), and saturates to
+// math.MaxInt64/MinInt64 with no error once the value is large enough to
+// overflow int64 entirely after that rounding.
+//
+// The numeric_text heuristic accepts whole numbers spelled with a
+// trailing ".0" (e.g. "1998.0") as well as plain digit strings — see its
+// sawFraction check — so a value containing a decimal point is only valid
+// here when everything after the point is zeros; that suffix is trimmed
+// before the exact integer parse, never fed through ParseFloat.
 func parseWholeNumberText(s string) (int64, error) {
 	intPart := s
 	if i := strings.IndexByte(s, '.'); i >= 0 {
