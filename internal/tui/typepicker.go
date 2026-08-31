@@ -29,7 +29,7 @@ func (m *model) openTypePicker(columnName string) {
 	for i, t := range types {
 		secondary := ""
 		if sample != "" {
-			display, _ := previewValueForType(sample, t)
+			display, _, _ := previewValueForType(sample, t)
 			// Escaped for the same reason as the grid's header/cell text:
 			// tview treats literal "[...]" in rendered text as a tag, and
 			// real sample data can contain brackets.
@@ -84,19 +84,31 @@ func centered(p tview.Primitive, width, height int) tview.Primitive {
 }
 
 // onTypeSelected applies typeName as m.pickerColumn's new target type,
-// refreshes the grid and status line, and closes the picker. Transform is
-// cleared whenever typeName differs from the column's current TargetType —
-// a stale transform from the prior heuristic guess is never implicitly
-// carried over to a genuinely new target type — but preserved when typeName
-// matches the current type: re-confirming the picker's own current
-// selection (issue #18) must not strip a transform the column still needs
-// at COPY time (e.g. timestamptz via unix_epoch_seconds).
+// refreshes the grid and status line, and closes the picker.
+//
+// Transform is preserved unchanged when typeName matches the column's
+// current TargetType: re-confirming the picker's own current selection
+// (issue #18) must not strip a transform the column still needs at COPY
+// time (e.g. timestamptz via unix_epoch_seconds).
+//
+// For a genuine type change, the stale transform from the prior heuristic
+// guess is never implicitly carried over — but the picker itself only
+// offers a type in the first place when either it needs no transform at
+// all, or some transform actually converts the column's sample data into
+// it (dateTransformPreview for date/timestamptz, uuid_format/
+// uuid_list_format for uuid/uuid[] — issues #27, #12). Re-deriving that
+// same transform here via previewValueForType (issue #41) means selecting
+// one of those offered types attaches the transform that made it valid,
+// instead of discarding it and leaving a raw value the real COPY can't
+// write into the new column type.
 func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortcut rune) {
 	tv := findTable(m.summary, m.selectedTable)
 	col := columnByName(tv, m.pickerColumn)
 	transform := ""
 	if typeName == col.TargetType {
 		transform = col.Transform
+	} else if sample := firstNonNullValue(columnSampleValues(tv, m.pickerColumn)); sample != "" {
+		_, transform, _ = previewValueForType(sample, typeName)
 	}
 
 	err := m.st.ApplyDecision(m.selectedTable, m.pickerColumn, review.DecisionRequest{

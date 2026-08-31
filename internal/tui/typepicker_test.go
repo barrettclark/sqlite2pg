@@ -220,3 +220,227 @@ func TestOnTypeSelected_ReselectingTheSameTypePreservesTheTransform(t *testing.T
 		t.Errorf("expected Transform preserved as unix_epoch_seconds when type unchanged, got %q", col.Transform)
 	}
 }
+
+// TestOnTypeSelected_SelectingTimestamptzForAnEpochIntegerColumnAttachesTheMatchingTransform
+// reproduces issue #41's exact failure scenario: bikes.last_reported is
+// integer holding a raw Unix epoch seconds value, timestamptz is offered by
+// the picker (issue #27's transform-aware previewValueForType, credited via
+// dateTransformPreview) because unix_epoch_seconds actually converts it —
+// but selecting it is a genuine type change (integer -> timestamptz), so
+// issue #18's "type changed -> clear transform" rule fires. Without this
+// fix, the saved config ends up with target_type: timestamptz and
+// transform: "", and the real COPY sends a raw int64 into a timestamptz
+// column and fails. Selecting timestamptz here must attach the
+// unix_epoch_seconds transform that made the option valid in the first
+// place, not discard it.
+func TestOnTypeSelected_SelectingTimestamptzForAnEpochIntegerColumnAttachesTheMatchingTransform(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
+		Tables: map[string]config.TableConfig{
+			"bikes": {
+				ColumnOrder: []string{"last_reported"},
+				Columns: map[string]config.ColumnConfig{
+					"last_reported": {
+						TargetType: "integer",
+						Confidence: 0.99,
+						Source:     "heuristic:default_passthrough",
+					},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	st, err := review.NewState(path, 0.9)
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+
+	summary := review.ReviewSummary{Tables: []review.TableView{
+		{
+			Name: "bikes",
+			Columns: []review.ColumnView{
+				{Column: "last_reported", DeclaredType: "INTEGER", TargetType: "integer", Confidence: 0.99, Source: "heuristic:default_passthrough"},
+			},
+			Rows: [][]string{{"1712345678"}},
+		},
+	}}
+
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: summary}
+	m.status = tview.NewTextView()
+	m.buildTableList()
+	m.pages.AddPage("tablelist", m.tableList, true, true)
+	m.onTableSelected(0, "bikes", "", 0)
+	m.openTypePicker("last_reported")
+
+	idx := -1
+	for i := 0; i < m.picker.GetItemCount(); i++ {
+		text, _ := m.picker.GetItemText(i)
+		if text == "timestamptz" {
+			idx = i
+		}
+	}
+	if idx == -1 {
+		t.Fatal("expected \"timestamptz\" to be offered as a valid option for a plausible Unix epoch value")
+	}
+	m.onTypeSelected(idx, "timestamptz", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["bikes"].Columns["last_reported"]
+	if col.TargetType != "timestamptz" {
+		t.Errorf("expected TargetType timestamptz, got %q", col.TargetType)
+	}
+	if col.Transform != "unix_epoch_seconds" {
+		t.Errorf("expected Transform unix_epoch_seconds (the transform that made timestamptz valid), got %q", col.Transform)
+	}
+}
+
+// TestOnTypeSelected_SelectingUUIDArrayForAUUIDListColumnAttachesUUIDListFormatTransform
+// mirrors the epoch/timestamptz scenario above for issue #12's uuid[]
+// option: a text column holding beets' NUL-joined UUID list format offers
+// uuid[] in the picker, but without uuid_list_format attached the raw
+// NUL-joined string goes to a uuid[] column and fails at COPY time.
+func TestOnTypeSelected_SelectingUUIDArrayForAUUIDListColumnAttachesUUIDListFormatTransform(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
+		Tables: map[string]config.TableConfig{
+			"bikes": {
+				ColumnOrder: []string{"mb_albumids"},
+				Columns: map[string]config.ColumnConfig{
+					"mb_albumids": {
+						TargetType: "text",
+						Confidence: 0.99,
+						Source:     "heuristic:default_passthrough",
+					},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	st, err := review.NewState(path, 0.9)
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+
+	summary := review.ReviewSummary{Tables: []review.TableView{
+		{
+			Name: "bikes",
+			Columns: []review.ColumnView{
+				{Column: "mb_albumids", DeclaredType: "TEXT", TargetType: "text", Confidence: 0.99, Source: "heuristic:default_passthrough"},
+			},
+			Rows: [][]string{{"cc75b164-273c-4dce-9cdf-292045a0d38b\x003422ac1a-8dbb-4f23-a337-0bd0a0150022"}},
+		},
+	}}
+
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: summary}
+	m.status = tview.NewTextView()
+	m.buildTableList()
+	m.pages.AddPage("tablelist", m.tableList, true, true)
+	m.onTableSelected(0, "bikes", "", 0)
+	m.openTypePicker("mb_albumids")
+
+	idx := -1
+	for i := 0; i < m.picker.GetItemCount(); i++ {
+		text, _ := m.picker.GetItemText(i)
+		if text == "uuid[]" {
+			idx = i
+		}
+	}
+	if idx == -1 {
+		t.Fatal("expected \"uuid[]\" to be offered as a valid option for a NUL-joined UUID list value")
+	}
+	m.onTypeSelected(idx, "uuid[]", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["bikes"].Columns["mb_albumids"]
+	if col.TargetType != "uuid[]" {
+		t.Errorf("expected TargetType uuid[], got %q", col.TargetType)
+	}
+	if col.Transform != "uuid_list_format" {
+		t.Errorf("expected Transform uuid_list_format (the transform that made uuid[] valid), got %q", col.Transform)
+	}
+}
+
+// TestOnTypeSelected_SelectingTextForAPlainStringColumnClearsTheTransform
+// guards against overcorrecting: a genuine type change to a type that
+// needs no transform at all (e.g. text for an ordinary string value) must
+// still result in Transform "", not spuriously carry over some other
+// type's transform.
+func TestOnTypeSelected_SelectingTextForAPlainStringColumnClearsTheTransform(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
+		Tables: map[string]config.TableConfig{
+			"bikes": {
+				ColumnOrder: []string{"label"},
+				Columns: map[string]config.ColumnConfig{
+					"label": {
+						TargetType: "integer",
+						Transform:  "numeric_text_to_integer",
+						Confidence: 0.6,
+						Source:     "heuristic:numeric_text",
+					},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	st, err := review.NewState(path, 0.9)
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+
+	summary := review.ReviewSummary{Tables: []review.TableView{
+		{
+			Name: "bikes",
+			Columns: []review.ColumnView{
+				{Column: "label", DeclaredType: "TEXT", TargetType: "integer", Transform: "numeric_text_to_integer", Confidence: 0.6, Source: "heuristic:numeric_text"},
+			},
+			Rows: [][]string{{"hello world"}},
+		},
+	}}
+
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: summary}
+	m.status = tview.NewTextView()
+	m.buildTableList()
+	m.pages.AddPage("tablelist", m.tableList, true, true)
+	m.onTableSelected(0, "bikes", "", 0)
+	m.openTypePicker("label")
+
+	idx := -1
+	for i := 0; i < m.picker.GetItemCount(); i++ {
+		text, _ := m.picker.GetItemText(i)
+		if text == "text" {
+			idx = i
+		}
+	}
+	if idx == -1 {
+		t.Fatal("expected \"text\" to be offered as a valid option for a plain string value")
+	}
+	m.onTypeSelected(idx, "text", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["bikes"].Columns["label"]
+	if col.TargetType != "text" {
+		t.Errorf("expected TargetType text, got %q", col.TargetType)
+	}
+	if col.Transform != "" {
+		t.Errorf("expected Transform cleared for a type that needs no transform, got %q", col.Transform)
+	}
+}
