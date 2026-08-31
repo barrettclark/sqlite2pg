@@ -350,12 +350,57 @@ reasoning has a durable paper trail independent of this plan file.
 | 29. Sample-value byte truncation | [#37](https://github.com/barrettclark/sqlite2pg/issues/37) |
 | 30. `migrate run` deletes config on failed load | [#38](https://github.com/barrettclark/sqlite2pg/issues/38) |
 
-### Next: Phase 3 execution
+### Phase 3 execution — complete (2026-08-30)
 
-Fix scope/order to be decided with Barrett now that every finding has a
-tracked issue. Proceeding tier-by-tier when execution starts: TDD cycle
-(failing test → minimal fix → real Postgres re-verification) per item,
-one commit per fix. Issues #15/#20 each cover more than one backlog item
-and will likely land as one commit apiece rather than being split
-artificially. Tier 3 issues are candidates for opportunistic same-session
-fixes rather than a full TDD cycle each, given their size.
+All 25 filed issues (#14-#38) plus #1's TEXT/CHAR-boolean gap and #12's
+uuid[] feature request were fixed via the established TDD cycle (failing
+test → minimal fix → real Postgres re-verification), one focused commit
+per issue, and closed. Only #3 (additional target types: PostGIS geometry,
+serial/bigserial — partially narrowed by #12 landing uuid[]) remains open,
+by design — it's a genuine feature-scope item, not a bug. #39, discovered
+mid-fix (SQLite read-path `%q` quoting, the read-side analog of #26), was
+filed and fixed the same day. Full commit range: `76ae27e..aa1f44b`.
+
+## Phase 4 — Follow-up audit on today's changes (2026-08-30)
+
+**Why a second pass, and why it doesn't repeat Phases 1-2 as-is:** today's
+26 commits were each reviewed only by the implementer subagent that wrote
+them — nobody has looked at the *combined* diff with fresh eyes, and
+several fixes touched the same shared files sequentially (`decide_column.go`,
+`internal/resolver/confidence.go`, `numeric_text.go`) — exactly the shape
+that produces small inconsistencies (redundant checks, naming drift, an
+edge case one fix's test covers that a later fix quietly narrows) that a
+single-fix-at-a-time review process can't catch by construction.
+
+1. **Whole-diff review of today's work** (`76ae27e..aa1f44b`, ~26 commits)
+   by a fresh model pass — same idea as Phase 1, scoped to today's diff
+   instead of the whole codebase. Highest-value item; not yet started.
+2. ~~`go test -race ./...` as a standing pass~~ — **done**, run by Barrett
+   directly: clean, no races, including `internal/pipeline` (the package
+   with the most goroutine/channel-touching fixes today, 36.5s run).
+3. **Targeted re-run of the Phase 2 load-test campaign** — not from
+   scratch, but confirming none of today's 26 fixes regressed against the
+   original 41 databases, and specifically re-checking `beets_library.db`
+   and `sakila.db` since those are where #1 and #12's fixes have real,
+   previously-broken data to prove themselves against beyond their own
+   purpose-built test fixtures.
+4. **Live pty/terminal smoke test of the TUI.** #18 and #27 both fixed
+   real picker bugs, but every verification was unit tests or hand-built
+   configs simulating the picker — nothing actually drove the terminal UI
+   live, despite this project's own stated value on pty/expect testing
+   catching what unit tests miss (a real startup panic was caught this way
+   earlier in the project).
+5. **Performance check on full-table verification at scale.** Issue #13's
+   full-table verification (extended repeatedly today by #15/#16/#22/#27/#31)
+   adds a second full sequential scan for every auto-approving column.
+   Worth timing profile runs on the largest fixtures (`sqliterepo.db`
+   110MB, `employee.db` 2.8M rows) before/after today's changes to confirm
+   no meaningful slowdown crept in.
+6. **`testdata/fixtures/README.md` provenance update.** Several new
+   fixtures were added today (`sample-implicit-fk.sqlite`,
+   `sample-type-mismatch.sqlite`, others) — confirm that file still
+   accurately lists every fixture and its origin.
+
+### Phase 4 results
+
+*(filled in during execution)*
