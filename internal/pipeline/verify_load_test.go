@@ -82,9 +82,18 @@ func connectVerifyTestPostgres(t *testing.T) *pgx.Conn {
 // confirm that.
 func loadVerifyFixture(t *testing.T, pgConn *pgx.Conn, table string, tc config.TableConfig, insertSQL string) *sql.DB {
 	t.Helper()
+	return loadVerifyFixtureGeneric(t, pgConn, table, tc, verifyFixtureDDL(table), insertSQL)
+}
+
+// loadVerifyFixtureGeneric is loadVerifyFixture generalized to take an
+// explicit SQLite DDL, for fixtures that don't match verifyFixtureConfig's
+// fixed column shape (e.g. a table with a TEXT primary key, for the
+// ORDER BY collation-divergence tests).
+func loadVerifyFixtureGeneric(t *testing.T, pgConn *pgx.Conn, table string, tc config.TableConfig, sqliteDDL, insertSQL string) *sql.DB {
+	t.Helper()
 	ctx := context.Background()
 
-	sqliteDB, _ := openTestDB(t, verifyFixtureDDL(table))
+	sqliteDB, _ := openTestDB(t, sqliteDDL)
 	if _, err := sqliteDB.Exec(insertSQL); err != nil {
 		t.Fatalf("inserting fixture rows: %v", err)
 	}

@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -193,6 +194,22 @@ func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table,
 	return verifyTableUnordered(ctx, sourceDB, pgConn, table, pgTable, tc, included, result)
 }
 
+// isTextTargetType reports whether targetType (a config.ColumnConfig.
+// TargetType value, one of review.TypeOptions) is a Postgres type that
+// supports COLLATE — i.e. text-shaped. Deliberately narrow (just "text" and
+// "varchar", the only text-shaped entries review.TypeOptions offers today):
+// jsonb, though it also falls back to pgtype.Text for scanning purposes
+// (see newPgColumnScanner), is not a collatable type in Postgres and
+// applying COLLATE to a jsonb column errors, so it must not match here.
+func isTextTargetType(targetType string) bool {
+	switch targetType {
+	case "text", "varchar":
+		return true
+	default:
+		return false
+	}
+}
+
 // verifyTableOrdered runs VerifyTable's primary-key comparison path: both
 // sides read in matching ORDER BY <pk> order, compared row-by-row by
 // position. See VerifyTable's doc comment for the full rationale.
@@ -206,7 +223,21 @@ func verifyTableOrdered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn,
 	}
 	quotedPK := make([]string, len(pk))
 	for i, name := range pk {
-		quotedPK[i] = pgx.Identifier{ids[name]}.Sanitize()
+		orderExpr := pgx.Identifier{ids[name]}.Sanitize()
+		if isTextTargetType(tc.Columns[name].TargetType) {
+			// SQLite's default text comparison is BINARY (byte order), but
+			// Postgres's plain ORDER BY uses the database's configured
+			// collation (e.g. en_US.UTF-8, locale-aware) unless told
+			// otherwise — these can and do disagree (e.g. "Makefile.in"
+			// sorts before "aclocal.m4" under BINARY but after it under
+			// en_US.UTF-8). Forcing COLLATE "C" — Postgres's byte-order
+			// collation — on any text-typed primary-key column keeps this
+			// ORDER BY equivalent to SQLite's, so both sides genuinely walk
+			// rows in the same order. Non-text PK column types (integer,
+			// uuid, ...) have no collation concept and are left as-is.
+			orderExpr += ` COLLATE "C"`
+		}
+		quotedPK[i] = orderExpr
 	}
 	query := fmt.Sprintf(`SELECT %s FROM %s ORDER BY %s`,
 		strings.Join(quotedCols, ", "), pgx.Identifier{pgTable}.Sanitize(), strings.Join(quotedPK, ", "))
@@ -383,6 +414,43 @@ func compareColumnUnordered(expected, actual []any) []ColumnMismatch {
 	return mismatches
 }
 
+// numericValue extracts a float64 representation of v when v is an int64 or
+// float64 — the two concrete Go types VerifyTable's transform/scan pipeline
+// ever produces for a numeric column — reporting false for anything else.
+// float64 has exact integer precision only up to 2^53 (~9x10^15), which
+// comfortably covers realistic values this tool deals with (Julian-day
+// numbers, Unix timestamps, row counts), so converting an int64 through
+// float64 loses nothing for any value actually seen in practice.
+//
+// This is the single shared numeric-comparison primitive both valuesMatch
+// and sortKeyFor build on, specifically so they can't silently drift apart
+// again the way they already have twice: once in the original
+// int64-vs-float64 type-tag bug, and again in 9de206a's partial fix, which
+// made sortKeyFor mirror valuesMatch's own flawed fmt.Sprintf("%v", ...)
+// fallback — a fallback that breaks on large numbers because Go's default
+// float formatting switches to scientific notation above a certain
+// magnitude (fmt.Sprintf("%v", float64(2454348)) == "2.454348e+06") while
+// the int64 side stays plain decimal ("2454348"), so two numerically
+// identical values compared as different strings. Both call sites now
+// route through this same numeric conversion instead of text formatting.
+func numericValue(v any) (float64, bool) {
+	switch t := v.(type) {
+	case int64:
+		return float64(t), true
+	case float64:
+		return t, true
+	}
+	return 0, false
+}
+
+// numericKeyText renders n as fixed-point decimal text — never scientific
+// notation — so it's safe to use as part of a sort key (sortKeyFor) where
+// two numerically equal values, converted from whichever concrete numeric
+// type they arrived as, must always render identically.
+func numericKeyText(n float64) string {
+	return strconv.FormatFloat(n, 'f', -1, 64)
+}
+
 // sortKeyFor renders v into a string sort key such that two values
 // VerifyTable would otherwise consider equal (per valuesMatch) always
 // produce the same key, and different values are vanishingly unlikely to
@@ -398,22 +466,22 @@ func compareColumnUnordered(expected, actual []any) []ColumnMismatch {
 // differently despite being equal per time.Time.Equal.
 //
 // int64 and float64 deliberately share one case (and one key namespace)
-// rather than being tagged apart by concrete Go type: valuesMatch's own
-// typed cases only fire when both sides share the exact same concrete
-// type, so an int64 on one side against a float64 on the other (e.g. a
-// SQLite NUMERIC column stored dynamically as an integer, transformed
-// straight through to a `double precision` target) always falls to
-// valuesMatch's fmt.Sprintf("%v", ...) fallback — which for these two
-// types renders the same decimal text either way (fmt.Sprintf("%v",
-// int64(100)) and fmt.Sprintf("%v", float64(100)) both give "100").
-// Tagging by concrete type here, as this used to, gave int64(100) and
-// float64(100) different key prefixes and so different sorted positions —
-// a false-positive mismatch despite valuesMatch itself considering them
-// equal. Keying both off the same fmt.Sprintf("%v", ...) text keeps
-// sortKeyFor's invariant intact: it still separates genuinely different
-// numeric values (int64(100) vs int64(200), or float64(100) vs
+// rather than being tagged apart by concrete Go type: valuesMatch treats an
+// int64 on one side against a float64 on the other (e.g. a SQLite NUMERIC
+// column stored dynamically as an integer, transformed straight through to
+// a `double precision` target) as equal whenever they represent the same
+// number (see numericValue/valuesMatch). Tagging by concrete type here, as
+// this used to, gave int64(100) and float64(100) different key prefixes and
+// so different sorted positions — a false-positive mismatch despite
+// valuesMatch itself considering them equal. Both cases now key off
+// numericValue's shared float64 conversion, rendered via numericKeyText
+// (fixed-point decimal, never scientific notation — see its doc comment
+// for why: a naive fmt.Sprintf("%v", ...) text key, tried here once
+// already in 9de206a, broke on large numbers for exactly this reason).
+// This keeps sortKeyFor's invariant intact: it still separates genuinely
+// different numeric values (int64(100) vs int64(200), or float64(100) vs
 // float64(100.5)) exactly as before, since each distinct value still
-// formats to distinct text.
+// converts to a distinct float64 and so distinct key text.
 func sortKeyFor(v any) string {
 	if v == nil {
 		return "\x00nil"
@@ -433,10 +501,9 @@ func sortKeyFor(v any) string {
 		return "\x04bytes:" + string(t)
 	case bool:
 		return fmt.Sprintf("\x05bool:%v", t)
-	case int64:
-		return "\x06num:" + fmt.Sprintf("%v", t)
-	case float64:
-		return "\x06num:" + fmt.Sprintf("%v", t)
+	case int64, float64:
+		n, _ := numericValue(v)
+		return "\x06num:" + numericKeyText(n)
 	case string:
 		return "\x08string:" + t
 	default:
@@ -567,9 +634,27 @@ func (s *pgColumnScanner) value() any {
 // field, but being explicit here avoids ever silently depending on
 // pgtype's internal layout); and plain scalars compare by value once their
 // concrete Go types are confirmed to match.
+//
+// int64 vs float64 (in either direction) is handled before the typed
+// switch, via the shared numericValue helper (see its doc comment), rather
+// than as one of the typed cases below or via the final string-formatting
+// fallback: a SQLite NUMERIC column stored dynamically as an integer,
+// transformed straight through to a `double precision` target, commonly
+// produces exactly this int64-vs-float64 shape, and the two values must
+// compare equal whenever they represent the same number — including large
+// numbers (e.g. Julian-day values like 2454348), where a text-formatting
+// comparison would incorrectly disagree because Go's default float
+// formatting switches to scientific notation above a certain magnitude
+// while int64 formatting never does.
 func valuesMatch(expected, actual any) bool {
 	if expected == nil || actual == nil {
 		return expected == nil && actual == nil
+	}
+
+	if en, eok := numericValue(expected); eok {
+		if an, aok := numericValue(actual); aok {
+			return en == an
+		}
 	}
 
 	switch e := expected.(type) {
@@ -601,14 +686,6 @@ func valuesMatch(expected, actual any) bool {
 		if a, ok := actual.(bool); ok {
 			return e == a
 		}
-	case int64:
-		if a, ok := actual.(int64); ok {
-			return e == a
-		}
-	case float64:
-		if a, ok := actual.(float64); ok {
-			return e == a
-		}
 	case string:
 		if a, ok := actual.(string); ok {
 			return e == a
@@ -621,6 +698,7 @@ func valuesMatch(expected, actual any) bool {
 	// type chosen for its target Postgres type. Comparing formatted
 	// representations here is a deliberate last resort, not the primary
 	// comparison strategy: every type VerifyTable's own transform/scan
-	// pipeline actually produces is covered by an explicit case above.
+	// pipeline actually produces is covered by an explicit case above (or,
+	// for numeric types, the numericValue check above the switch).
 	return fmt.Sprintf("%v", expected) == fmt.Sprintf("%v", actual)
 }

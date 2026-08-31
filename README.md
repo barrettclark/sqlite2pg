@@ -109,9 +109,21 @@ migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the l
       primary key sidesteps that risk entirely (as does a table modified
       since its load, e.g. by an `UPDATE`, which rewrites a row as a new
       physical tuple not guaranteed to land back in its old scan position —
-      the same fix covers that case too). Each reported example names the
-      exact row (source value, expected transformed value, actual Postgres
-      value).
+      the same fix covers that case too). For a text-typed (or partially
+      text) primary key, "genuinely `ORDER BY <primary key>`" specifically
+      means byte-order on both sides: SQLite's default text comparison is
+      `BINARY`, while a bare Postgres `ORDER BY` uses whatever collation
+      the target database happens to be configured with (e.g.
+      `en_US.UTF-8`, locale-aware) — these routinely disagree (`"Makefile.in"`
+      sorts before `"aclocal.m4"` under `BINARY` but after it under
+      `en_US.UTF-8`), which would otherwise silently misalign the two
+      sides' row order and produce false-positive mismatches despite the
+      data being identical (found during a validation campaign against
+      `sqliterepo.db`'s `vcache` table — 1,424 of 1,525 rows falsely
+      flagged). `verify` closes this by appending `COLLATE "C"` (Postgres's
+      byte-order collation) to every text-typed primary-key column in its
+      `ORDER BY`. Each reported example names the exact row (source value,
+      expected transformed value, actual Postgres value).
     - **Without a primary key**, there's no column set to order by that's
       both guaranteed unique and safe to trust for this — so `verify`
       instead compares each included column as a value *multiset*: every
@@ -170,6 +182,21 @@ row count still avoids the sample/full-table distinction entirely. This
 surfaced for real during development — see
 `internal/pipeline/integration_test.go`'s comment on
 `DisabilityCompByCounty.db`.
+
+## Known limitation: no transform for a genuinely per-row-polymorphic column
+
+SQLite's dynamic typing allows a single column to legitimately hold
+different storage classes in different rows — e.g. Fossil SCM's
+`config.value`, which holds integers, blobs, and text in different rows of
+the same column, all by design, not as dirty data. There is currently no
+`copywriter` transform that can losslessly migrate a truly mixed-type
+column like this into one static Postgres column type. This is a
+deliberate, known limitation rather than a bug: Postgres has no direct
+equivalent to SQLite's per-value dynamic typing, and closing this gap would
+mean either a `jsonb`-wrapping transform (won't preserve the exact source
+type of every value) or a human-reviewed, table-specific approach — neither
+of which this tool does automatically today. A table with a column like
+this needs manual handling.
 
 ## Testing
 
