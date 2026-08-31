@@ -96,6 +96,11 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 			Reason:   sfk.Reason,
 		})
 	}
+	for _, ft := range filteredSystemTables {
+		cfg.FilteredSystemTables = append(cfg.FilteredSystemTables, config.FilteredSystemTable{
+			Name: ft.Name,
+		})
+	}
 
 	var unresolved []resolver.UnresolvedCase
 

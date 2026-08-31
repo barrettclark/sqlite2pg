@@ -34,6 +34,15 @@ type MigrationConfig struct {
 	// human reviewing this config can see exactly what relationship wasn't
 	// migrated and why, rather than the omission being silent.
 	SkippedForeignKeys []SkippedForeignKey `yaml:"skipped_foreign_keys,omitempty"`
+
+	// FilteredSystemTables are tables FilterSystemTables excluded as Esri
+	// GDB_* or (on a confirmed Esri/Spatialite source) Spatialite st_*
+	// system tables (issue #35). Recorded here — not just warned on stderr
+	// at profile time — so a human reviewing this config later, or
+	// `migrate load` running non-interactively in CI where the original
+	// profile-time stderr isn't visible, can still see exactly what was
+	// filtered and why, rather than the omission being silent (issue #51).
+	FilteredSystemTables []FilteredSystemTable `yaml:"filtered_system_tables,omitempty"`
 }
 
 // SkippedTable is one source table ReadSchema couldn't read and skipped —
@@ -49,6 +58,12 @@ type SkippedForeignKey struct {
 	Table    string `yaml:"table"`
 	RefTable string `yaml:"ref_table"`
 	Reason   string `yaml:"reason"`
+}
+
+// FilteredSystemTable is one Esri/Spatialite system table FilterSystemTables
+// excluded — see MigrationConfig.FilteredSystemTables.
+type FilteredSystemTable struct {
+	Name string `yaml:"name"`
 }
 
 // SourceInfo identifies the SQLite source file this config was generated

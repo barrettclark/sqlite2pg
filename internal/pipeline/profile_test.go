@@ -56,6 +56,35 @@ func TestProfileDatabase_AutoResolvesUnambiguousColumns(t *testing.T) {
 	}
 }
 
+// TestProfileDatabase_PersistsFilteredSystemTablesIntoTheConfig is a
+// regression test for issue #51: FilterSystemTables's result was only ever
+// surfaced as a one-time stderr warning at profile time (issue #35), never
+// persisted into the generated config — unlike SkippedTables (#29) and
+// SkippedForeignKeys (#46), which exist so a human reviewing the config
+// later, or `migrate load` running non-interactively in CI where the
+// original stderr is gone, can still see what was left out and why.
+func TestProfileDatabase_PersistsFilteredSystemTablesIntoTheConfig(t *testing.T) {
+	db, path := openTestDB(t, `
+		CREATE TABLE GDB_SystemCatalog (id INTEGER PRIMARY KEY);
+		CREATE TABLE roads (road_id INTEGER PRIMARY KEY, name TEXT);
+	`)
+
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	if len(result.Config.FilteredSystemTables) != 1 || result.Config.FilteredSystemTables[0].Name != "GDB_SystemCatalog" {
+		t.Errorf("expected config.FilteredSystemTables to list GDB_SystemCatalog, got %+v", result.Config.FilteredSystemTables)
+	}
+	if _, ok := result.Config.Tables["GDB_SystemCatalog"]; ok {
+		t.Error("expected GDB_SystemCatalog to be filtered out of Tables")
+	}
+	if _, ok := result.Config.Tables["roads"]; !ok {
+		t.Error("expected roads to remain in Tables")
+	}
+}
+
 func TestProfileDatabase_FlagsAmbiguousBooleanColumnAsUnresolved(t *testing.T) {
 	db, path := openTestDB(t, `
 		CREATE TABLE bikes (
