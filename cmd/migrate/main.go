@@ -37,7 +37,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: migrate <profile|review|load|resolve> ...")
+		return errors.New("usage: migrate <profile|review|load|verify|resolve> ...")
 	}
 
 	switch args[0] {
@@ -49,10 +49,12 @@ func run(args []string) error {
 		return runReview(args[1:])
 	case "load":
 		return runLoad(args[1:])
+	case "verify":
+		return runVerify(args[1:])
 	case "resolve":
 		return runResolve(args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (expected run, profile, review, load, or resolve)", args[0])
+		return fmt.Errorf("unknown command %q (expected run, profile, review, load, verify, or resolve)", args[0])
 	}
 }
 
@@ -452,35 +454,54 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	// Foreign keys are added only now, after every table exists and is
 	// fully loaded — never interleaved with CREATE TABLE/COPY above, so
 	// table creation and data loading never need to be ordered by FK
-	// dependency. If this fails, the state file is deliberately left in
-	// place: a --resume retry will skip every already-loaded table (per
-	// the completed-tables check above) and land right back here.
-	statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
-	for _, reason := range skipped {
-		fmt.Printf("skipping foreign key: %s\n", reason)
+	// dependency. Guarded by the state file's FKsApplied flag so this step
+	// is itself idempotent across separate --resume invocations: without
+	// it, a --resume run that finds every table already completed but
+	// hasn't yet recorded FKsApplied would either skip foreign keys
+	// entirely (if this guard were "resume implies FKs done") or, worse,
+	// try to re-add constraints Postgres already has and fail.
+	st, err := readState(statePath)
+	if err != nil {
+		return err
 	}
-	for _, stmt := range statements {
-		if _, err := conn.Exec(ctx, stmt); err != nil {
-			return fmt.Errorf("adding foreign key: %w", err)
+	if !st.FKsApplied {
+		statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
+		for _, reason := range skipped {
+			fmt.Printf("skipping foreign key: %s\n", reason)
 		}
+		for _, stmt := range statements {
+			if _, err := conn.Exec(ctx, stmt); err != nil {
+				return fmt.Errorf("adding foreign key: %w", err)
+			}
+		}
+
+		// Postgres doesn't auto-index foreign keys the way some other
+		// databases do, and an index on every FK column is
+		// well-established best practice with no real downside — added
+		// right after the constraints themselves, once every FK is known
+		// to be valid.
+		for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
+			if _, err := conn.Exec(ctx, stmt); err != nil {
+				return fmt.Errorf("adding foreign key index: %w", err)
+			}
+		}
+		if err := markForeignKeysApplied(statePath); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println("foreign keys already applied in a prior run — skipping")
 	}
 
-	// Postgres doesn't auto-index foreign keys the way some other
-	// databases do, and an index on every FK column is well-established
-	// best practice with no real downside — added right after the
-	// constraints themselves, once every FK is known to be valid.
-	for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
-		if _, err := conn.Exec(ctx, stmt); err != nil {
-			return fmt.Errorf("adding foreign key index: %w", err)
-		}
-	}
-
-	// Every included table made it through, so nothing is left to resume —
-	// the state file (and, for a `run`-generated config, the config file
-	// itself, per --keep-config) has no further purpose.
-	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing state file %s: %w", statePath, err)
-	}
+	// The state file is deliberately left in place even after a fully
+	// successful load, rather than removed: it's the durable record of
+	// which database this config's data actually landed in (issue #19),
+	// and `migrate verify` (which has no other way to know which database
+	// to check) reads it back out for exactly that reason. A --resume
+	// against an already-fully-loaded config is safe to run again — every
+	// table is skipped via Completed and the FK step above is skipped via
+	// FKsApplied — so there's no correctness reason to remove it once
+	// nothing is left to resume, only the (deliberately declined) tidiness
+	// of an unused file lying around.
 	return nil
 }
 

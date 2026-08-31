@@ -14,6 +14,18 @@ import (
 type loadState struct {
 	Database  string   `json:"database"`
 	Completed []string `json:"completed"`
+
+	// FKsApplied records whether executeLoad's foreign-key-constraints-
+	// and-indexes step has already succeeded for this run. Every table's
+	// COPY is its own resumable unit of work (see Completed above), and
+	// adding foreign keys is no different: without this flag, a --resume
+	// invoked after every table already finished loading but before (or
+	// after) the FK step had already run would either skip FKs entirely
+	// or try to re-add constraints Postgres already has, failing with
+	// "constraint already exists". Recording completion here — the same
+	// way Completed does per table — makes that step idempotent across
+	// separate `migrate load --resume` invocations too.
+	FKsApplied bool `json:"fks_applied,omitempty"`
 }
 
 // readState reads the given state file. A missing file just means no run
@@ -78,5 +90,19 @@ func markTableCompleted(path, table string) error {
 		names = append(names, n)
 	}
 	st.Completed = names
+	return writeState(path, st)
+}
+
+// markForeignKeysApplied records that executeLoad's foreign-key
+// constraints and indexes step has completed, preserving whatever
+// database name and completed-tables list are already recorded — the same
+// read-modify-write shape as markTableCompleted, for the same reason: a
+// later --resume needs both pieces of information intact.
+func markForeignKeysApplied(path string) error {
+	st, err := readState(path)
+	if err != nil {
+		return err
+	}
+	st.FKsApplied = true
 	return writeState(path, st)
 }

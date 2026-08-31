@@ -54,6 +54,7 @@ can't be scripted or run non-interactively:
 migrate profile  <source.db>   # sample + profile every column, write a draft config
 migrate review   <config.yaml>  # open the terminal review UI to approve/override ambiguous columns
 migrate load     <config.yaml> --pg <postgres-url>   # generate DDL, stream rows via COPY
+migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the load was correct
 ```
 
 - **`run`** is `profile` + `review` + `load` collapsed into one command, with
@@ -83,6 +84,29 @@ migrate load     <config.yaml> --pg <postgres-url>   # generate DDL, stream rows
 - **`resolve --apply resolutions.yaml`** merges human- (or Claude Code-)
   supplied answers for an `unresolved_report.yaml` back into the config, for
   cases no heuristic could confidently resolve on its own.
+- **`verify <source.db> <config.yaml> --pg <postgres-url>`** streams every
+  row and every included column from *both* sides and confirms the Postgres
+  copy is byte-for-byte correct — not a spot check. It reads the database
+  name to connect to from `<config>.state.json` (the same file `--resume`
+  uses), so it always needs a completed `migrate load` (or `load --resume`)
+  against that exact config first. Run it after every load as the real
+  pass/fail gate on data integrity — exit code is non-zero on any mismatch.
+  `--out <path>` writes the detailed report to a file instead of stdout; a
+  clean run reports 0 mismatches, a dirty one lists every mismatching
+  column with up to 20 example rows (source value, expected transformed
+  value, actual Postgres value) plus the true total count even when capped.
+  See the doc comment on `internal/pipeline.VerifyTable` for an important
+  caveat: the row-by-row comparison has no `ORDER BY` on either side and
+  matches purely by scan position, which in practice can be thrown off not
+  only by a table modified since its load (an `UPDATE` rewrites a row as a
+  new physical tuple, which is not guaranteed to land back in its old scan
+  position) but, as observed firsthand against Postgres 18 with ordinary
+  variable-width `text` columns, occasionally even by a single fresh,
+  untouched `COPY` load itself. When that happens, `verify` still correctly
+  reports a failure (a real mismatch was found), but the specific rows it
+  points at reflect *scan-order drift*, not a per-value description of what
+  actually differs — worth knowing before treating a large mismatch count at
+  face value.
 
 ## Extending the profiler
 
@@ -148,7 +172,7 @@ opt-in via the `integration` build tag — it's not part of the default
 ## Package layout
 
 ```
-cmd/migrate/          CLI entrypoint (run, profile, review, load, resolve subcommands)
+cmd/migrate/          CLI entrypoint (run, profile, review, load, verify, resolve subcommands)
 internal/
   sqlitereader/        schema + streaming row reading (modernc.org/sqlite, no CGO)
   profiler/            heuristic interface + registry
