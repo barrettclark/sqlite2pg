@@ -112,14 +112,27 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			return raw, nil
 		}
 		// Shares profiler.ParseTimestamp with the iso8601_timestamp
-		// heuristic that assigns this transform when every sampled value's
-		// time-of-day is midnight (issue #14) — same reasoning as
+		// heuristic that assigns this transform when every *sampled*
+		// value's time-of-day is midnight (issue #14) — same reasoning as
 		// iso8601_to_timestamptz: a format the heuristic accepts must
-		// always be one this transform can convert. The time-of-day is
-		// discarded rather than carried through to a timestamptz, since
-		// the whole point of targeting date here is that there is no real
-		// time-of-day to represent.
+		// always be one this transform can convert.
+		//
+		// The heuristic's "midnight" judgment is made from the sample
+		// alone, so a rare non-midnight value can exist elsewhere in the
+		// full table (issue #42). Silently discarding that time-of-day
+		// component — as this used to do — made the transform unable to
+		// ever fail, which turned issue #13's full-table verification
+		// into a silent no-op for this transform, exactly as issue #22
+		// found for text_to_jsonb. So a non-midnight value is rejected
+		// here rather than truncated: verifyTransformAgainstFullTable
+		// (internal/pipeline/verify_transform.go) runs this exact
+		// function against every row, and this error is what lets it
+		// catch the case and route the column to review instead of
+		// silently discarding real data at load.
 		if tm, ok := profiler.ParseTimestamp(s); ok {
+			if tm.Hour() != 0 || tm.Minute() != 0 || tm.Second() != 0 || tm.Nanosecond() != 0 {
+				return nil, fmt.Errorf("iso8601_to_date: %q has a non-midnight time-of-day component", s)
+			}
 			return time.Date(tm.Year(), tm.Month(), tm.Day(), 0, 0, 0, 0, time.UTC), nil
 		}
 		return nil, fmt.Errorf("iso8601_to_date: cannot parse %q", s)

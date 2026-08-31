@@ -126,6 +126,41 @@ func TestDecideColumn_FlagsForReviewWhenFullTableHasAnInt4OverflowTheSampleMisse
 	}
 }
 
+func TestDecideColumn_FlagsForReviewWhenFullTableHasANonMidnightTimestampTheSampleMissed(t *testing.T) {
+	// Issue #42: the iso8601_timestamp heuristic (issue #14) targets
+	// date instead of timestamptz when every *sampled* value's
+	// time-of-day is midnight, but iso8601_to_date used to discard
+	// rather than error on a non-midnight value — so a rare exception
+	// outside the sample (a real ["a handful of genuine non-midnight
+	// timestamps"] row) silently lost its time-of-day at load instead
+	// of being caught here, exactly like issue #13/#22's shape. The
+	// sample below (standing in for 500 midnight-only sampled rows)
+	// is all midnight; the full table additionally has one row with a
+	// genuine time-of-day the sample never drew.
+	db, _ := openTestDB(t, `CREATE TABLE events (id INTEGER PRIMARY KEY, occurred_at TEXT);`)
+	db.Exec(`INSERT INTO events (occurred_at) VALUES
+		('1996-01-02 00:00:00'),
+		('1996-01-03 00:00:00'),
+		('1996-01-04 14:37:00')`)
+
+	col := sqlitereader.ColumnInfo{Name: "occurred_at", DeclaredType: "TEXT"}
+	sample := []any{"1996-01-02 00:00:00", "1996-01-03 00:00:00"}
+
+	cc, unresolved, err := decideColumn(db, "events", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.TargetType != "date" {
+		t.Errorf("expected the suggested type date to still be shown, got %q", cc.TargetType)
+	}
+	if cc.Confidence >= 0.9 {
+		t.Errorf("expected confidence dropped below threshold once the non-midnight value was found, got %f", cc.Confidence)
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase once the full-table check found a non-midnight value outside the sample")
+	}
+}
+
 func TestDecideColumn_SkipsTheFullTableCheckWhenAlreadyFlaggedForReview(t *testing.T) {
 	// A column already below threshold (or with disagreeing heuristics)
 	// gets no benefit from a full-table check — it's already headed to

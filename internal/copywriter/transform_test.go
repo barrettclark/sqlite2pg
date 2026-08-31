@@ -248,6 +248,21 @@ func TestTransform_ISO8601ToDateRejectsUnparseableValues(t *testing.T) {
 	}
 }
 
+func TestTransform_ISO8601ToDateRejectsNonMidnightValues(t *testing.T) {
+	// Issue #42: iso8601_to_date used to silently discard the
+	// time-of-day component instead of erroring on it, making the
+	// transform unable to ever fail — which turned issue #13's
+	// full-table verification into a silent no-op for this transform,
+	// exactly like #22 found for text_to_jsonb. The heuristic that
+	// assigns this transform (iso8601_timestamp, issue #14) only ever
+	// does so when every *sampled* value's time-of-day is midnight; a
+	// genuine non-midnight value outside the sample must now be
+	// rejected rather than truncated.
+	if _, err := Transform("iso8601_to_date", "1996-01-04 14:37:00"); err == nil {
+		t.Error("expected an error for a non-midnight timestamp, not a silent truncation")
+	}
+}
+
 func TestTransform_UUIDFormat(t *testing.T) {
 	got, err := Transform("uuid_format", "90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10")
 	if err != nil {
