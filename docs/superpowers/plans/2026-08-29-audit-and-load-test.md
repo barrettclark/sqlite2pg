@@ -403,4 +403,40 @@ single-fix-at-a-time review process can't catch by construction.
 
 ### Phase 4 results
 
-*(filled in during execution)*
+**Item 1 — whole-diff review: done.** `docs/superpowers/plans/audit-phase4-diff-review-findings.md`,
+15 findings (3 high, 6 medium, 6 low), all genuine cross-commit
+interaction bugs. Filed as GitHub issues, 2026-08-31:
+
+| Finding | Issue |
+|---|---|
+| 1. NOT NULL (#34) vs. null-value guard (#31) never reconciled | [#40](https://github.com/barrettclark/sqlite2pg/issues/40) |
+| 2. Picker offers types only reachable via a transform it then clears | [#41](https://github.com/barrettclark/sqlite2pg/issues/41) |
+| 3. `iso8601_to_date` silently discards time-of-day | [#42](https://github.com/barrettclark/sqlite2pg/issues/42) |
+| 4. FK index names disambiguated per-table, but indexes are schema-scoped | [#43](https://github.com/barrettclark/sqlite2pg/issues/43) |
+| 5. Table names never disambiguated after 63-byte truncation | [#44](https://github.com/barrettclark/sqlite2pg/issues/44) |
+| 6. `drop_column` always "fails" full-table verification | [#45](https://github.com/barrettclark/sqlite2pg/issues/45) |
+| 7. Implicit-FK PK resolution hard-aborts instead of degrading | [#46](https://github.com/barrettclark/sqlite2pg/issues/46) |
+| 8. `st_*` filter gated on Esri-only predicate, misses real Spatialite | [#47](https://github.com/barrettclark/sqlite2pg/issues/47) |
+| 9. Confidence ladder invariant no longer holds (0.88 rung, 0.99→0.95 float luck) | [#48](https://github.com/barrettclark/sqlite2pg/issues/48) |
+| 10. `FitsRange` doc comment nested inside `parseWholeNumberText`'s | [#49](https://github.com/barrettclark/sqlite2pg/issues/49) |
+| 11. `comma_number` has no int4 range check, unlike `numeric_text` | [#50](https://github.com/barrettclark/sqlite2pg/issues/50) |
+| 12. `FilteredSystemTables` warned but never persisted | [#51](https://github.com/barrettclark/sqlite2pg/issues/51) |
+| 13. `migrate run` orphans its `.state.json` on success | [#52](https://github.com/barrettclark/sqlite2pg/issues/52) |
+| 14. `migrate resolve --apply` never clears `NeedsReview` | [#53](https://github.com/barrettclark/sqlite2pg/issues/53) |
+| 15. `TableSource.Close` not idempotent | [#54](https://github.com/barrettclark/sqlite2pg/issues/54) |
+
+**Item 2 — race detector: done** (2026-08-30, run directly by Barrett).
+Clean, `go test -race ./...`, no findings.
+
+**Item 4 — live pty TUI smoke test: done.**
+`docs/superpowers/plans/audit-phase4-tui-smoke-test-results.md` — both
+#18 and #27 confirmed holding under live, unscripted terminal
+interaction against a real fixture's resolver-produced config (not a
+hand-built one), with an end-to-end Postgres load proving the resulting
+config actually works. No new issues found.
+
+**Item 6 — fixtures README: done** (`7c935ed`).
+
+**Items 3 (targeted regression re-run) and 5 (performance check): in
+progress**, re-dispatched 2026-08-31 after their first attempt was
+interrupted mid-work by a session usage limit.
