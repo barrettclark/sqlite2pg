@@ -11,9 +11,9 @@ import (
 	"sqlite2pg/internal/config"
 )
 
-// dropSentinel marks a column excluded from the target schema entirely
+// DropSentinel marks a column excluded from the target schema entirely
 // (e.g. Esri SHAPE blobs), set by the esri_typename_mapping heuristic.
-const dropSentinel = "__drop__"
+const DropSentinel = "__drop__"
 
 // ErrNoIncludedColumns is returned by GenerateCreateTable when a table has
 // zero columns left after excluding dropped ones (or had none to begin
@@ -165,7 +165,7 @@ func quoteJoin(names []string) string {
 func IncludedColumns(tc config.TableConfig) []string {
 	var names []string
 	for _, name := range tc.ColumnOrder {
-		if col, ok := tc.Columns[name]; ok && col.TargetType != dropSentinel {
+		if col, ok := tc.Columns[name]; ok && col.TargetType != DropSentinel {
 			names = append(names, name)
 		}
 	}

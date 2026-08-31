@@ -417,3 +417,37 @@ func TestDecideColumn_CarriesNotNullThrough(t *testing.T) {
 		t.Error("expected NotNull=false for a column with no source NOT NULL constraint")
 	}
 }
+
+func TestDecideColumn_SkipsTheFullTableCheckForADroppedColumn(t *testing.T) {
+	// Issue #45: esri_typename_mapping assigns TransformExpr:"drop_column"
+	// at confidence 0.99 for a geometryblob column. copywriter.Transform
+	// unconditionally errors for "drop_column" by design (a dropped
+	// column has nothing to convert), so running the full-table
+	// verification against it always "finds a violation" on row 1 —
+	// pure noise, plus an expensive full scan for an answer already
+	// known statically from the transform name. Passing a table name
+	// that doesn't exist in the database proves decideColumn never even
+	// attempts the scan for a __drop__ decision: if it did,
+	// sqlitereader.StreamTable would surface a real query error here
+	// instead of quietly returning the drop decision.
+	db, _ := openTestDB(t, `CREATE TABLE shapes (id INTEGER PRIMARY KEY, geom geometryblob);`)
+
+	col := sqlitereader.ColumnInfo{Name: "geom", DeclaredType: "geometryblob"}
+
+	cc, unresolved, err := decideColumn(db, "no_such_table", col, nil, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v (a full-table scan was attempted against a nonexistent table)", err)
+	}
+	if cc.TargetType != "__drop__" {
+		t.Errorf("expected __drop__ target type, got %q", cc.TargetType)
+	}
+	if cc.Confidence != 0.99 {
+		t.Errorf("expected the esri_typename_mapping heuristic's original 0.99 confidence preserved, got %f", cc.Confidence)
+	}
+	if cc.NeedsReview {
+		t.Error("expected NeedsReview=false for a dropped column — nothing left to review")
+	}
+	if unresolved != nil {
+		t.Errorf("expected no UnresolvedCase for a dropped column, got %+v", unresolved)
+	}
+}

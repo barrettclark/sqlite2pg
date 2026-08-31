@@ -108,6 +108,49 @@ func TestRunResolve_OverridingTargetTypeClearsAStaleTransform(t *testing.T) {
 	}
 }
 
+func TestRunLoad_DoesNotBlockOnAnUnreviewedDroppedColumn(t *testing.T) {
+	// Issue #45: esri_typename_mapping assigns a __drop__ column
+	// confidence 0.4 (unresolved by design, once decideColumn's
+	// full-table check is skipped for it) and BuildReviewSummary excludes
+	// __drop__ columns from the review UI entirely — there is nothing a
+	// human can ever do in `migrate review` to mark one Reviewed. If
+	// load's gate iterates every column including dropped ones, an Esri
+	// source can never load without --force. The gate must only ask
+	// about columns the review UI can actually act on.
+	dir := t.TempDir()
+
+	sourcePath := filepath.Join(dir, "source.gdb.sqlite")
+	if err := os.WriteFile(sourcePath, []byte("not a real sqlite file, just needs stable bytes to hash"), 0o644); err != nil {
+		t.Fatalf("writing fake source: %v", err)
+	}
+	hash, err := config.HashFile(sourcePath)
+	if err != nil {
+		t.Fatalf("HashFile: %v", err)
+	}
+
+	configPath := filepath.Join(dir, "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
+		Source:        config.SourceInfo{Path: sourcePath, SQLiteSHA256: hash, Kind: "esri_geodatabase"},
+		Tables: map[string]config.TableConfig{
+			"school_sites": {
+				ColumnOrder: []string{"OBJECTID", "SHAPE"},
+				Columns: map[string]config.ColumnConfig{
+					"OBJECTID": {TargetType: "integer", Confidence: 0.99, Reviewed: true},
+					"SHAPE":    {TargetType: "__drop__", Transform: "drop_column", Confidence: 0.4, Source: "heuristic:esri_typename_mapping"},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, configPath); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := run([]string{"load", "--dry-run", configPath}); err != nil {
+		t.Fatalf("expected load --dry-run to succeed without --force despite the unreviewed __drop__ column, got: %v", err)
+	}
+}
+
 func TestPrintDryRunDDL_OrdersTablesAlphabeticallyRegardlessOfMapIteration(t *testing.T) {
 	// Regression (issue #32): cfg.Tables is a Go map, and ranging over it
 	// directly randomizes CREATE TABLE order between runs, so `migrate

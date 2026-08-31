@@ -5,6 +5,7 @@ import (
 	"fmt"
 
 	"sqlite2pg/internal/config"
+	"sqlite2pg/internal/ddl"
 	"sqlite2pg/internal/profiler"
 	"sqlite2pg/internal/resolver"
 	"sqlite2pg/internal/sqlitereader"
@@ -73,7 +74,14 @@ func decideColumn(db *sql.DB, table string, col sqlitereader.ColumnInfo, samples
 	best, needsReview := resolver.Decide(findings, threshold)
 	reason := fmt.Sprintf("confidence %.2f below auto-approve threshold %.2f, or heuristics disagreed", best.Confidence, threshold)
 
-	if !needsReview && best.TransformExpr != "" {
+	// Issue #45: a column resolving to the drop sentinel (e.g. Esri
+	// geometryblob via esri_typename_mapping) has nothing to verify —
+	// copywriter.Transform("drop_column", ...) unconditionally errors by
+	// design, since a dropped column has nothing to convert into. Running
+	// the full-table check against it would always "find a violation" on
+	// row 1, streaming the entire table for an answer already known
+	// statically from the transform name.
+	if !needsReview && best.TransformExpr != "" && best.SuggestedType != ddl.DropSentinel {
 		ok, badValue, err := verifyTransformAgainstFullTable(db, table, col.Name, best.TransformExpr, best.SuggestedType, col.PrimaryKeySeq > 0 || col.NotNull)
 		if err != nil {
 			return config.ColumnConfig{}, nil, err

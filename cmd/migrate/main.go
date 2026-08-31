@@ -286,7 +286,16 @@ func runLoad(args []string) error {
 			return fmt.Errorf("source file %s has changed since this config was generated; re-run `migrate profile` or pass --force", cfg.Source.Path)
 		}
 		for tableName, tc := range cfg.Tables {
-			for colName, col := range tc.Columns {
+			// Scoped to ddl.IncludedColumns(tc) rather than all of
+			// tc.Columns (issue #45): a column mapped to the drop
+			// sentinel (e.g. Esri SHAPE geometry) is excluded from the
+			// generated DDL and from BuildReviewSummary's review UI
+			// alike, so there is no way for a human to ever mark one
+			// Reviewed — gating on it here would refuse every Esri
+			// source's load outright, with no recourse short of
+			// --force.
+			for _, colName := range ddl.IncludedColumns(tc) {
+				col := tc.Columns[colName]
 				// col.NeedsReview persists resolver.Decide's
 				// disagreement-tie verdict (issue #20): a contested
 				// decision can leave Confidence at the winning finding's
