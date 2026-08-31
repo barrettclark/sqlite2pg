@@ -114,7 +114,7 @@ func TestTypeOptions_ContainsTheCommonPostgresTypes(t *testing.T) {
 	want := []string{
 		"text", "integer", "bigint", "smallint", "boolean",
 		"double precision", "real", "numeric",
-		"date", "timestamptz", "jsonb", "bytea", "uuid",
+		"date", "timestamptz", "jsonb", "bytea", "uuid", "uuid[]",
 	}
 	if len(TypeOptions) != len(want) {
 		t.Fatalf("expected %d type options, got %d: %v", len(want), len(TypeOptions), TypeOptions)

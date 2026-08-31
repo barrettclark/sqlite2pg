@@ -39,6 +39,30 @@ func TestGenerateCreateTable_EmitsColumnsInDeclaredOrder(t *testing.T) {
 	}
 }
 
+func TestGenerateCreateTable_EmitsArrayTargetTypeVerbatim(t *testing.T) {
+	// uuid[] (issue #12, the uuid_list heuristic) is the first array
+	// target type this tool supports — GenerateCreateTable has no
+	// allowlist of TargetType strings, so it should just pass the
+	// bracketed type straight through into the column definition like
+	// any other type.
+	tc := config.TableConfig{
+		Include:     true,
+		ColumnOrder: []string{"id", "composer_ids"},
+		Columns: map[string]config.ColumnConfig{
+			"id":           {TargetType: "integer", PrimaryKeySeq: 1},
+			"composer_ids": {TargetType: "uuid[]"},
+		},
+	}
+
+	ddl, err := GenerateCreateTable("albums", tc)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(ddl, `"composer_ids" uuid[]`) {
+		t.Errorf("expected composer_ids uuid[] column definition, got:\n%s", ddl)
+	}
+}
+
 func TestGenerateCreateTable_EmitsParameterizedVarcharTypeVerbatim(t *testing.T) {
 	// varchar(N) suggestions (issue #7) are just another TargetType string
 	// — no special-cased DDL handling needed, the same as any other type.

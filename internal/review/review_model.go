@@ -18,7 +18,7 @@ import (
 var TypeOptions = []string{
 	"text", "integer", "bigint", "smallint", "boolean",
 	"double precision", "real", "numeric",
-	"date", "timestamptz", "jsonb", "bytea", "uuid",
+	"date", "timestamptz", "jsonb", "bytea", "uuid", "uuid[]",
 }
 
 // ColumnView is one column's decision, ready for the review UI.

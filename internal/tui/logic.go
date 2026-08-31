@@ -222,6 +222,24 @@ func previewValueForType(value, targetType string) (display string, valid bool) 
 		return value, false
 	case "uuid":
 		return value, uuidPattern.MatchString(value)
+	case "uuid[]":
+		// Mirrors the uuid_list heuristic's own check: normalize
+		// beets' real-world "\␀" escape (see
+		// heuristics.escapedNulSeparator's doc comment) to a raw NUL,
+		// split on it, and require every part to be a canonical UUID.
+		// A plain single-UUID value (no separator at all) still
+		// validates here too — splitting on a separator that isn't
+		// present just returns the one-element slice — so a human can
+		// preview uuid[] against a column that's currently all
+		// single-UUID values and see it as a valid (if degenerate,
+		// one-element-list) choice.
+		normalized := strings.ReplaceAll(value, "\\␀", "\x00")
+		for _, p := range strings.Split(normalized, "\x00") {
+			if !uuidPattern.MatchString(p) {
+				return value, false
+			}
+		}
+		return value, true
 	default:
 		// text, jsonb, bytea: any string is valid, displayed as-is.
 		return value, true
@@ -244,12 +262,13 @@ func firstNonNullValue(values []string) string {
 // typeShortcuts maps every review.TypeOptions entry to a distinct
 // mnemonic rune for the type picker's single-key selection — pressing the
 // rune jumps straight to that type without arrowing through the list
-// first. Picked to stay memorable and collision-free across all 13
+// first. Picked to stay memorable and collision-free across all 14
 // options at once (not just whichever subset a given column's sample data
 // happens to validate as): "g" for bigint ("biG int"), "f" for double
 // precision (its common colloquial name, "float"; "d" was needed for
-// date), and "x" for bytea (Postgres itself prints bytea in \x-prefixed
-// hex).
+// date), "x" for bytea (Postgres itself prints bytea in \x-prefixed hex),
+// and "a" for uuid[] ("array" — the first and, so far, only array target
+// type this tool offers, so the generic mnemonic is unambiguous).
 var typeShortcuts = map[string]rune{
 	"text":             't',
 	"integer":          'i',
@@ -264,6 +283,7 @@ var typeShortcuts = map[string]rune{
 	"jsonb":            'j',
 	"bytea":            'x',
 	"uuid":             'u',
+	"uuid[]":           'a',
 }
 
 // flaggedColumn identifies one column flagged for review, by its table and
