@@ -86,6 +86,25 @@ func TestDecide_YYYYMMDDMarginOverNumericTextWinsCleanly(t *testing.T) {
 	}
 }
 
+// TestDecide_TextBoolean01ForcesReviewAgainstNumericText reproduces the
+// sakila.db customer.active shape (issue #1): a CHAR(1) column storing
+// only "0"/"1" gets a boolean01 finding at 0.88 and a competing
+// numeric_text finding at 0.90. The gap (0.02) must land inside the 0.04
+// disagreement margin so the resolver forces review instead of letting
+// numeric_text's 0.90 win outright and silently auto-approve as plain
+// integer with zero review signal — the exact real-data gap this issue
+// reported.
+func TestDecide_TextBoolean01ForcesReviewAgainstNumericText(t *testing.T) {
+	findings := []profiler.Finding{
+		{Heuristic: "boolean01", SuggestedType: "boolean", Confidence: 0.88},
+		{Heuristic: "numeric_text", SuggestedType: "integer", Confidence: 0.90},
+	}
+	_, needsReview := Decide(findings, 0.9)
+	if !needsReview {
+		t.Fatal("expected boolean01's 0.88 vs. numeric_text's 0.90 to disagree closely enough to force review")
+	}
+}
+
 func TestDecide_PicksHighestConfidenceAsThePrimaryDecision(t *testing.T) {
 	findings := []profiler.Finding{
 		{Heuristic: "boolean01", SuggestedType: "boolean", Confidence: 0.55},

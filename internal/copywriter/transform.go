@@ -125,6 +125,23 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return nil, fmt.Errorf("iso8601_to_date: cannot parse %q", s)
 
 	case "int_to_bool":
+		// Also accepts a "0"/"1" string (not routed through toInt64,
+		// which would silently accept other numeric-looking strings too):
+		// boolean01 assigns this same transform to TEXT/CHAR-affinity
+		// 0/1 flag columns (e.g. sakila.db's customer.active, CHAR(1)
+		// storing '0'/'1') alongside its original INTEGER-affinity case,
+		// since the underlying judgment is identical and only the
+		// storage representation differs.
+		if s, ok := raw.(string); ok {
+			switch s {
+			case "0":
+				return false, nil
+			case "1":
+				return true, nil
+			default:
+				return nil, fmt.Errorf("int_to_bool: unexpected string %q", s)
+			}
+		}
 		n, ok := toInt64(raw)
 		if !ok {
 			return nil, fmt.Errorf("int_to_bool: unexpected type %T", raw)

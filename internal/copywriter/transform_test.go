@@ -458,6 +458,27 @@ func TestTransform_IntToBool(t *testing.T) {
 	}
 }
 
+// TestTransform_IntToBoolAcceptsZeroOneStrings covers issue #1's Part A:
+// boolean01 now assigns int_to_bool to TEXT/CHAR-affinity 0/1 columns too
+// (e.g. sakila.db's customer.active, CHAR(1) storing '0'/'1'), so the
+// transform must actually handle the string form, not just int64/int.
+func TestTransform_IntToBoolAcceptsZeroOneStrings(t *testing.T) {
+	one, err := Transform("int_to_bool", "1")
+	if err != nil || one != true {
+		t.Errorf("expected true, got %v, err %v", one, err)
+	}
+	zero, err := Transform("int_to_bool", "0")
+	if err != nil || zero != false {
+		t.Errorf("expected false, got %v, err %v", zero, err)
+	}
+	if _, err := Transform("int_to_bool", "2"); err == nil {
+		t.Error("expected an error for a string that isn't exactly \"0\" or \"1\"")
+	}
+	if _, err := Transform("int_to_bool", "01"); err == nil {
+		t.Error("expected an error for an ambiguous digit string like \"01\"")
+	}
+}
+
 func TestTransform_JulianDayToDate(t *testing.T) {
 	// JDN 2440588 is the well-known reference point for 1970-01-01
 	// (Julian Date 2440587.5 = 1970-01-01 00:00 UT).

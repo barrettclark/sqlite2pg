@@ -61,6 +61,62 @@ func TestBoolean01_DoesNotApplyToIdSuffixedColumns(t *testing.T) {
 	}
 }
 
+func TestBoolean01_DetectsZeroOneCardinalityForTextCharAffinity(t *testing.T) {
+	// Issue #1 / real bug (sakila.db): customer.active is declared
+	// CHAR(1) and stores '0'/'1' as text — a semantic boolean flag with
+	// TEXT rather than INTEGER affinity. AppliesTo used to only check for
+	// "INT" in the declared type, so this column never reached Boolean01
+	// at all; numeric_text claimed it instead and auto-approved it as
+	// plain integer at 0.90 confidence with zero review signal.
+	h := Boolean01{}
+	meta := profiler.ColumnMeta{Table: "customer", Name: "active", DeclaredType: "CHAR(1)"}
+	if !h.AppliesTo(meta) {
+		t.Fatal("expected AppliesTo to return true for a CHAR(1) column")
+	}
+
+	samples := []profiler.Value{"0", "1", "1", "0", nil}
+	finding, ok := h.Evaluate(meta, samples)
+	if !ok {
+		t.Fatal("expected a finding for a 0/1/NULL-only TEXT/CHAR column")
+	}
+	if finding.SuggestedType != "boolean" {
+		t.Errorf("expected suggested type boolean, got %q", finding.SuggestedType)
+	}
+	if finding.Confidence < 0.86 || finding.Confidence >= 0.90 {
+		t.Errorf("expected confidence just below numeric_text's 0.90 (within the 0.04 disagreement margin) so the resolver forces review instead of numeric_text winning outright, got %f", finding.Confidence)
+	}
+}
+
+func TestBoolean01_TextVariantRejectsAmbiguousDigitStrings(t *testing.T) {
+	// "00"/"01" and other digit-ish strings are not the clean "0"/"1"
+	// shape this case requires — a stricter check than "parses as a
+	// small integer", since e.g. "00"/"01" could carry meaning a bare
+	// boolean would discard.
+	h := Boolean01{}
+	meta := profiler.ColumnMeta{Name: "active", DeclaredType: "CHAR(1)"}
+	cases := [][]profiler.Value{
+		{"0", "01"},
+		{"00", "1"},
+		{"0", " 1"},
+		{"0", "1 "},
+		{"0", "2"},
+		{"0", "true"},
+	}
+	for _, samples := range cases {
+		if _, ok := h.Evaluate(meta, samples); ok {
+			t.Errorf("expected no finding for ambiguous sample %v", samples)
+		}
+	}
+}
+
+func TestBoolean01_TextVariantStillExcludesIdSuffixedColumns(t *testing.T) {
+	h := Boolean01{}
+	meta := profiler.ColumnMeta{Name: "legacy_id", DeclaredType: "VARCHAR(1)"}
+	if h.AppliesTo(meta) {
+		t.Error("expected AppliesTo to exclude _id-suffixed TEXT/CHAR columns, same as the INTEGER case (issue #11)")
+	}
+}
+
 func TestBoolean01_NoOpinionWhenOtherValuesPresent(t *testing.T) {
 	h := Boolean01{}
 	samples := []profiler.Value{int64(0), int64(1), int64(2)}

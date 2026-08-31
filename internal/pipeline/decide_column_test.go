@@ -281,6 +281,32 @@ func TestDecideColumn_FlagsForReviewWhenAPrimaryKeyColumnHasAnEmptyStringUUID(t 
 	}
 }
 
+func TestDecideColumn_FlagsForReviewWhenACharOneFlagColumnStoresTextZeroOne(t *testing.T) {
+	// Issue #1 real-data gap (sakila.db customer.active): a CHAR(1)
+	// column storing only '0'/'1' as text used to be silently claimed by
+	// numeric_text (plain integer at 0.90 confidence — just past the
+	// auto-approve threshold) because boolean01 never evaluated non-INT
+	// declared types at all. Now boolean01 also fires on this TEXT/CHAR
+	// shape, close enough in confidence to numeric_text's 0.90 to force
+	// review instead of a silent auto-approve.
+	db, _ := openTestDB(t, `CREATE TABLE customer (id INTEGER PRIMARY KEY, active CHAR(1));`)
+	db.Exec(`INSERT INTO customer (active) VALUES ('1'), ('0'), ('1')`)
+
+	col := sqlitereader.ColumnInfo{Name: "active", DeclaredType: "CHAR(1)"}
+	sample := []any{"1", "0", "1"}
+
+	cc, unresolved, err := decideColumn(db, "customer", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase — this column must be flagged for review, not silently auto-approved")
+	}
+	if !cc.NeedsReview {
+		t.Error("expected NeedsReview=true for the ambiguous CHAR(1) 0/1 flag column")
+	}
+}
+
 func TestDecideColumn_ReviewedAlwaysStartsFalseRegardlessOfConfidence(t *testing.T) {
 	// Reviewed means "a human confirmed this," a separate concept from
 	// confidence/needs-review — profiling never sets it, whether a column
