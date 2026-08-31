@@ -396,6 +396,24 @@ func compareColumnUnordered(expected, actual []any) []ColumnMismatch {
 // key off the instant (.UTC().UnixNano()) rather than its printed form,
 // since the same instant can carry a different Location and so format
 // differently despite being equal per time.Time.Equal.
+//
+// int64 and float64 deliberately share one case (and one key namespace)
+// rather than being tagged apart by concrete Go type: valuesMatch's own
+// typed cases only fire when both sides share the exact same concrete
+// type, so an int64 on one side against a float64 on the other (e.g. a
+// SQLite NUMERIC column stored dynamically as an integer, transformed
+// straight through to a `double precision` target) always falls to
+// valuesMatch's fmt.Sprintf("%v", ...) fallback — which for these two
+// types renders the same decimal text either way (fmt.Sprintf("%v",
+// int64(100)) and fmt.Sprintf("%v", float64(100)) both give "100").
+// Tagging by concrete type here, as this used to, gave int64(100) and
+// float64(100) different key prefixes and so different sorted positions —
+// a false-positive mismatch despite valuesMatch itself considering them
+// equal. Keying both off the same fmt.Sprintf("%v", ...) text keeps
+// sortKeyFor's invariant intact: it still separates genuinely different
+// numeric values (int64(100) vs int64(200), or float64(100) vs
+// float64(100.5)) exactly as before, since each distinct value still
+// formats to distinct text.
 func sortKeyFor(v any) string {
 	if v == nil {
 		return "\x00nil"
@@ -416,9 +434,9 @@ func sortKeyFor(v any) string {
 	case bool:
 		return fmt.Sprintf("\x05bool:%v", t)
 	case int64:
-		return fmt.Sprintf("\x06int64:%v", t)
+		return "\x06num:" + fmt.Sprintf("%v", t)
 	case float64:
-		return fmt.Sprintf("\x07float64:%v", t)
+		return "\x06num:" + fmt.Sprintf("%v", t)
 	case string:
 		return "\x08string:" + t
 	default:
