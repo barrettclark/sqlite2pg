@@ -194,6 +194,11 @@ func writeVerifyReport(w io.Writer, results []pipeline.TableVerifyResult, skippe
 			continue
 		}
 
+		if !r.Ordered {
+			fmt.Fprintln(w, "  NOTE: this table has no primary key, so rows were compared as an")
+			fmt.Fprintln(w, "  unordered value comparison per column, not row-by-row — see below.")
+		}
+
 		var columns []string
 		for col := range r.ColumnResults {
 			columns = append(columns, col)
@@ -203,8 +208,13 @@ func writeVerifyReport(w io.Writer, results []pipeline.TableVerifyResult, skippe
 			cr := r.ColumnResults[col]
 			fmt.Fprintf(w, "  MISMATCH %s.%s: %d of %d row(s) differ\n", r.Table, col, cr.MismatchCount, r.RowsCompared)
 			for _, ex := range cr.Examples {
-				fmt.Fprintf(w, "    row %d: source=%s expected=%s actual=%s\n",
-					ex.RowIndex, formatVerifyValue(ex.Source), formatVerifyValue(ex.Expected), formatVerifyValue(ex.Actual))
+				if r.Ordered {
+					fmt.Fprintf(w, "    row %d: source=%s expected=%s actual=%s\n",
+						ex.RowIndex, formatVerifyValue(ex.Source), formatVerifyValue(ex.Expected), formatVerifyValue(ex.Actual))
+				} else {
+					fmt.Fprintf(w, "    sorted-comparison position %d (not a source row — no primary key to match rows by): expected=%s actual=%s\n",
+						ex.RowIndex, formatVerifyValue(ex.Expected), formatVerifyValue(ex.Actual))
+				}
 			}
 			if cr.MismatchCount > len(cr.Examples) {
 				fmt.Fprintf(w, "    ... and %d more (showing first %d)\n", cr.MismatchCount-len(cr.Examples), len(cr.Examples))

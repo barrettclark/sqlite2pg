@@ -93,20 +93,40 @@ migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the l
   pass/fail gate on data integrity — exit code is non-zero on any mismatch.
   `--out <path>` writes the detailed report to a file instead of stdout; a
   clean run reports 0 mismatches, a dirty one lists every mismatching
-  column with up to 20 example rows (source value, expected transformed
-  value, actual Postgres value) plus the true total count even when capped.
-  See the doc comment on `internal/pipeline.VerifyTable` for an important
-  caveat: the row-by-row comparison has no `ORDER BY` on either side and
-  matches purely by scan position, which in practice can be thrown off not
-  only by a table modified since its load (an `UPDATE` rewrites a row as a
-  new physical tuple, which is not guaranteed to land back in its old scan
-  position) but, as observed firsthand against Postgres 18 with ordinary
-  variable-width `text` columns, occasionally even by a single fresh,
-  untouched `COPY` load itself. When that happens, `verify` still correctly
-  reports a failure (a real mismatch was found), but the specific rows it
-  points at reflect *scan-order drift*, not a per-value description of what
-  actually differs — worth knowing before treating a large mismatch count at
-  face value.
+  column with up to 20 examples plus the true total count even when
+  capped. How precisely those examples correspond to source rows depends
+  on whether the table has a primary key:
+    - **With a primary key**, both SQLite and Postgres are read genuinely
+      `ORDER BY <primary key>` — not a bare sequential scan on either side
+      — so the comparison is a real, deterministic row-by-row match. This
+      closes a gap found during this feature's own development: without an
+      explicit `ORDER BY`, Postgres 18 was observed, directly and
+      reproducibly (on real fixtures — `bikes.db`, `chinook.db`'s `tracks`
+      table), not to reliably return a freshly-COPY'd, entirely untouched
+      table's rows in insertion order on a plain sequential scan — which
+      could make `verify` report a mismatch that was really just
+      scan-order drift, not corrupted data. Ordering both sides by the
+      primary key sidesteps that risk entirely (as does a table modified
+      since its load, e.g. by an `UPDATE`, which rewrites a row as a new
+      physical tuple not guaranteed to land back in its old scan position —
+      the same fix covers that case too). Each reported example names the
+      exact row (source value, expected transformed value, actual Postgres
+      value).
+    - **Without a primary key**, there's no column set to order by that's
+      both guaranteed unique and safe to trust for this — so `verify`
+      instead compares each included column as a value *multiset*: every
+      value from both sides is collected and sorted into the same
+      canonical order, then compared position by position in that sorted
+      order. This still exhaustively catches any genuine value difference
+      with no scan-order false positives, but a reported example is a
+      position in the *sorted comparison*, not a source row — the report
+      says so explicitly rather than implying row-position precision it
+      doesn't have. This path also holds a full column's worth of values
+      from both sides in memory to sort them, more expensive than the
+      primary-key path's streaming comparison — an accepted tradeoff, paid
+      only by tables that lack a primary key.
+  See the doc comment on `internal/pipeline.VerifyTable` for the full
+  detail on both paths.
 
 ## Extending the profiler
 

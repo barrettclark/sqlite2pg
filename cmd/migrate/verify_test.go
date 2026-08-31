@@ -135,6 +135,28 @@ func TestWriteVerifyReport_ValueMismatchListsColumnAndCapsExamplesButNotTheCount
 	}
 }
 
+func TestWriteVerifyReport_UnorderedMismatchDoesNotClaimRowPosition(t *testing.T) {
+	results := []pipeline.TableVerifyResult{
+		{
+			Table: "widgets", SourceRowCount: 10, TargetRowCount: 10, RowsCompared: 10, Ordered: false,
+			ColumnResults: map[string]*pipeline.ColumnVerifyResult{
+				"name": {MismatchCount: 1, Examples: []pipeline.ColumnMismatch{{RowIndex: 3, Expected: "x", Actual: "y"}}},
+			},
+		},
+	}
+
+	var buf bytes.Buffer
+	writeVerifyReport(&buf, results, nil)
+
+	out := buf.String()
+	if strings.Contains(out, "row 3:") {
+		t.Errorf("expected the unordered path to never claim a row position, got:\n%s", out)
+	}
+	if !strings.Contains(out, "no primary key") {
+		t.Errorf("expected the report to explain the table has no primary key, got:\n%s", out)
+	}
+}
+
 func TestWriteVerifyReport_ListsSkippedTables(t *testing.T) {
 	var buf bytes.Buffer
 	writeVerifyReport(&buf, nil, []string{"geometry_only"})

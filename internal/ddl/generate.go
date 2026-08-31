@@ -67,7 +67,7 @@ func GenerateCreateTable(table string, tc config.TableConfig) (string, error) {
 		}
 		cols = append(cols, col)
 	}
-	if pk := primaryKeyColumns(tc); len(pk) > 0 {
+	if pk := PrimaryKeyColumns(tc); len(pk) > 0 {
 		pkIDs := make([]string, len(pk))
 		for i, name := range pk {
 			pkIDs[i] = ids[name]
@@ -112,13 +112,15 @@ func ValidateTableConfigs(cfg *config.MigrationConfig) error {
 	return nil
 }
 
-// primaryKeyColumns returns tc's included primary-key columns ordered by
+// PrimaryKeyColumns returns tc's included primary-key columns ordered by
 // their declared PrimaryKeySeq (1-based), not by ColumnOrder — a composite
 // primary key's declared column order can differ from the table's overall
 // column order. A dropped or otherwise excluded column that happened to be
 // part of the primary key is simply omitted, same as it is from the
-// column list itself.
-func primaryKeyColumns(tc config.TableConfig) []string {
+// column list itself. Exported for VerifyTable (internal/pipeline), which
+// needs the same primary-key column set to order both sides of its
+// comparison identically.
+func PrimaryKeyColumns(tc config.TableConfig) []string {
 	type seqCol struct {
 		seq  int
 		name string

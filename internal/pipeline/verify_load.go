@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -25,13 +26,30 @@ import (
 // Examples are — so the report still shows the true total.
 const maxMismatchExamples = 20
 
-// ColumnMismatch is one row's disagreement between what the source SQLite
-// value transforms to and what Postgres actually holds.
+// ColumnMismatch is one disagreement between what the source SQLite value
+// transforms to and what Postgres actually holds.
+//
+// What RowIndex means depends on TableVerifyResult.Ordered:
+//   - Ordered true (the table has a primary key): both sides were read in
+//     the same ORDER BY <primary key> order, so RowIndex is a real,
+//     0-based row position — the Nth row by primary-key order on both
+//     sides, genuinely corresponding to the same source row.
+//   - Ordered false (no primary key, the aggregate comparison ran):
+//     RowIndex is only the position within each column's independently
+//     *sorted* value sequence (see compareColumnUnordered) — it does NOT
+//     correspond to any source row, since without a key there is no way to
+//     line up a Postgres row with the SQLite row it came from. Source and
+//     Expected still come from the same original SQLite row as each other
+//     (sorted together), but Actual, from the Postgres side, is not
+//     guaranteed to be that same row's value — only that value equal to it
+//     ought to appear somewhere. Report output for this case must say so
+//     explicitly rather than implying row-position precision it doesn't
+//     have.
 type ColumnMismatch struct {
-	RowIndex int // 0-based, in sequential-scan order
+	RowIndex int // see doc comment above — meaning depends on Ordered
 	Source   any // the raw SQLite value, before any transform
 	Expected any // Source run through the column's configured Transform
-	Actual   any // what Postgres actually returned for this row/column
+	Actual   any // what Postgres actually returned
 }
 
 // ColumnVerifyResult accumulates every mismatch VerifyTable found in one
@@ -54,8 +72,20 @@ type TableVerifyResult struct {
 	RowCountMismatch bool
 
 	// RowsCompared is how many row pairs the full comparison actually
-	// walked (0 if the table was skipped or RowCountMismatch is true).
+	// walked (0 if the table was skipped or RowCountMismatch is true). In
+	// the no-PK aggregate path (Ordered false) this is still SourceRowCount
+	// — every row's values were checked, just not row-by-row.
 	RowsCompared int
+
+	// Ordered reports which of VerifyTable's two comparison strategies ran:
+	// true means the table has a primary key and both sides were read in
+	// matching ORDER BY <primary key> order, so ColumnMismatch.RowIndex is
+	// a real, precise row position. False means the table has no primary
+	// key, so VerifyTable fell back to comparing each column's sorted
+	// value multiset instead (see compareColumnUnordered) — still
+	// exhaustive, but ColumnMismatch.RowIndex in that case is only a
+	// position within the sorted comparison, not a source row.
+	Ordered bool
 
 	// ColumnResults is keyed by the column's SQLite name (matching
 	// config.TableConfig.Columns), not its possibly-disambiguated
@@ -80,38 +110,48 @@ func (r TableVerifyResult) Passed() bool {
 
 // VerifyTable confirms that table's Postgres copy is a byte-for-byte,
 // correctly-transformed copy of its SQLite source: first a cheap row-count
-// check, then (only if counts agree) a full row-by-column comparison of
-// every included column, re-deriving what each Postgres value SHOULD be by
-// running the exact same copywriter.Transform the original load used.
+// check, then (only if counts agree) a full comparison of every included
+// column, re-deriving what each Postgres value SHOULD be by running the
+// exact same copywriter.Transform the original load used.
 //
-// The full comparison reads both sides as plain forward, sequential scans
-// — sqlitereader.StreamTable on the SQLite side (this codebase's
-// documented "no ORDER BY" read pattern) and a bare `SELECT columns FROM
-// table` with no ORDER BY on the Postgres side — and compares the Nth row
-// of one against the Nth row of the other purely by position. This relies
-// on Postgres returning a freshly-COPY'd, unmodified table's rows in
-// physical/insertion order under a plain sequential scan. That is NOT a
-// documented Postgres guarantee (no ORDER BY means the planner is free to
-// return rows in any order it likes), and in practice it is less reliable
-// than it sounds: a table modified since its load is an obvious risk (an
-// UPDATE writes a new tuple version that is not guaranteed to land back in
-// its old scan position — confirmed directly during this feature's own
-// development, where updating a single row of a freshly-loaded table was
-// enough to shift everything after it by one scan position). Less
-// obviously, the same drift was also observed, deterministically and
-// reproducibly, on a table that was never touched after its own COPY —
-// real fixtures with ordinary variable-width text columns (bikes.db,
-// chinook.db's tracks) exhibited a single row landing one scan-position
-// early, permanently offsetting every row after it, immediately after a
-// completely fresh load. Root-caused (via direct pgx-level instrumentation
-// of the exact CopyFromSource pgx.Conn.CopyFrom consumed) to something
-// downstream of this codebase entirely — pgx sends rows to the server in
-// the correct order — so this is either a genuine Postgres 18 storage/COPY
-// behavior or a bug in it, not a bug in TableSource or LoadTable. The
-// practical consequence: when VerifyTable reports mismatches, always check
-// whether they show the classic drift signature (adjacent rows' expected
-// and actual values swapped by one position) before concluding the data
-// itself is wrong — that signature means scan-order drift, not corruption.
+// The full comparison uses one of two strategies, chosen by whether table
+// has a primary key (config.ColumnConfig.PrimaryKeySeq on at least one
+// included column):
+//
+//   - With a primary key: both sides are read genuinely ORDER BY'd by it —
+//     sqlitereader.StreamTableOrdered on the SQLite side, `ORDER BY
+//     "pg_pk_col", ...` on the Postgres side — and compared row-by-row by
+//     position (the Nth row of one against the Nth row of the other).
+//     Because both orderings are real and identical, this is precise and
+//     deterministic: TableVerifyResult.Ordered is true, and every
+//     ColumnMismatch.RowIndex is a genuine, meaningful row position.
+//
+//   - Without a primary key: there is no column (or column set) guaranteed
+//     both unique and indexed to order by, and — as this exact package
+//     discovered during its own development — a bare, unordered scan of
+//     either side cannot be trusted to line up two logically-identical
+//     tables row-for-row anyway. Confirmed directly: Postgres 18 was
+//     observed NOT reliably returning a freshly-COPY'd, entirely untouched
+//     table's rows in insertion order on a plain sequential scan (real
+//     fixtures — bikes.db, chinook.db's tracks — reproduced a single row
+//     landing one scan-position early immediately after a fresh load,
+//     permanently offsetting every row after it; root-caused via direct
+//     pgx-level instrumentation to something downstream of pgx itself,
+//     which sends rows to the server in the correct order — so this is a
+//     genuine Postgres 18 storage/COPY behavior, not a bug in this
+//     codebase's TableSource or LoadTable). So instead of trusting any
+//     scan order, VerifyTable falls back to compareColumnUnordered: for
+//     each column, collect every value from both sides independently, sort
+//     each side into the same canonical order, and compare position by
+//     position in that sorted order — a comparison of value *multisets*,
+//     not of rows. TableVerifyResult.Ordered is false in this case, and
+//     ColumnMismatch.RowIndex only means "this position in the sorted
+//     comparison", not a source row (see ColumnMismatch's doc comment).
+//     This path holds an entire column's worth of values from both sides
+//     in memory at once to sort them — more expensive than the streaming
+//     primary-key path — but that cost is only paid for tables that lack a
+//     primary key, and is the accepted price for exhaustive, false-positive-
+//     free verification on tables without one.
 func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table string, tc config.TableConfig) (TableVerifyResult, error) {
 	result := TableVerifyResult{Table: table, ColumnResults: map[string]*ColumnVerifyResult{}}
 
@@ -137,12 +177,30 @@ func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table 
 		return result, nil
 	}
 
+	pk := ddl.PrimaryKeyColumns(tc)
+	if len(pk) > 0 {
+		return verifyTableOrdered(ctx, sourceDB, pgConn, table, tc, included, pk, result)
+	}
+	return verifyTableUnordered(ctx, sourceDB, pgConn, table, tc, included, result)
+}
+
+// verifyTableOrdered runs VerifyTable's primary-key comparison path: both
+// sides read in matching ORDER BY <pk> order, compared row-by-row by
+// position. See VerifyTable's doc comment for the full rationale.
+func verifyTableOrdered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table string, tc config.TableConfig, included, pk []string, result TableVerifyResult) (TableVerifyResult, error) {
+	result.Ordered = true
+
 	ids := ddl.PostgresColumnNames(tc)
 	quotedCols := make([]string, len(included))
 	for i, name := range included {
 		quotedCols[i] = pgx.Identifier{ids[name]}.Sanitize()
 	}
-	query := fmt.Sprintf(`SELECT %s FROM %s`, strings.Join(quotedCols, ", "), pgx.Identifier{table}.Sanitize())
+	quotedPK := make([]string, len(pk))
+	for i, name := range pk {
+		quotedPK[i] = pgx.Identifier{ids[name]}.Sanitize()
+	}
+	query := fmt.Sprintf(`SELECT %s FROM %s ORDER BY %s`,
+		strings.Join(quotedCols, ", "), pgx.Identifier{table}.Sanitize(), strings.Join(quotedPK, ", "))
 
 	pgRows, err := pgConn.Query(ctx, query)
 	if err != nil {
@@ -158,7 +216,7 @@ func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table 
 	}
 
 	rowIndex := 0
-	streamErr := sqlitereader.StreamTable(sourceDB, table, included, func(row []profiler.Value) error {
+	streamErr := sqlitereader.StreamTableOrdered(sourceDB, table, included, pk, func(row []profiler.Value) error {
 		if !pgRows.Next() {
 			return fmt.Errorf("postgres table %s ran out of rows at row %d despite matching row counts (concurrent write during verify?)", table, rowIndex)
 		}
@@ -201,6 +259,162 @@ func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table 
 		return result, fmt.Errorf("reading Postgres table %s: %w", table, err)
 	}
 	return result, nil
+}
+
+// verifyTableUnordered runs VerifyTable's no-primary-key fallback: each
+// included column is compared independently via compareColumnUnordered.
+// See VerifyTable's doc comment for the full rationale.
+func verifyTableUnordered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table string, tc config.TableConfig, included []string, result TableVerifyResult) (TableVerifyResult, error) {
+	result.Ordered = false
+	result.RowsCompared = result.SourceRowCount
+
+	// Collect every included column's transformed SQLite values in one
+	// pass, keyed by column name — cheaper than one SQLite scan per column.
+	expected := make(map[string][]any, len(included))
+	streamErr := sqlitereader.StreamTable(sourceDB, table, included, func(row []profiler.Value) error {
+		for i, name := range included {
+			v, err := copywriter.Transform(tc.Columns[name].Transform, row[i])
+			if err != nil {
+				return fmt.Errorf("re-applying transform for %s.%s: %w", table, name, err)
+			}
+			expected[name] = append(expected[name], v)
+		}
+		return nil
+	})
+	if streamErr != nil {
+		return result, streamErr
+	}
+
+	// Collect every included column's actual Postgres values in one pass.
+	ids := ddl.PostgresColumnNames(tc)
+	quotedCols := make([]string, len(included))
+	for i, name := range included {
+		quotedCols[i] = pgx.Identifier{ids[name]}.Sanitize()
+	}
+	query := fmt.Sprintf(`SELECT %s FROM %s`, strings.Join(quotedCols, ", "), pgx.Identifier{table}.Sanitize())
+
+	pgRows, err := pgConn.Query(ctx, query)
+	if err != nil {
+		return result, fmt.Errorf("querying Postgres table %s: %w", table, err)
+	}
+	defer pgRows.Close()
+
+	scanners := make([]*pgColumnScanner, len(included))
+	scanDests := make([]any, len(included))
+	for i, name := range included {
+		scanners[i] = newPgColumnScanner(tc.Columns[name].TargetType)
+		scanDests[i] = scanners[i].dest
+	}
+
+	actual := make(map[string][]any, len(included))
+	for pgRows.Next() {
+		if err := pgRows.Scan(scanDests...); err != nil {
+			return result, fmt.Errorf("scanning postgres row of %s: %w", table, err)
+		}
+		for i, name := range included {
+			actual[name] = append(actual[name], scanners[i].value())
+		}
+	}
+	if err := pgRows.Err(); err != nil {
+		return result, fmt.Errorf("reading Postgres table %s: %w", table, err)
+	}
+
+	for _, name := range included {
+		if mismatches := compareColumnUnordered(expected[name], actual[name]); len(mismatches) > 0 {
+			cr := &ColumnVerifyResult{MismatchCount: len(mismatches)}
+			if len(mismatches) > maxMismatchExamples {
+				cr.Examples = mismatches[:maxMismatchExamples]
+			} else {
+				cr.Examples = mismatches
+			}
+			result.ColumnResults[name] = cr
+		}
+	}
+	return result, nil
+}
+
+// compareColumnUnordered compares one column's full set of expected
+// (transformed SQLite) values against its full set of actual (Postgres)
+// values without relying on either side's scan/row order: both slices are
+// sorted into the same canonical order via sortKeyFor, then compared
+// position by position. Equal multisets sort identically regardless of
+// which physical order either side originally came back in, so this can't
+// produce VerifyTable's scan-order-drift false positive the way a raw
+// positional comparison could — but a mismatch it does find is reported
+// against a *sorted position*, not a source row (see ColumnMismatch's doc
+// comment): with no key to line source and target rows up by, there is no
+// way to say the mismatch belongs to any particular original row.
+func compareColumnUnordered(expected, actual []any) []ColumnMismatch {
+	type keyedValue struct {
+		key string
+		val any
+	}
+	keyed := func(vals []any) []keyedValue {
+		out := make([]keyedValue, len(vals))
+		for i, v := range vals {
+			out[i] = keyedValue{key: sortKeyFor(v), val: v}
+		}
+		sort.Slice(out, func(i, j int) bool { return out[i].key < out[j].key })
+		return out
+	}
+
+	sortedExpected := keyed(expected)
+	sortedActual := keyed(actual)
+
+	var mismatches []ColumnMismatch
+	for i := range sortedExpected {
+		if sortedExpected[i].key != sortedActual[i].key {
+			mismatches = append(mismatches, ColumnMismatch{
+				RowIndex: i, // position in the sorted comparison, not a source row — see ColumnMismatch's doc comment
+				Expected: sortedExpected[i].val,
+				Actual:   sortedActual[i].val,
+			})
+		}
+	}
+	return mismatches
+}
+
+// sortKeyFor renders v into a string sort key such that two values
+// VerifyTable would otherwise consider equal (per valuesMatch) always
+// produce the same key, and different values are vanishingly unlikely to
+// collide. It doesn't need to sort by any semantically meaningful order —
+// only to sort both sides of compareColumnUnordered the same, consistent
+// way so equal values land at the same position on both sides. Each case
+// mirrors the type valuesMatch already treats specially, formatted so a
+// value and its equal counterpart from the *other* side (SQLite-derived
+// vs. Postgres-derived) normalize identically despite arriving as
+// different concrete representations — most notably time.Time, which must
+// key off the instant (.UTC().UnixNano()) rather than its printed form,
+// since the same instant can carry a different Location and so format
+// differently despite being equal per time.Time.Equal.
+func sortKeyFor(v any) string {
+	if v == nil {
+		return "\x00nil"
+	}
+	switch t := v.(type) {
+	case time.Time:
+		return fmt.Sprintf("\x01time:%d", t.UTC().UnixNano())
+	case pgtype.UUID:
+		return fmt.Sprintf("\x02uuid:%v:%x", t.Valid, t.Bytes)
+	case []pgtype.UUID:
+		parts := make([]string, len(t))
+		for i, u := range t {
+			parts[i] = fmt.Sprintf("%v:%x", u.Valid, u.Bytes)
+		}
+		return "\x03uuidlist:" + strings.Join(parts, ",")
+	case []byte:
+		return "\x04bytes:" + string(t)
+	case bool:
+		return fmt.Sprintf("\x05bool:%v", t)
+	case int64:
+		return fmt.Sprintf("\x06int64:%v", t)
+	case float64:
+		return fmt.Sprintf("\x07float64:%v", t)
+	case string:
+		return "\x08string:" + t
+	default:
+		return fmt.Sprintf("\x09%T:%v", v, v)
+	}
 }
 
 // pgColumnScanner owns one column's pgx scan destination, chosen from the

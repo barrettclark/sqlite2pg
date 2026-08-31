@@ -364,6 +364,174 @@ func TestVerifyTable_SkipsTableWithNoIncludedColumns(t *testing.T) {
 	}
 }
 
+// verifyFixtureConfigNoPK is verifyFixtureConfig with the primary key
+// stripped from "id" — for tests proving the no-PK aggregate comparison
+// path (VerifyTable can't do a position-based comparison at all without a
+// key to order by).
+func verifyFixtureConfigNoPK() config.TableConfig {
+	tc := verifyFixtureConfig()
+	id := tc.Columns["id"]
+	id.PrimaryKeySeq = 0
+	tc.Columns["id"] = id
+	return tc
+}
+
+// reinsertRowsReversed replaces every row in table with the two given
+// pgFixtureRow literals in the OPPOSITE of their natural id order — a
+// TRUNCATE + single multi-row INSERT, same technique corruptOneRow uses,
+// but here deliberately simulating physical/scan-order drift (the "row 2's
+// data lands before row 1's on a plain sequential scan" failure mode
+// documented on VerifyTable) rather than a genuine value corruption: the
+// DATA is unchanged, only the physical/insertion order differs from
+// SQLite's natural rowid order.
+func reinsertRowsReversed(t *testing.T, pgConn *pgx.Conn, table, rowForID2, rowForID1 string) {
+	t.Helper()
+	ctx := context.Background()
+	if _, err := pgConn.Exec(ctx, fmt.Sprintf(`TRUNCATE %s`, pgx.Identifier{table}.Sanitize())); err != nil {
+		t.Fatalf("truncating %s: %v", table, err)
+	}
+	stmt := fmt.Sprintf(`INSERT INTO %s (id, name, active, created_at, tags, data) VALUES %s, %s`,
+		pgx.Identifier{table}.Sanitize(), rowForID2, rowForID1)
+	if _, err := pgConn.Exec(ctx, stmt); err != nil {
+		t.Fatalf("reinserting reordered rows into %s: %v", table, err)
+	}
+}
+
+// TestVerifyTable_PrimaryKeyOrdering_SurvivesPhysicalReorderingOfIdenticalData
+// proves the fix for the scan-order-drift false positive: with a primary
+// key present, VerifyTable orders both sides by it, so a Postgres table
+// whose physical/insertion row order differs from SQLite's natural rowid
+// order (id 2 inserted before id 1, exactly the drift signature the tool's
+// own doc comment describes) still compares clean, because the comparison
+// no longer depends on scan order matching at all.
+func TestVerifyTable_PrimaryKeyOrdering_SurvivesPhysicalReorderingOfIdenticalData(t *testing.T) {
+	pgConn := connectVerifyTestPostgres(t)
+	tc := verifyFixtureConfig()
+	table := "verify_pk_reordered"
+	fixture := loadVerifyFixture(t, pgConn, table, tc, fixtureInsert(table))
+	defer fixture.Close()
+
+	reinsertRowsReversed(t, pgConn, table, correctRow2(), correctRow1())
+
+	result, err := VerifyTable(context.Background(), fixture, pgConn, table, tc)
+	if err != nil {
+		t.Fatalf("VerifyTable: %v", err)
+	}
+	if result.RowCountMismatch {
+		t.Fatalf("expected row counts to match, got source=%d target=%d", result.SourceRowCount, result.TargetRowCount)
+	}
+	if total := result.TotalMismatches(); total != 0 {
+		t.Errorf("expected 0 mismatches once ordered by primary key despite physical reordering, got %d: %+v", total, result.ColumnResults)
+	}
+	if !result.Passed() {
+		t.Error("expected Passed() true — the data is identical, only physical order differs")
+	}
+	if !result.Ordered {
+		t.Error("expected Ordered true when the table has a primary key")
+	}
+}
+
+// TestVerifyTable_PrimaryKeyOrdering_StillDetectsRealCorruption confirms
+// the primary-key ordering fix didn't weaken real corruption detection: a
+// genuinely wrong value must still be caught, deterministically, even when
+// the corrupted row is reinserted out of physical order.
+func TestVerifyTable_PrimaryKeyOrdering_StillDetectsRealCorruption(t *testing.T) {
+	pgConn := connectVerifyTestPostgres(t)
+	tc := verifyFixtureConfig()
+	table := "verify_pk_reordered_corrupt"
+	fixture := loadVerifyFixture(t, pgConn, table, tc, fixtureInsert(table))
+	defer fixture.Close()
+
+	corruptedRow1 := pgFixtureRow(1, "corrupted", true, 1700000000, []string{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10"}, "deadbeef")
+	reinsertRowsReversed(t, pgConn, table, correctRow2(), corruptedRow1)
+
+	result, err := VerifyTable(context.Background(), fixture, pgConn, table, tc)
+	if err != nil {
+		t.Fatalf("VerifyTable: %v", err)
+	}
+	assertSingleMismatch(t, result, "name")
+	if !result.Ordered {
+		t.Error("expected Ordered true when the table has a primary key")
+	}
+}
+
+// TestVerifyTable_NoPrimaryKey_AggregateComparisonSurvivesScanOrderDrift
+// proves the no-PK fallback: without a key to order by, VerifyTable must
+// compare column value multisets instead of trusting scan position, so a
+// Postgres table whose physical row order differs from SQLite's (but whose
+// DATA is identical) still compares clean.
+func TestVerifyTable_NoPrimaryKey_AggregateComparisonSurvivesScanOrderDrift(t *testing.T) {
+	pgConn := connectVerifyTestPostgres(t)
+	tc := verifyFixtureConfigNoPK()
+	table := "verify_nopk_reordered"
+	fixture := loadVerifyFixture(t, pgConn, table, tc, fixtureInsert(table))
+	defer fixture.Close()
+
+	reinsertRowsReversed(t, pgConn, table, correctRow2(), correctRow1())
+
+	result, err := VerifyTable(context.Background(), fixture, pgConn, table, tc)
+	if err != nil {
+		t.Fatalf("VerifyTable: %v", err)
+	}
+	if result.RowCountMismatch {
+		t.Fatalf("expected row counts to match, got source=%d target=%d", result.SourceRowCount, result.TargetRowCount)
+	}
+	if total := result.TotalMismatches(); total != 0 {
+		t.Errorf("expected 0 mismatches from the aggregate comparison despite physical reordering, got %d: %+v", total, result.ColumnResults)
+	}
+	if !result.Passed() {
+		t.Error("expected Passed() true — the data is identical, only physical order differs")
+	}
+	if result.Ordered {
+		t.Error("expected Ordered false for a table with no primary key")
+	}
+}
+
+// TestVerifyTable_NoPrimaryKey_AggregateComparisonStillDetectsRealCorruption
+// confirms the no-PK aggregate fallback still catches a genuinely wrong
+// value even though it can't say which source row it came from.
+func TestVerifyTable_NoPrimaryKey_AggregateComparisonStillDetectsRealCorruption(t *testing.T) {
+	pgConn := connectVerifyTestPostgres(t)
+	tc := verifyFixtureConfigNoPK()
+	table := "verify_nopk_corrupt"
+	fixture := loadVerifyFixture(t, pgConn, table, tc, fixtureInsert(table))
+	defer fixture.Close()
+
+	corruptedRow1 := pgFixtureRow(1, "corrupted", true, 1700000000, []string{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10"}, "deadbeef")
+	corruptOneRow(t, pgConn, table, corruptedRow1)
+
+	result, err := VerifyTable(context.Background(), fixture, pgConn, table, tc)
+	if err != nil {
+		t.Fatalf("VerifyTable: %v", err)
+	}
+	if result.RowCountMismatch {
+		t.Fatalf("expected row counts to match, got source=%d target=%d", result.SourceRowCount, result.TargetRowCount)
+	}
+	cr := result.ColumnResults["name"]
+	if cr == nil {
+		t.Fatalf("expected a mismatch recorded for column %q, got none (columns with mismatches: %v)", "name", result.ColumnResults)
+	}
+	// A single changed value can shift two positions in the sorted
+	// comparison (the corrupted value's old spot AND its new spot both
+	// stop lining up), so the aggregate path doesn't promise exactly 1
+	// mismatch the way the ordered path does — only that it caught
+	// something.
+	if cr.MismatchCount == 0 {
+		t.Errorf("expected at least 1 mismatch for name, got %d", cr.MismatchCount)
+	}
+	for other, otherResult := range result.ColumnResults {
+		if other != "name" && otherResult.MismatchCount != 0 {
+			t.Errorf("expected no mismatches in column %q, got %d", other, otherResult.MismatchCount)
+		}
+	}
+	if result.Passed() {
+		t.Error("expected Passed() false when a real value is corrupted")
+	}
+	if result.Ordered {
+		t.Error("expected Ordered false for a table with no primary key")
+	}
+}
+
 func assertSingleMismatch(t *testing.T, result TableVerifyResult, column string) {
 	t.Helper()
 	if result.RowCountMismatch {

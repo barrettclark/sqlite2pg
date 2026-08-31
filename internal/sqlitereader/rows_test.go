@@ -236,6 +236,56 @@ func TestStreamTable_YieldsEveryRowWithoutBufferingTheWholeTable(t *testing.T) {
 	}
 }
 
+func TestStreamTableOrdered_YieldsRowsInOrderByColumnOrder(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE bikes (bike_id INTEGER PRIMARY KEY, last_reported INTEGER);`)
+	// Insert deliberately out of key order, so a plain sequential scan
+	// (StreamTable) would very likely NOT come back sorted by bike_id,
+	// proving StreamTableOrdered's ORDER BY is doing real work.
+	inserts := []int{5, 1, 4, 2, 3}
+	for _, id := range inserts {
+		if _, err := db.Exec(`INSERT INTO bikes (bike_id, last_reported) VALUES (?, ?)`, id, 1620000000+id); err != nil {
+			t.Fatalf("insert: %v", err)
+		}
+	}
+
+	var seen []int64
+	err := StreamTableOrdered(db, "bikes", []string{"bike_id", "last_reported"}, []string{"bike_id"}, func(row []profiler.Value) error {
+		seen = append(seen, row[0].(int64))
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamTableOrdered: %v", err)
+	}
+	want := []int64{1, 2, 3, 4, 5}
+	if len(seen) != len(want) {
+		t.Fatalf("expected %d rows, got %d", len(want), len(seen))
+	}
+	for i := range want {
+		if seen[i] != want[i] {
+			t.Fatalf("expected rows in bike_id order %v, got %v", want, seen)
+		}
+	}
+}
+
+func TestStreamTableOrdered_HandlesColumnAndTableNamesWithEmbeddedDoubleQuote(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE "stats ""weird""" (id INTEGER PRIMARY KEY, "Total ""Disability"" Recipients" INTEGER);`)
+	if _, err := db.Exec(`INSERT INTO "stats ""weird""" (id, "Total ""Disability"" Recipients") VALUES (1, 42)`); err != nil {
+		t.Fatalf("insert: %v", err)
+	}
+
+	var got []profiler.Value
+	err := StreamTableOrdered(db, `stats "weird"`, []string{`Total "Disability" Recipients`}, []string{"id"}, func(row []profiler.Value) error {
+		got = append(got, row[0])
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamTableOrdered: %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("expected 1 row, got %d", len(got))
+	}
+}
+
 func TestSampleColumn_HandlesColumnAndTableNamesWithEmbeddedDoubleQuote(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE "stats ""weird""" (id INTEGER PRIMARY KEY, "Total ""Disability"" Recipients" INTEGER);`)
 	if _, err := db.Exec(`INSERT INTO "stats ""weird""" ("Total ""Disability"" Recipients") VALUES (42)`); err != nil {
