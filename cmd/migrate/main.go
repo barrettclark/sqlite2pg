@@ -571,7 +571,7 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		// run always provisions a brand-new database (connectForLoad),
 		// so this is a genuine no-op there.
 		if _, err := conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", pgx.Identifier{pgTable}.Sanitize())); err != nil {
-			return fmt.Errorf("dropping any partially-created %s before recreating it: %w", tableName, err)
+			return fmt.Errorf("dropping any partially-created %s (Postgres table %q) before recreating it: %w", tableName, pgTable, err)
 		}
 		stmt, err := ddl.GenerateCreateTable(pgTable, tc)
 		if err != nil {

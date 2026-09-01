@@ -125,6 +125,26 @@ func TestResume_RecoversFromAMidTableCOPYFailure(t *testing.T) {
 		t.Fatal("expected flaky to NOT be marked completed after a failed COPY")
 	}
 
+	// Assert the intended failure mode actually happened — CREATE TABLE
+	// succeeded and COPY failed/rolled back — rather than trusting a bare
+	// "the first attempt errored", which would pass just as well for an
+	// unrelated failure (e.g. no Postgres available) and turn this into a
+	// false positive that stops meaning anything over time (Copilot
+	// PR #99 finding).
+	verifyConn, err := pgx.ConnectConfig(ctx, connCfg)
+	if err != nil {
+		t.Fatalf("connecting to verify the first attempt's state: %v", err)
+	}
+	var existsAndEmptyRowCount int
+	if err := verifyConn.QueryRow(ctx, `SELECT COUNT(*) FROM "flaky"`).Scan(&existsAndEmptyRowCount); err != nil {
+		verifyConn.Close(ctx)
+		t.Fatalf("expected the \"flaky\" table to exist (CREATE TABLE should have succeeded) after the first failed attempt: %v", err)
+	}
+	verifyConn.Close(ctx)
+	if existsAndEmptyRowCount != 0 {
+		t.Fatalf("expected \"flaky\" to be empty after the first attempt (COPY should have rolled back), got %d row(s)", existsAndEmptyRowCount)
+	}
+
 	// Fix the bad row directly in the source, simulating a human
 	// correcting the data between load attempts.
 	if _, err := sourceDB.Exec(`UPDATE flaky SET n = '20' WHERE id = 2`); err != nil {
