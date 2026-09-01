@@ -89,4 +89,3 @@ func isFiniteNumeric(v any) bool {
 	}
 	return false
 }
-

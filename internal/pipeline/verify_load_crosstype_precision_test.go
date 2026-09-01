@@ -13,8 +13,8 @@ import (
 // int64 through float64 unconditionally (numericValue) and so reported a
 // false match.
 func TestValuesMatch_CrossTypeInt64BeyondFloat64Precision(t *testing.T) {
-	n := int64(9007199254740993)    // 2^53 + 1 — not representable in float64
-	f := float64(9007199254740992)  // 2^53 — what `double precision` would actually hold
+	n := int64(9007199254740993)   // 2^53 + 1 — not representable in float64
+	f := float64(9007199254740992) // 2^53 — what `double precision` would actually hold
 	if valuesMatch(n, f) {
 		t.Errorf("valuesMatch(int64(%d), float64(%v)) = true, want false — the int64 is not exactly this float64; the load lost precision", n, f)
 	}
