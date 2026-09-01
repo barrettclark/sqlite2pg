@@ -444,3 +444,162 @@ func TestOnTypeSelected_SelectingTextForAPlainStringColumnClearsTheTransform(t *
 		t.Errorf("expected Transform cleared for a type that needs no transform, got %q", col.Transform)
 	}
 }
+
+// TestCommonTransformForType_UnanimousAndMixed is issue #64's core: the
+// picker offers date/timestamptz when EVERY sample converts to it, but
+// different rows can legitimately need different transforms. A single
+// ColumnConfig.Transform can't express "iso8601 for some rows, yyyymmdd
+// for others", so onTypeSelected must only attach a transform when all
+// non-NULL samples resolve to the same one.
+func TestCommonTransformForType_UnanimousAndMixed(t *testing.T) {
+	cases := []struct {
+		name   string
+		values []string
+		typ    string
+		want   string
+		wantOK bool
+	}{
+		{"all ISO dates", []string{"2021-06-01", "2022-01-15"}, "date", "iso8601_to_date", true},
+		{"all yyyymmdd", []string{"20210601", "20220115"}, "date", "yyyymmdd_to_date", true},
+		{"mixed ISO + yyyymmdd", []string{"2021-06-01", "20210704", "2022-01-15"}, "date", "", false},
+		{"mixed epoch + excel serial", []string{"1712345678", "40000"}, "timestamptz", "", false},
+		{"one sample invalid for the type", []string{"2021-06-01", "not-a-date"}, "date", "", false},
+		{"NULLs ignored, rest unanimous", []string{"NULL", "2021-06-01", "", "2022-01-15"}, "date", "iso8601_to_date", true},
+		{"all NULL", []string{"NULL", ""}, "date", "", true},
+		{"plain text needs no transform", []string{"a", "b"}, "text", "", true},
+		{"uuid always uuid_format", []string{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "11111111-1111-1111-1111-111111111111"}, "uuid", "uuid_format", true},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got, ok := commonTransformForType(c.values, c.typ)
+			if got != c.want || ok != c.wantOK {
+				t.Errorf("commonTransformForType(%v, %q) = (%q, %v), want (%q, %v)", c.values, c.typ, got, ok, c.want, c.wantOK)
+			}
+		})
+	}
+}
+
+// TestOnTypeSelected_RefusesADateTypeWhenSamplesNeedDifferentTransforms is
+// the end-to-end #64 case: a text column mixing ISO and compact date
+// spellings offers "date" (every row converts), but the old code stored
+// the first row's transform (iso8601_to_date) and the real COPY then
+// failed on every 20210704-style row. onTypeSelected must refuse the pick
+// rather than persist a config guaranteed to break the load.
+func TestOnTypeSelected_RefusesADateTypeWhenSamplesNeedDifferentTransforms(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
+		Tables: map[string]config.TableConfig{
+			"t": {
+				ColumnOrder: []string{"d"},
+				Columns: map[string]config.ColumnConfig{
+					"d": {TargetType: "text", Confidence: 0.6, Source: "heuristic:default_passthrough"},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	st, err := review.NewState(path, 0.9)
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+
+	summary := review.ReviewSummary{Tables: []review.TableView{
+		{
+			Name: "t",
+			Columns: []review.ColumnView{
+				{Column: "d", DeclaredType: "TEXT", TargetType: "text", Confidence: 0.6, Source: "heuristic:default_passthrough"},
+			},
+			Rows: [][]string{{"2021-06-01"}, {"20210704"}, {"2022-01-15"}},
+		},
+	}}
+
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: summary}
+	m.status = tview.NewTextView()
+	m.buildTableList()
+	m.pages.AddPage("tablelist", m.tableList, true, true)
+	m.onTableSelected(0, "t", "", 0)
+	m.openTypePicker("d")
+
+	idx := pickerIndexOf(m, "date")
+	if idx == -1 {
+		t.Fatal("expected \"date\" to be offered (every sample converts to a date, just via different transforms)")
+	}
+	m.onTypeSelected(idx, "date", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["t"].Columns["d"]
+	if col.TargetType != "text" {
+		t.Errorf("expected the mixed-format date pick to be refused, leaving TargetType text, got %q (transform %q)", col.TargetType, col.Transform)
+	}
+}
+
+// TestOnTypeSelected_AttachesTheSharedTransformWhenEverySampleAgrees is the
+// positive counterpart: an all-ISO-date column still gets iso8601_to_date.
+func TestOnTypeSelected_AttachesTheSharedTransformWhenEverySampleAgrees(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
+		Tables: map[string]config.TableConfig{
+			"t": {
+				ColumnOrder: []string{"d"},
+				Columns: map[string]config.ColumnConfig{
+					"d": {TargetType: "text", Confidence: 0.6, Source: "heuristic:default_passthrough"},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	st, err := review.NewState(path, 0.9)
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+
+	summary := review.ReviewSummary{Tables: []review.TableView{
+		{
+			Name: "t",
+			Columns: []review.ColumnView{
+				{Column: "d", DeclaredType: "TEXT", TargetType: "text", Confidence: 0.6, Source: "heuristic:default_passthrough"},
+			},
+			Rows: [][]string{{"2021-06-01"}, {"2022-01-15"}, {"2023-12-31"}},
+		},
+	}}
+
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: summary}
+	m.status = tview.NewTextView()
+	m.buildTableList()
+	m.pages.AddPage("tablelist", m.tableList, true, true)
+	m.onTableSelected(0, "t", "", 0)
+	m.openTypePicker("d")
+
+	idx := pickerIndexOf(m, "date")
+	if idx == -1 {
+		t.Fatal("expected \"date\" to be offered for an all-ISO-date column")
+	}
+	m.onTypeSelected(idx, "date", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["t"].Columns["d"]
+	if col.TargetType != "date" || col.Transform != "iso8601_to_date" {
+		t.Errorf("expected date + iso8601_to_date, got %q + %q", col.TargetType, col.Transform)
+	}
+}
+
+func pickerIndexOf(m *model, typeName string) int {
+	for i := 0; i < m.picker.GetItemCount(); i++ {
+		if text, _ := m.picker.GetItemText(i); text == typeName {
+			return i
+		}
+	}
+	return -1
+}
