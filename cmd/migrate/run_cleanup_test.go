@@ -4,7 +4,6 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -110,63 +109,54 @@ func TestCleanupConfigAfterLoad_SuccessDeletesConfigUnlessKeepConfig(t *testing.
 	})
 }
 
-// TestRunFinish_BothVerifyAndCleanupErrorsArePreserved is the regression
-// test for the Copilot PR #59 finding that a genuine post-load
-// verification failure (real data-integrity finding — by far the more
-// important thing to know about) could be silently replaced by a
-// subsequent cleanup error, e.g. a filesystem permission error removing
-// the generated config. runRunFinish (the tail of runRun, extracted here
-// for direct testing) must preserve BOTH errors when both occur, via
-// errors.Join, rather than letting the cleanup error overwrite the
-// verification error.
-//
-// The cleanup failure is forced for real here, the same way the rest of
-// this file forces cleanup scenarios: configPath is made a non-empty
-// directory rather than a plain file, so os.Remove(configPath) inside
-// cleanupConfigAfterLoad genuinely fails ("directory not empty"), instead
-// of mocking the failure.
-func TestRunFinish_BothVerifyAndCleanupErrorsArePreserved(t *testing.T) {
-	dir := t.TempDir()
-	configPath := filepath.Join(dir, "source.db.migration.yaml")
-	if err := os.Mkdir(configPath, 0o755); err != nil {
-		t.Fatalf("making configPath a directory: %v", err)
+// TestRunFinish_VerificationFailureKeepsConfigAndStateFile covers issue
+// #62: a post-load verification failure means the load succeeded but the
+// data in Postgres doesn't match the source — a real data-integrity
+// finding. The user needs the generated config (to see which type
+// decisions produced the bad data) and the .state.json (to re-run
+// `migrate verify` for the full report, and to know which timestamped
+// database the data landed in). runRunFinish must NOT run cleanup when
+// verification failed; both files survive and the verify error is
+// returned unchanged.
+func TestRunFinish_VerificationFailureKeepsConfigAndStateFile(t *testing.T) {
+	configPath := filepath.Join(t.TempDir(), "source.db.migration.yaml")
+	if err := os.WriteFile(configPath, []byte("tables: {}\n"), 0o644); err != nil {
+		t.Fatalf("writing fixture config: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(configPath, "child"), []byte("x"), 0o644); err != nil {
-		t.Fatalf("writing a file inside configPath so os.Remove fails: %v", err)
+	statePath := configPath + ".state.json"
+	if err := os.WriteFile(statePath, []byte(`{"database":"source_20260101_000000","completed":["widgets"]}`), 0o644); err != nil {
+		t.Fatalf("writing fixture state file: %v", err)
 	}
 
 	verifyErr := errors.New("post-load verification FAILED: 1 table(s) with row-count mismatches, 3 value mismatch(es) across 2 table(s) checked")
 
 	got := runRunFinish(verifyErr, configPath, false)
-	if got == nil {
-		t.Fatal("expected a non-nil combined error when both verification and cleanup fail")
-	}
+
 	if !errors.Is(got, verifyErr) {
-		t.Errorf("expected errors.Is to find the original verification error in the joined result, got %v", got)
+		t.Errorf("expected the verify error to be returned unchanged, got %v", got)
 	}
-	if !strings.Contains(got.Error(), "row-count mismatches") {
-		t.Errorf("expected the verification failure text to survive in the combined error, got %q", got.Error())
+	if _, err := os.Stat(configPath); err != nil {
+		t.Errorf("expected the config to be kept after a verification failure, stat failed: %v", err)
 	}
-	if !strings.Contains(got.Error(), "removing generated config") {
-		t.Errorf("expected the cleanup failure text to also be present in the combined error, got %q", got.Error())
+	if _, err := os.Stat(statePath); err != nil {
+		t.Errorf("expected the state file to be kept after a verification failure, stat failed: %v", err)
 	}
 }
 
-// TestRunFinish_VerifyErrorAloneIsReturnedUnchanged confirms the common
-// case (verification fails, cleanup succeeds) is unaffected by the join.
-func TestRunFinish_VerifyErrorAloneIsReturnedUnchanged(t *testing.T) {
+// TestRunFinish_SuccessStillDeletesConfig confirms the fix is scoped to
+// the failure case: a passing verification leaves cleanup behaving exactly
+// as before (delete the generated config unless --keep-config).
+func TestRunFinish_SuccessStillDeletesConfig(t *testing.T) {
 	configPath := filepath.Join(t.TempDir(), "source.db.migration.yaml")
 	if err := os.WriteFile(configPath, []byte("tables: {}\n"), 0o644); err != nil {
 		t.Fatalf("writing fixture config: %v", err)
 	}
-	verifyErr := errors.New("post-load verification FAILED: 1 table(s) with row-count mismatches")
 
-	got := runRunFinish(verifyErr, configPath, false)
-	if !errors.Is(got, verifyErr) {
-		t.Errorf("expected the verify error to be present, got %v", got)
+	if got := runRunFinish(nil, configPath, false); got != nil {
+		t.Errorf("expected nil on the fully-successful path, got %v", got)
 	}
 	if _, err := os.Stat(configPath); !os.IsNotExist(err) {
-		t.Errorf("expected the config to still be removed when cleanup itself succeeds")
+		t.Errorf("expected the config to be removed on the success path")
 	}
 }
 
