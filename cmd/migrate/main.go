@@ -581,37 +581,47 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		// strictly worse than the original bug, an error instead of data
 		// loss (Copilot PR #99 finding). Reconcile the state file with
 		// what Postgres actually has instead: treat it as already done.
-		qualifiedPgTable := pgx.Identifier{pgTable}.Sanitize()
-		var alreadyExists bool
-		if err := conn.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", qualifiedPgTable).Scan(&alreadyExists); err != nil {
-			return fmt.Errorf("checking whether %s (Postgres table %q) already exists: %w", tableName, pgTable, err)
-		}
-		if alreadyExists {
-			// EXISTS(... LIMIT 1), not COUNT(*): the empty-vs-nonempty
-			// distinction is all this needs, and COUNT(*) forces a full
-			// sequential scan that would make --resume unexpectedly slow
-			// on a large already-loaded table (Copilot PR #99 finding).
-			var hasRows bool
-			if err := conn.QueryRow(ctx, fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s LIMIT 1)", qualifiedPgTable)).Scan(&hasRows); err != nil {
-				return fmt.Errorf("checking whether existing %s (Postgres table %q) has any rows: %w", tableName, pgTable, err)
+		//
+		// Gated on resume: a fresh (non-resume) run always provisions a
+		// brand-new, empty database (connectForLoad), so this catalog
+		// probe would always resolve to "doesn't exist" there anyway —
+		// gating it avoids the extra round-trip per table on every
+		// ordinary load and keeps a non-resume run's behavior exactly
+		// what it was before this fix (Copilot PR #99 finding).
+		if resume {
+			qualifiedPgTable := pgx.Identifier{pgTable}.Sanitize()
+			var alreadyExists bool
+			if err := conn.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", qualifiedPgTable).Scan(&alreadyExists); err != nil {
+				return fmt.Errorf("checking whether %s (Postgres table %q) already exists: %w", tableName, pgTable, err)
 			}
-			if hasRows {
-				if err := markTableCompleted(statePath, tableName); err != nil {
-					return err
+			if alreadyExists {
+				// EXISTS(... LIMIT 1), not COUNT(*): the empty-vs-nonempty
+				// distinction is all this needs, and COUNT(*) forces a
+				// full sequential scan that would make --resume
+				// unexpectedly slow on a large already-loaded table
+				// (Copilot PR #99 finding).
+				var hasRows bool
+				if err := conn.QueryRow(ctx, fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s LIMIT 1)", qualifiedPgTable)).Scan(&hasRows); err != nil {
+					return fmt.Errorf("checking whether existing %s (Postgres table %q) has any rows: %w", tableName, pgTable, err)
 				}
-				// The already-known SQLite source count, not another
-				// live Postgres query: besides avoiding yet another
-				// table scan, it keeps progress.done consistent with
-				// progress.total (built from these same source counts)
-				// by construction — a live Postgres count could exceed
-				// the source count (e.g. rows added outside this tool)
-				// and push the bar over 100% on later tables (Copilot
-				// PR #99 finding).
-				progress.skipAlreadyLoadedTable(tableName, sourceRowCounts[tableName])
-				continue
-			}
-			if _, err := conn.Exec(ctx, "DROP TABLE "+qualifiedPgTable); err != nil {
-				return fmt.Errorf("dropping empty partially-created %s (Postgres table %q) before recreating it: %w", tableName, pgTable, err)
+				if hasRows {
+					if err := markTableCompleted(statePath, tableName); err != nil {
+						return err
+					}
+					// The already-known SQLite source count, not another
+					// live Postgres query: besides avoiding yet another
+					// table scan, it keeps progress.done consistent with
+					// progress.total (built from these same source counts)
+					// by construction — a live Postgres count could exceed
+					// the source count (e.g. rows added outside this tool)
+					// and push the bar over 100% on later tables (Copilot
+					// PR #99 finding).
+					progress.skipAlreadyLoadedTable(tableName, sourceRowCounts[tableName])
+					continue
+				}
+				if _, err := conn.Exec(ctx, "DROP TABLE "+qualifiedPgTable); err != nil {
+					return fmt.Errorf("dropping empty partially-created %s (Postgres table %q) before recreating it: %w", tableName, pgTable, err)
+				}
 			}
 		}
 		stmt, err := ddl.GenerateCreateTable(pgTable, tc)
