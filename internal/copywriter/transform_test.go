@@ -721,3 +721,73 @@ func TestTransform_NullifSentinels_RejectsGenuinelyUnparseableValues(t *testing.
 		t.Error("expected an error for a value that's neither a sentinel token nor numeric")
 	}
 }
+
+// TestTransform_TextToJsonb_ValidatesBlobInput is issue #86's (audit
+// finding M7) regression: GeoJSON.Evaluate skips non-string samples with
+// continue rather than disqualifying the column, so a mostly-GeoJSON-text
+// column can have a rare BLOB row (SQLite's dynamic typing permits it).
+// The transform must validate a []byte input as JSON, not pass it through
+// unchecked — the exact "can never fail" gap issue #22 fixed for the
+// string case.
+func TestTransform_TextToJsonb_ValidatesBlobInput(t *testing.T) {
+	got, err := Transform("text_to_jsonb", []byte(`{"type":"Point","coordinates":[1,2]}`))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if _, ok := got.([]byte); !ok {
+		t.Fatalf("expected []byte passed through, got %T", got)
+	}
+
+	if _, err := Transform("text_to_jsonb", []byte("not json")); err == nil {
+		t.Error("expected an error for a non-JSON []byte value")
+	}
+}
+
+// TestTransform_StripCommas_HandlesAlreadyNumericInput is issue #86's
+// (audit finding M7) regression: CommaNumber.Evaluate skips non-string
+// samples with continue, so a column can be mostly int64/float64-storage
+// values with only a rare comma-formatted string row. An already-numeric
+// raw value must convert correctly instead of passing through unexamined
+// into an int4 column.
+func TestTransform_StripCommas_HandlesAlreadyNumericInput(t *testing.T) {
+	got, err := Transform("strip_commas", int64(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != int64(42) {
+		t.Errorf("expected 42, got %v", got)
+	}
+
+	got, err = Transform("strip_commas", float64(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != int64(42) {
+		t.Errorf("expected whole-number float64 to convert to int64(42), got %v (%T)", got, got)
+	}
+
+	if _, err := Transform("strip_commas", float64(42.5)); err == nil {
+		t.Error("expected an error for a fractional float64 into an integer-targeted transform")
+	}
+}
+
+// TestTransform_StripCommasFloat_HandlesAlreadyNumericInput mirrors
+// TestTransform_StripCommas_HandlesAlreadyNumericInput for the
+// double-precision-targeted variant.
+func TestTransform_StripCommasFloat_HandlesAlreadyNumericInput(t *testing.T) {
+	got, err := Transform("strip_commas_float", int64(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != float64(42) {
+		t.Errorf("expected 42.0, got %v", got)
+	}
+
+	got, err = Transform("strip_commas_float", float64(42.5))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != float64(42.5) {
+		t.Errorf("expected 42.5, got %v", got)
+	}
+}

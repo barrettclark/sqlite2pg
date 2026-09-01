@@ -48,26 +48,53 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return raw, nil
 
 	case "strip_commas":
-		s, ok := raw.(string)
-		if !ok {
-			return raw, nil
+		// CommaNumber.Evaluate (the paired heuristic) skips non-string
+		// samples with `continue` rather than disqualifying the column,
+		// so a column can be mostly int64/float64-storage REAL/INTEGER
+		// values with only a rare comma-formatted string row — a
+		// raw.(string)-only check used to hand a raw float64 straight to
+		// an int4 target column unconverted (`return raw, nil`), which
+		// full-table verification's fitsTargetType range check has no
+		// float64 case for, so the gap was never caught before COPY
+		// (issue #86's audit, finding M7). An already-numeric raw value
+		// needs no comma-stripping; convert it directly instead of
+		// passing it through unexamined.
+		switch v := raw.(type) {
+		case string:
+			n, err := strconv.ParseInt(strings.ReplaceAll(v, ",", ""), 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("strip_commas: %q: %w", v, err)
+			}
+			return n, nil
+		case int64:
+			return v, nil
+		case float64:
+			if v != math.Trunc(v) {
+				return nil, fmt.Errorf("strip_commas: %v is not a whole number", v)
+			}
+			return int64(v), nil
+		default:
+			return nil, fmt.Errorf("strip_commas: unexpected type %T", raw)
 		}
-		n, err := strconv.ParseInt(strings.ReplaceAll(s, ",", ""), 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("strip_commas: %q: %w", s, err)
-		}
-		return n, nil
 
 	case "strip_commas_float":
-		s, ok := raw.(string)
-		if !ok {
-			return raw, nil
+		// Same reasoning as strip_commas above: an already-numeric raw
+		// value (int64 or float64) needs no comma-stripping and fits a
+		// double precision target directly.
+		switch v := raw.(type) {
+		case string:
+			f, err := strconv.ParseFloat(strings.ReplaceAll(v, ",", ""), 64)
+			if err != nil {
+				return nil, fmt.Errorf("strip_commas_float: %q: %w", v, err)
+			}
+			return f, nil
+		case int64:
+			return float64(v), nil
+		case float64:
+			return v, nil
+		default:
+			return nil, fmt.Errorf("strip_commas_float: unexpected type %T", raw)
 		}
-		f, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", ""), 64)
-		if err != nil {
-			return nil, fmt.Errorf("strip_commas_float: %q: %w", s, err)
-		}
-		return f, nil
 
 	case "unix_epoch_seconds":
 		sec, ok := toInt64(raw)
@@ -179,10 +206,6 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return n != 0, nil
 
 	case "text_to_jsonb":
-		s, ok := raw.(string)
-		if !ok {
-			return raw, nil
-		}
 		// Issue #22: this used to be a bare `return raw, nil` that could
 		// never fail, which made full-table verification (issue #13) a
 		// silent no-op for geojson_text columns — a rare non-JSON value
@@ -191,8 +214,26 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// "invalid input syntax for type json". Validating the JSON here
 		// keeps the "verify by running the real transform" model intact
 		// instead of duplicating this check in the verifier.
-		if !json.Valid([]byte(s)) {
-			return nil, fmt.Errorf("text_to_jsonb: %q is not valid JSON", s)
+		//
+		// GeoJSON.Evaluate (the paired heuristic) skips non-string samples
+		// with `continue` rather than disqualifying the column, so a
+		// column can be mostly GeoJSON text with a rare BLOB row (SQLite's
+		// dynamic typing permits it — the same shape issue #83 found). A
+		// raw.(string)-only check reintroduced the exact "can never fail"
+		// gap this transform was fixed for issue #22 to avoid, just for
+		// []byte instead of string (issue #86's audit, finding M7):
+		// json.Valid accepts a []byte directly, same rules either way.
+		var b []byte
+		switch v := raw.(type) {
+		case string:
+			b = []byte(v)
+		case []byte:
+			b = v
+		default:
+			return nil, fmt.Errorf("text_to_jsonb: unexpected type %T", raw)
+		}
+		if !json.Valid(b) {
+			return nil, fmt.Errorf("text_to_jsonb: %q is not valid JSON", b)
 		}
 		return raw, nil
 
