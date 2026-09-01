@@ -130,7 +130,83 @@ func TestDetermineVerify_NonTerminalFileSkipsPromptWithoutBlocking(t *testing.T)
 	}
 }
 
+// TestDetermineVerify_NonTerminalPipeHonoursAScriptedAnswer covers issue
+// #66: `echo y | migrate load config.yaml` leaves stdin connected to a
+// pipe (an *os.File, not a terminal), and the CI-hang guard skipped the
+// prompt without reading a byte — silently discarding the user's explicit
+// "y" and never verifying. determineVerify must do a short-deadline read
+// first: a scripted answer waiting in the pipe is honoured, only a
+// genuinely silent pipe falls back to "no".
+func TestDetermineVerify_NonTerminalPipeHonoursAScriptedAnswer(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	if _, err := w.WriteString("y\n"); err != nil {
+		t.Fatalf("writing scripted answer: %v", err)
+	}
+	w.Close()
+
+	done := make(chan bool, 1)
+	go func() { done <- determineVerify(verifyPrompt, r, &strings.Builder{}) }()
+
+	select {
+	case got := <-done:
+		if !got {
+			t.Error("determineVerify discarded a scripted \"y\" piped on stdin; want true")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("determineVerify blocked instead of reading the scripted answer")
+	}
+}
+
+// TestDetermineVerify_NonTerminalPipeSaysWhyItSkipped confirms the silent
+// skip is no longer silent: when a non-terminal stdin carries no answer,
+// determineVerify still returns false but tells the user how to force it.
+func TestDetermineVerify_NonTerminalPipeSaysWhyItSkipped(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close() // left open + unwritten: the CI-hang shape
+
+	var out strings.Builder
+	done := make(chan bool, 1)
+	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+
+	select {
+	case got := <-done:
+		if got {
+			t.Error("expected determineVerify to default to false for a silent non-terminal pipe")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("determineVerify blocked on a silent non-terminal pipe (CI hang risk)")
+	}
+	if !strings.Contains(out.String(), "--verify") {
+		t.Errorf("expected the skip message to mention --verify, got %q", out.String())
+	}
+}
+
 // --- flag wiring at the `run`/`load` CLI level --------------------------
+
+// TestRun_LoadDryRunWithVerifyIsUsageError covers the second half of issue
+// #66: `migrate load --dry-run --verify` parses --verify and then returns
+// from the --dry-run branch without ever using it. That combination is
+// nonsensical (dry-run never loads, so there is nothing to verify) and
+// should be a clear usage error rather than a silently ignored flag.
+func TestRun_LoadDryRunWithVerifyIsUsageError(t *testing.T) {
+	for _, flag := range []string{"--verify", "--noverify"} {
+		err := run([]string{"load", "--dry-run", flag, "config.migration.yaml"})
+		if err == nil {
+			t.Fatalf("%s: expected an error for --dry-run with %s", flag, flag)
+		}
+		if !strings.Contains(err.Error(), "--dry-run") || !strings.Contains(err.Error(), flag) {
+			t.Errorf("%s: expected the error to name both --dry-run and %s, got %q", flag, flag, err.Error())
+		}
+	}
+}
 
 func TestRun_RunVerifyAndNoverifyTogetherIsUsageError(t *testing.T) {
 	err := run([]string{"run", "--pg", "postgres://localhost/x", "--verify", "--noverify", "source.db"})

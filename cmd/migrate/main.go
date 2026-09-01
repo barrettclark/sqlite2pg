@@ -357,6 +357,12 @@ func runLoad(args []string) error {
 	if err != nil {
 		return err
 	}
+	if *dryRun && (*verifyFlag || *noverifyFlag) {
+		// --dry-run never loads anything, so there is nothing for
+		// --verify/--noverify to act on; silently ignoring the flag (as
+		// this used to) hides the mistake (issue #66).
+		return errors.New("--dry-run cannot be combined with --verify or --noverify (a dry run never loads data, so there is nothing to verify)")
+	}
 	if fs.NArg() != 1 {
 		return errors.New("usage: migrate load [--pg url] [--dry-run] [--force] [--resume] [--threshold F] [--verify|--noverify] <config.migration.yaml>")
 	}
