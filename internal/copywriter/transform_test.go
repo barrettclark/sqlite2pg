@@ -1026,3 +1026,19 @@ func TestTransform_ExcelSerialToTimestamptz_NaNAndInfDoNotOverflow(t *testing.T)
 		}
 	}
 }
+
+// TestTransform_JulianDayToDate_RejectsNaNAndOutOfRangeValues is a
+// proactive fix for the same defect class Copilot's PR #98 review
+// repeatedly found elsewhere in this file: julian_day_to_date's
+// int64(math.Floor(f + 0.5)) had no NaN/±Inf/out-of-range guard.
+func TestTransform_JulianDayToDate_RejectsNaNAndOutOfRangeValues(t *testing.T) {
+	if _, err := Transform("julian_day_to_date", math.NaN()); err == nil {
+		t.Error("expected an error for NaN")
+	}
+	if _, err := Transform("julian_day_to_date", math.Inf(1)); err == nil {
+		t.Error("expected an error for +Inf")
+	}
+	if _, err := Transform("julian_day_to_date", 1e300); err == nil {
+		t.Error("expected an error for a value wildly outside int64's range")
+	}
+}

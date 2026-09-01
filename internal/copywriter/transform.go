@@ -292,7 +292,15 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// the range belongs to the FOLLOWING day's JDN; math.Floor(f + 0.5)
 		// is the standard JD-to-JDN conversion that accounts for that,
 		// where int64(f) truncation always floored to the earlier day.
-		return julianDayToDate(int64(math.Floor(f + 0.5))), nil
+		jd := math.Floor(f + 0.5)
+		// Same NaN/±Inf/out-of-range guard as the epoch transforms above
+		// (issue #90's audit; Copilot PR #98 round-4 pattern) — int64(jd)
+		// for a value outside this range is implementation-dependent per
+		// the Go spec, not an error.
+		if math.IsNaN(jd) || jd < -9223372036854775808.0 || jd >= 9223372036854775808.0 {
+			return nil, fmt.Errorf("julian_day_to_date: %v is out of range", f)
+		}
+		return julianDayToDate(int64(jd)), nil
 
 	case "yyyymmdd_to_date":
 		s, ok := toYYYYMMDDString(raw)
