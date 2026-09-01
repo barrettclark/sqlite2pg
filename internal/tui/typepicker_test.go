@@ -463,6 +463,7 @@ func TestCommonTransformForType_UnanimousAndMixed(t *testing.T) {
 		{"all yyyymmdd", []string{"20210601", "20220115"}, "date", "yyyymmdd_to_date", true},
 		{"mixed ISO + yyyymmdd", []string{"2021-06-01", "20210704", "2022-01-15"}, "date", "", false},
 		{"mixed epoch + excel serial", []string{"1712345678", "40000"}, "timestamptz", "", false},
+		{"one sample invalid for the type", []string{"2021-06-01", "not-a-date"}, "date", "", false},
 		{"NULLs ignored, rest unanimous", []string{"NULL", "2021-06-01", "", "2022-01-15"}, "date", "iso8601_to_date", true},
 		{"all NULL", []string{"NULL", ""}, "date", "", true},
 		{"plain text needs no transform", []string{"a", "b"}, "text", "", true},

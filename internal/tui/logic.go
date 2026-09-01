@@ -295,13 +295,14 @@ func firstNonNullValue(values []string) string {
 // one sample (the old firstNonNullValue behaviour) attached a transform
 // that then failed the real COPY on every row of the other format.
 //
-// ok is false when the non-NULL samples disagree — the caller should
-// refuse the type rather than persist a config guaranteed to break the
-// load. When ok is true, transform is the shared one (or "" when no
-// non-NULL sample needs a transform, e.g. text, or the column is all
+// ok is false when the non-NULL samples disagree on a transform, OR when
+// any non-NULL sample doesn't validate for typeName at all — either way
+// the caller should refuse the type rather than persist a config that can
+// break the load. When ok is true, transform is the shared one (or "" when
+// no non-NULL sample needs a transform, e.g. text, or the column is all
 // NULL). Non-date types are unaffected: previewValueForType returns a
-// fixed transform per type ("" for text/integer, uuid_format for uuid),
-// so those always agree.
+// fixed transform per type ("" for text/integer, uuid_format for uuid), so
+// those always agree.
 func commonTransformForType(values []string, typeName string) (transform string, ok bool) {
 	seen := false
 	for _, v := range values {
@@ -310,10 +311,7 @@ func commonTransformForType(values []string, typeName string) (transform string,
 		}
 		_, t, valid := previewValueForType(v, typeName)
 		if !valid {
-			// The picker only offers a type when every sample validates;
-			// if one doesn't here, skip it rather than block on a state
-			// that shouldn't arise.
-			continue
+			return "", false
 		}
 		if !seen {
 			transform, seen = t, true
