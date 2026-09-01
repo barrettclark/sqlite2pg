@@ -557,15 +557,37 @@ func excelSerialToTime(serial float64) time.Time {
 // same integer-JDN-to-date conversion Postgres's own date_in() Julian date
 // parsing is equivalent to. jdn is treated as noon-based per convention.
 func julianDayToDate(jdn int64) time.Time {
+	// Fliegel & Van Flandern's algorithm requires floor division
+	// throughout; Go's / truncates toward zero, which only agrees with
+	// floor division when both operands are non-negative or the division
+	// is exact. p = jdn+68569 goes negative for any jdn < -68569 — a
+	// negative-but-plausible date (year < -4900ish), not merely a
+	// theoretical edge case — and Go's truncating / then produces a wildly
+	// wrong result (confirmed against an independent day-count-to-
+	// civil-date algorithm: jdn=-70000 truncated to year -4903, month -7,
+	// day -30; floor division correctly gives -4904-03-30). floorDiv
+	// throughout keeps every intermediate exact for the full int64 range
+	// (issue #89's audit, finding L3).
 	p := jdn + 68569
-	q := 4 * p / 146097
-	r := p - (146097*q+3)/4
-	s := 4000 * (r + 1) / 1461001
-	r = r - 1461*s/4 + 31
-	tt := 80 * r / 2447
-	day := r - 2447*tt/80
-	u := tt / 11
+	q := floorDiv(4*p, 146097)
+	r := p - floorDiv(146097*q+3, 4)
+	s := floorDiv(4000*(r+1), 1461001)
+	r = r - floorDiv(1461*s, 4) + 31
+	tt := floorDiv(80*r, 2447)
+	day := r - floorDiv(2447*tt, 80)
+	u := floorDiv(tt, 11)
 	month := tt + 2 - 12*u
 	year := 100*(q-49) + s + u
 	return time.Date(int(year), time.Month(month), int(day), 0, 0, 0, 0, time.UTC)
+}
+
+// floorDiv returns floor(a/b) for b > 0 — unlike Go's built-in /, which
+// truncates toward zero and so disagrees with floor division whenever a is
+// negative and the division isn't exact.
+func floorDiv(a, b int64) int64 {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
 }

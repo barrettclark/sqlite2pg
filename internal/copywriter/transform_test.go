@@ -791,3 +791,36 @@ func TestTransform_StripCommasFloat_HandlesAlreadyNumericInput(t *testing.T) {
 		t.Errorf("expected 42.5, got %v", got)
 	}
 }
+
+// TestTransform_JulianDayToDate_NegativeJDNUsesFloorDivision is issue #89's
+// (audit finding L3) regression: Fliegel & Van Flandern's algorithm
+// requires floor division; Go's / truncates toward zero, which disagrees
+// for jdn < -68569. Expected values cross-checked against an independent
+// day-count-to-civil-date algorithm (Howard Hinnant's civil_from_days),
+// not against the buggy code itself.
+func TestTransform_JulianDayToDate_NegativeJDNUsesFloorDivision(t *testing.T) {
+	cases := []struct {
+		jdn                    int64
+		year, month, day int
+	}{
+		{-70000, -4904, 3, 30},
+		{-68570, -4900, 2, 28},
+		{-100000, -4986, 2, 9},
+	}
+	for _, c := range cases {
+		// julian_day_to_date's transform input is JD (noon-based, so a
+		// .5 fraction lands on the JDN's own calendar day); pass the
+		// JDN directly as a whole float64.
+		got, err := Transform("julian_day_to_date", float64(c.jdn))
+		if err != nil {
+			t.Fatalf("Transform(jdn=%d): %v", c.jdn, err)
+		}
+		tm, ok := got.(time.Time)
+		if !ok {
+			t.Fatalf("expected time.Time, got %T", got)
+		}
+		if tm.Year() != c.year || int(tm.Month()) != c.month || tm.Day() != c.day {
+			t.Errorf("jdn=%d: expected %04d-%02d-%02d, got %v", c.jdn, c.year, c.month, c.day, tm)
+		}
+	}
+}
