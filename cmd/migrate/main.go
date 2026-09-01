@@ -82,7 +82,7 @@ func runRun(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: migrate run --pg url [--sample-size N] [--threshold F] [--verify|--noverify] <source.db>")
+		return errors.New("usage: migrate run --pg url [--sample-size N] [--threshold F] [--keep-config] [--verify|--noverify] <source.db>")
 	}
 	if *pgURL == "" {
 		return errors.New("--pg is required (use `migrate profile` + `migrate review` separately if you don't have a target yet)")
@@ -155,10 +155,22 @@ func runRun(args []string) error {
 	// verification failure is reported but does not change what cleanup
 	// does.
 	verifyErr := runPostLoadVerify(context.Background(), cfg, connCfg, verifyMode, os.Stdin, os.Stdout)
-	if err := cleanupConfigAfterLoad(nil, configPath, *keepConfig); err != nil {
-		return err
-	}
-	return verifyErr
+	return runRunFinish(verifyErr, configPath, *keepConfig)
+}
+
+// runRunFinish is the tail of runRun's success path, extracted so it can be
+// exercised directly by tests that need to force a genuine cleanup failure
+// (e.g. an unremovable config path) alongside a genuine verification
+// failure. A post-load verification mismatch is a real data-integrity
+// finding — the load already succeeded and the bad/mismatched data is
+// already sitting in Postgres — so it must never be silently replaced by a
+// subsequent, usually far less important, cleanup error (e.g. "permission
+// denied" removing the generated config). errors.Join combines both when
+// both occur; when only one occurs (the common case) it is returned
+// unchanged, and when neither occurs the result is nil.
+func runRunFinish(verifyErr error, configPath string, keepConfig bool) error {
+	cleanupErr := cleanupConfigAfterLoad(nil, configPath, keepConfig)
+	return errors.Join(verifyErr, cleanupErr)
 }
 
 // cleanupConfigAfterLoad decides what becomes of a `run`-generated config
@@ -336,7 +348,7 @@ func runLoad(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: migrate load [--pg url] [--dry-run] [--force] [--verify|--noverify] <config.migration.yaml>")
+		return errors.New("usage: migrate load [--pg url] [--dry-run] [--force] [--resume] [--threshold F] [--verify|--noverify] <config.migration.yaml>")
 	}
 	configPath := fs.Arg(0)
 

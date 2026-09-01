@@ -7,9 +7,11 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 
 	"github.com/jackc/pgx/v5"
+	"golang.org/x/term"
 
 	"sqlite2pg/internal/config"
 )
@@ -66,6 +68,19 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) bool {
 	case verifyAlways:
 		return true
 	case verifyNever:
+		return false
+	}
+
+	// A CI/automation environment often leaves stdin connected to an open
+	// pipe that's never written to and never closed — reading from it
+	// below would block forever. When in is a real *os.File and it's not
+	// attached to a terminal (the same term.IsTerminal check progress.go
+	// already uses for stdout), skip the prompt entirely and default to
+	// false (no verify), the same answer a bare Enter at an interactive
+	// prompt would produce. When in is NOT an *os.File (e.g. a
+	// bytes.Reader/strings.Reader test double), this check doesn't apply
+	// and the read-based behavior below proceeds unchanged.
+	if f, ok := in.(*os.File); ok && !term.IsTerminal(int(f.Fd())) {
 		return false
 	}
 

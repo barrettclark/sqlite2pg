@@ -1,8 +1,10 @@
 package main
 
 import (
+	"os"
 	"strings"
 	"testing"
+	"time"
 )
 
 // --- resolveVerifyMode -------------------------------------------------
@@ -94,6 +96,40 @@ func TestDetermineVerify_PromptModeDefaultsToNoOnAnythingElse(t *testing.T) {
 	}
 }
 
+// TestDetermineVerify_NonTerminalFileSkipsPromptWithoutBlocking is the
+// regression test for the Copilot PR #59 finding: in a CI/automation
+// environment, stdin is often an open pipe that's never written to and
+// never closed. determineVerify used to unconditionally block on
+// bufio.Reader.ReadString('\n') in verifyPrompt mode, which would hang
+// forever against exactly that kind of stdin. A *os.File that is not a
+// terminal (as verified via term.IsTerminal, the same check progress.go
+// already uses for stdout) must be detected and skipped without reading
+// from it at all, defaulting to false (no verify) — the same answer a bare
+// Enter would produce. The read happens on a goroutine with a timeout so a
+// genuine regression here fails fast instead of hanging the whole suite.
+func TestDetermineVerify_NonTerminalFileSkipsPromptWithoutBlocking(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	defer w.Close()
+
+	done := make(chan bool, 1)
+	go func() {
+		done <- determineVerify(verifyPrompt, r, &strings.Builder{})
+	}()
+
+	select {
+	case got := <-done:
+		if got {
+			t.Error("expected determineVerify to default to false for a non-terminal, unread pipe")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("determineVerify blocked reading from a non-terminal pipe instead of skipping the prompt (CI hang risk)")
+	}
+}
+
 // --- flag wiring at the `run`/`load` CLI level --------------------------
 
 func TestRun_RunVerifyAndNoverifyTogetherIsUsageError(t *testing.T) {
@@ -113,5 +149,41 @@ func TestRun_LoadVerifyAndNoverifyTogetherIsUsageError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "--verify") || !strings.Contains(err.Error(), "--noverify") {
 		t.Errorf("expected the error to name both flags, got %q", err.Error())
+	}
+}
+
+// TestRun_RunUsageStringListsEveryFlag is the regression test for the
+// Copilot PR #59 finding that `run`'s usage error omitted --keep-config
+// even though it's a real, supported flag defined a few lines above the
+// usage string — a user who mistypes an argument sees an inaccurate usage
+// hint. Checked against the full flag set actually defined in runRun's
+// flag.NewFlagSet block, not just the missing one, so a future flag added
+// without updating the usage string is caught too.
+func TestRun_RunUsageStringListsEveryFlag(t *testing.T) {
+	err := run([]string{"run"})
+	if err == nil {
+		t.Fatal("expected a usage error for `run` with no source path")
+	}
+	for _, flag := range []string{"--pg", "--sample-size", "--threshold", "--keep-config", "--verify", "--noverify"} {
+		if !strings.Contains(err.Error(), flag) {
+			t.Errorf("expected run's usage string to mention %s, got %q", flag, err.Error())
+		}
+	}
+}
+
+// TestRun_LoadUsageStringListsEveryFlag is the regression test for the
+// Copilot PR #59 finding that `load`'s usage error omitted --resume and
+// --threshold even though both are real, supported flags defined in
+// runLoad's flag.NewFlagSet block. Checked against the full flag set, not
+// just the two named ones.
+func TestRun_LoadUsageStringListsEveryFlag(t *testing.T) {
+	err := run([]string{"load"})
+	if err == nil {
+		t.Fatal("expected a usage error for `load` with no config path")
+	}
+	for _, flag := range []string{"--pg", "--dry-run", "--force", "--resume", "--threshold", "--verify", "--noverify"} {
+		if !strings.Contains(err.Error(), flag) {
+			t.Errorf("expected load's usage string to mention %s, got %q", flag, err.Error())
+		}
 	}
 }
