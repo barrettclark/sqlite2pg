@@ -1,6 +1,7 @@
 package copywriter
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -632,5 +633,480 @@ func TestTransform_NullValuesPassThroughUnchangedRegardlessOfTransform(t *testin
 	}
 	if got != nil {
 		t.Errorf("expected nil to pass through, got %v", got)
+	}
+}
+
+// TestTransform_ISO8601ToDate_TimeTimeInput_MidnightPasses is issue #79's
+// (audit finding H3) regression: modernc.org/sqlite scans a
+// DATE/DATETIME/TIMESTAMP-declared column's value straight into time.Time,
+// not string, so a streamed row for such a column reaches this transform
+// as time.Time. The non-midnight guard must apply to that shape too, not
+// just string input.
+func TestTransform_ISO8601ToDate_TimeTimeInput_MidnightPasses(t *testing.T) {
+	in := time.Date(1953, time.September, 2, 0, 0, 0, 0, time.UTC)
+	got, err := Transform("iso8601_to_date", in)
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() != 1953 || tm.Month() != time.September || tm.Day() != 2 {
+		t.Errorf("expected 1953-09-02, got %v", tm)
+	}
+}
+
+func TestTransform_ISO8601ToDate_TimeTimeInput_RejectsNonMidnightValues(t *testing.T) {
+	in := time.Date(1996, time.January, 4, 14, 37, 0, 0, time.UTC)
+	if _, err := Transform("iso8601_to_date", in); err == nil {
+		t.Error("expected an error for a non-midnight time.Time, not a silent truncation")
+	}
+}
+
+// TestTransform_ExcelSerialToTimestamptz_OutOfRangeSerialDoesNotOverflow is
+// issue #82's (audit finding M3) regression: ExcelSerialDate's heuristic
+// tolerates up to half its sample being outside the plausible Excel-serial
+// window, and the transform then runs on every row regardless. An
+// epoch-seconds-scale value (~1.7e9) sitting in an otherwise Excel-serial
+// column used to overflow time.Duration's int64-nanosecond range and
+// silently wrap to an arbitrary, plausible-looking WRONG date
+// (2122-07-26, confirmed against the pre-fix arithmetic) — this checks the
+// result lands nowhere near that wrapped value, i.e. the overflow is
+// gone, not just relocated.
+func TestTransform_ExcelSerialToTimestamptz_OutOfRangeSerialDoesNotOverflow(t *testing.T) {
+	got, err := Transform("excel_serial_to_timestamptz", float64(1.7e9))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	// The overflow this regression guards against wrapped 1.7e9 days into
+	// the 2100s (a plausible-looking near-term year); the correct,
+	// non-overflowed result for a serial this large is millions of years
+	// in the future. Anything in a normal calendar-plausible range means
+	// the wraparound bug is back.
+	if tm.Year() < 100000 {
+		t.Errorf("expected a wildly out-of-range year (no Duration overflow/wraparound), got %v", tm)
+	}
+}
+
+// TestTransform_NullifSentinels_CommaFormattedDecimal is issue #85's
+// (audit finding M6) regression: SentinelNull, the heuristic that assigns
+// this transform, suggests "double precision" whenever a sampled value has
+// a decimal component (comma-formatted or plain) — a real row like
+// "1,234.56" is expected input here, but used to fail ParseInt and fall
+// through to a raw string pgx can't binary-encode into float8.
+func TestTransform_NullifSentinels_CommaFormattedDecimal(t *testing.T) {
+	got, err := Transform("nullif_sentinels", "1,234.56")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	f, ok := got.(float64)
+	if !ok {
+		t.Fatalf("expected float64, got %T (%v)", got, got)
+	}
+	if f != 1234.56 {
+		t.Errorf("expected 1234.56, got %v", f)
+	}
+}
+
+// TestTransform_NullifSentinels_RejectsGenuinelyUnparseableValues confirms
+// the fix doesn't just widen the pass-through: a value that's neither a
+// recognized sentinel token nor numeric in any form must still be an
+// error, not a silent string pass-through into a numeric column.
+func TestTransform_NullifSentinels_RejectsGenuinelyUnparseableValues(t *testing.T) {
+	if _, err := Transform("nullif_sentinels", "not-a-number"); err == nil {
+		t.Error("expected an error for a value that's neither a sentinel token nor numeric")
+	}
+}
+
+// TestTransform_TextToJsonb_ValidatesBlobInput is issue #86's (audit
+// finding M7) regression: GeoJSON.Evaluate skips non-string samples with
+// continue rather than disqualifying the column, so a mostly-GeoJSON-text
+// column can have a rare BLOB row (SQLite's dynamic typing permits it).
+// The transform must validate a []byte input as JSON, not pass it through
+// unchecked — the exact "can never fail" gap issue #22 fixed for the
+// string case.
+func TestTransform_TextToJsonb_ValidatesBlobInput(t *testing.T) {
+	got, err := Transform("text_to_jsonb", []byte(`{"type":"Point","coordinates":[1,2]}`))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	// Must return a string, not the raw []byte, even though the input was
+	// []byte: verify_load.go's expectedForCompare only canonicalizes a
+	// jsonb comparison's expected value when it's a string (issue #61) —
+	// returning []byte unchanged would skip that and false-fail the
+	// moment Postgres reformats whitespace/key order on storage
+	// (Copilot PR #98 finding).
+	s, ok := got.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T", got)
+	}
+	if s != `{"type":"Point","coordinates":[1,2]}` {
+		t.Errorf("expected the JSON text unchanged, got %q", s)
+	}
+
+	if _, err := Transform("text_to_jsonb", []byte("not json")); err == nil {
+		t.Error("expected an error for a non-JSON []byte value")
+	}
+}
+
+// TestTransform_StripCommas_HandlesAlreadyNumericInput is issue #86's
+// (audit finding M7) regression: CommaNumber.Evaluate skips non-string
+// samples with continue, so a column can be mostly int64/float64-storage
+// values with only a rare comma-formatted string row. An already-numeric
+// raw value must convert correctly instead of passing through unexamined
+// into an int4 column.
+func TestTransform_StripCommas_HandlesAlreadyNumericInput(t *testing.T) {
+	got, err := Transform("strip_commas", int64(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != int64(42) {
+		t.Errorf("expected 42, got %v", got)
+	}
+
+	got, err = Transform("strip_commas", float64(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != int64(42) {
+		t.Errorf("expected whole-number float64 to convert to int64(42), got %v (%T)", got, got)
+	}
+
+	if _, err := Transform("strip_commas", float64(42.5)); err == nil {
+		t.Error("expected an error for a fractional float64 into an integer-targeted transform")
+	}
+}
+
+// TestTransform_StripCommasFloat_HandlesAlreadyNumericInput mirrors
+// TestTransform_StripCommas_HandlesAlreadyNumericInput for the
+// double-precision-targeted variant.
+func TestTransform_StripCommasFloat_HandlesAlreadyNumericInput(t *testing.T) {
+	got, err := Transform("strip_commas_float", int64(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != float64(42) {
+		t.Errorf("expected 42.0, got %v", got)
+	}
+
+	got, err = Transform("strip_commas_float", float64(42.5))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != float64(42.5) {
+		t.Errorf("expected 42.5, got %v", got)
+	}
+}
+
+// TestTransform_JulianDayToDate_NegativeJDNUsesFloorDivision is issue #89's
+// (audit finding L3) regression: Fliegel & Van Flandern's algorithm
+// requires floor division; Go's / truncates toward zero, which disagrees
+// for jdn < -68569. Expected values cross-checked against an independent
+// day-count-to-civil-date algorithm (Howard Hinnant's civil_from_days),
+// not against the buggy code itself.
+func TestTransform_JulianDayToDate_NegativeJDNUsesFloorDivision(t *testing.T) {
+	cases := []struct {
+		jdn                    int64
+		year, month, day int
+	}{
+		{-70000, -4904, 3, 30},
+		{-68570, -4900, 2, 28},
+		{-100000, -4986, 2, 9},
+	}
+	for _, c := range cases {
+		// julian_day_to_date's transform input is JD (noon-based, so a
+		// .5 fraction lands on the JDN's own calendar day); pass the
+		// JDN directly as a whole float64.
+		got, err := Transform("julian_day_to_date", float64(c.jdn))
+		if err != nil {
+			t.Fatalf("Transform(jdn=%d): %v", c.jdn, err)
+		}
+		tm, ok := got.(time.Time)
+		if !ok {
+			t.Fatalf("expected time.Time, got %T", got)
+		}
+		if tm.Year() != c.year || int(tm.Month()) != c.month || tm.Day() != c.day {
+			t.Errorf("jdn=%d: expected %04d-%02d-%02d, got %v", c.jdn, c.year, c.month, c.day, tm)
+		}
+	}
+}
+
+// TestTransform_UnixEpochSeconds_PreservesSubSecondFraction is issue #90's
+// (audit finding L4) regression: a REAL-storage epoch-seconds value like
+// 1712345678.9 used to truncate to 1712345678, silently losing up to a
+// full second — undocumented and larger than the "arguably intended"
+// sub-unit rounding this transform's millis/micros siblings do.
+func TestTransform_UnixEpochSeconds_PreservesSubSecondFraction(t *testing.T) {
+	got, err := Transform("unix_epoch_seconds", float64(1712345678.9))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Unix() != 1712345678 {
+		t.Errorf("expected whole-second part 1712345678, got %d", tm.Unix())
+	}
+	// Postgres timestamptz rounds to microseconds, so compare at that
+	// resolution rather than expecting exact float64-derived nanoseconds.
+	gotMicros := tm.Nanosecond() / 1000
+	wantMicros := 900000
+	if gotMicros != wantMicros {
+		t.Errorf("expected sub-second fraction ~900000µs preserved, got %dµs", gotMicros)
+	}
+}
+
+// TestTransform_StripCommas_RejectsOutOfInt64RangeFloat64 is a regression
+// test for Copilot's PR #98 finding: converting a float64 outside int64's
+// range is implementation-dependent per the Go spec, not an error — it
+// would silently produce a garbage int64 instead of failing loudly.
+func TestTransform_StripCommas_RejectsOutOfInt64RangeFloat64(t *testing.T) {
+	if _, err := Transform("strip_commas", float64(1e20)); err == nil {
+		t.Error("expected an error for a float64 outside int64's range")
+	}
+}
+
+// TestTransform_NullifSentinels_HandlesAlreadyNumericInput_RejectsBlob is a
+// regression test for Copilot's PR #98 finding: SentinelNull skips a
+// sample value it doesn't recognize with continue rather than
+// disqualifying the column, so a rare non-string, non-numeric value (e.g.
+// a BLOB) can reach here with nullif_sentinels assigned. Already-numeric
+// input must pass through correctly; a genuinely unexpected type must
+// error, not pass through unexamined.
+func TestTransform_NullifSentinels_HandlesAlreadyNumericInput_RejectsBlob(t *testing.T) {
+	got, err := Transform("nullif_sentinels", int64(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != int64(42) {
+		t.Errorf("expected 42, got %v", got)
+	}
+
+	got, err = Transform("nullif_sentinels", float64(42.5))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != float64(42.5) {
+		t.Errorf("expected 42.5, got %v", got)
+	}
+
+	if _, err := Transform("nullif_sentinels", []byte("blob")); err == nil {
+		t.Error("expected an error for a []byte value, not a silent pass-through")
+	}
+}
+
+// TestTransform_ExcelSerialToTimestamptz_ExtremeSerialDoesNotOverflowAddDate
+// is a regression test for Copilot's PR #98 finding: excelSerialToTime's
+// int(days) conversion is implementation-dependent per the Go spec for a
+// float64 outside int's range, and even a well-defined but sufficiently
+// extreme days value overflows time.Time.AddDate's own internal
+// arithmetic (confirmed empirically: 1e15 days flips the resulting year's
+// sign). A serial value large enough to trigger either must still produce
+// a deterministic, sane-signed (if wildly implausible) result.
+func TestTransform_ExcelSerialToTimestamptz_ExtremeSerialDoesNotOverflowAddDate(t *testing.T) {
+	got, err := Transform("excel_serial_to_timestamptz", math.MaxFloat64)
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() <= 0 {
+		t.Errorf("expected a large POSITIVE year for a huge positive serial (no sign-flip overflow), got %v", tm)
+	}
+
+	got, err = Transform("excel_serial_to_timestamptz", -math.MaxFloat64)
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok = got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() >= 0 {
+		t.Errorf("expected a large NEGATIVE year for a huge negative serial (no sign-flip overflow), got %v", tm)
+	}
+}
+
+// TestTransform_UnixEpochSeconds_RejectsNaNAndOutOfRangeValues is a
+// regression test for Copilot's PR #98 finding: converting NaN or an
+// out-of-int64-range float64 to int64 is implementation-dependent per the
+// Go spec, not an error — it could silently produce a bogus timestamp.
+func TestTransform_UnixEpochSeconds_RejectsNaNAndOutOfRangeValues(t *testing.T) {
+	if _, err := Transform("unix_epoch_seconds", math.NaN()); err == nil {
+		t.Error("expected an error for NaN")
+	}
+	if _, err := Transform("unix_epoch_seconds", math.Inf(1)); err == nil {
+		t.Error("expected an error for +Inf")
+	}
+	if _, err := Transform("unix_epoch_seconds", 1e300); err == nil {
+		t.Error("expected an error for a value wildly outside int64's range")
+	}
+}
+
+// TestTransform_UnixEpochSeconds_NanosecondCarryNormalizesCorrectly
+// confirms the rare case where rounding the sub-second fraction lands
+// exactly on 1e9 nanoseconds doesn't lose the carried second —
+// time.Unix's nsec parameter is documented to normalize this correctly.
+func TestTransform_UnixEpochSeconds_NanosecondCarryNormalizesCorrectly(t *testing.T) {
+	// A value whose fractional part rounds to exactly 1.0 second at
+	// float64 precision.
+	got, err := Transform("unix_epoch_seconds", float64(99.9999999999999))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Unix() != 100 {
+		t.Errorf("expected the rounding carry to land on unix time 100, got %d", tm.Unix())
+	}
+}
+
+// TestTransform_UnixEpochMillis_RejectsNaNAndOutOfRangeValues and
+// TestTransform_UnixEpochMicros_RejectsNaNAndOutOfRangeValues are
+// regression tests for Copilot's PR #98 finding: unix_epoch_millis/micros
+// routed a float64 input through toInt64's unchecked int64(f) conversion,
+// implementation-dependent per the Go spec for NaN/±Inf/out-of-range
+// values, same class already fixed for unix_epoch_seconds.
+func TestTransform_UnixEpochMillis_RejectsNaNAndOutOfRangeValues(t *testing.T) {
+	if _, err := Transform("unix_epoch_millis", math.NaN()); err == nil {
+		t.Error("expected an error for NaN")
+	}
+	if _, err := Transform("unix_epoch_millis", math.Inf(-1)); err == nil {
+		t.Error("expected an error for -Inf")
+	}
+	if _, err := Transform("unix_epoch_millis", 1e300); err == nil {
+		t.Error("expected an error for a value wildly outside int64's range")
+	}
+}
+
+func TestTransform_UnixEpochMicros_RejectsNaNAndOutOfRangeValues(t *testing.T) {
+	if _, err := Transform("unix_epoch_micros", math.NaN()); err == nil {
+		t.Error("expected an error for NaN")
+	}
+	if _, err := Transform("unix_epoch_micros", math.Inf(-1)); err == nil {
+		t.Error("expected an error for -Inf")
+	}
+	if _, err := Transform("unix_epoch_micros", 1e300); err == nil {
+		t.Error("expected an error for a value wildly outside int64's range")
+	}
+}
+
+// TestTransform_ExcelSerialToTimestamptz_NaNAndInfDoNotOverflow is a
+// regression test for Copilot's PR #98 finding: for a NaN or ±Inf serial,
+// fracSeconds itself becomes NaN (Inf - Inf is NaN under IEEE 754), and
+// time.Duration(NaN * time.Second) is the same implementation-dependent
+// conversion clampDaysToInt was already fixed to avoid for the day
+// component — must not panic and must produce a deterministic result.
+func TestTransform_ExcelSerialToTimestamptz_NaNAndInfDoNotOverflow(t *testing.T) {
+	// A NaN serial clamps both its day and fractional-second components
+	// to 0, landing exactly on excelEpoch — asserting the exact value
+	// (not just "no error/no panic") is what actually distinguishes the
+	// fix from relying on time.Duration(NaN)'s implementation-dependent
+	// conversion, which happens to also yield 0 on this architecture and
+	// so wouldn't otherwise show a difference.
+	got, err := Transform("excel_serial_to_timestamptz", math.NaN())
+	if err != nil {
+		t.Fatalf("Transform(NaN): %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("Transform(NaN): expected time.Time, got %T", got)
+	}
+	if !tm.Equal(excelEpoch) {
+		t.Errorf("Transform(NaN) = %v, want exactly excelEpoch (%v)", tm, excelEpoch)
+	}
+
+	for _, serial := range []float64{math.Inf(1), math.Inf(-1)} {
+		got, err := Transform("excel_serial_to_timestamptz", serial)
+		if err != nil {
+			t.Fatalf("Transform(%v): %v", serial, err)
+		}
+		if _, ok := got.(time.Time); !ok {
+			t.Fatalf("Transform(%v): expected time.Time, got %T", serial, got)
+		}
+	}
+}
+
+// TestTransform_JulianDayToDate_RejectsNaNAndOutOfRangeValues is a
+// proactive fix for the same defect class Copilot's PR #98 review
+// repeatedly found elsewhere in this file: julian_day_to_date's
+// int64(math.Floor(f + 0.5)) had no NaN/±Inf/out-of-range guard.
+func TestTransform_JulianDayToDate_RejectsNaNAndOutOfRangeValues(t *testing.T) {
+	if _, err := Transform("julian_day_to_date", math.NaN()); err == nil {
+		t.Error("expected an error for NaN")
+	}
+	if _, err := Transform("julian_day_to_date", math.Inf(1)); err == nil {
+		t.Error("expected an error for +Inf")
+	}
+	if _, err := Transform("julian_day_to_date", 1e300); err == nil {
+		t.Error("expected an error for a value wildly outside int64's range")
+	}
+}
+
+// TestTransform_UnixEpochSeconds_AcceptsPlainIntInput is a regression test
+// for Copilot's PR #98 finding: unix_epoch_seconds switched from toInt64
+// (which has always accepted a plain int) to toFloat64 as part of the
+// sub-second-precision fix (issue #90), and toFloat64 didn't have a case
+// for int — silently rejecting an input shape the transform used to
+// accept.
+func TestTransform_UnixEpochSeconds_AcceptsPlainIntInput(t *testing.T) {
+	got, err := Transform("unix_epoch_seconds", int(1620000000))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Unix() != 1620000000 {
+		t.Errorf("expected unix time 1620000000, got %d", tm.Unix())
+	}
+}
+
+// TestTransform_StripCommas_AcceptsPlainIntInput,
+// TestTransform_StripCommasFloat_AcceptsPlainIntInput, and
+// TestTransform_NullifSentinels_AcceptsPlainIntInput are regression tests
+// for Copilot's PR #98 finding: the rest of the pipeline treats a plain
+// int as an integer-shaped value alongside int64 (fallbackTypeFor,
+// verify_transform's asInt64), but these three transforms' new type
+// switches only had case int64, not case int — a real int-storage row
+// would false-fail as "unexpected type".
+func TestTransform_StripCommas_AcceptsPlainIntInput(t *testing.T) {
+	got, err := Transform("strip_commas", int(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != int64(42) {
+		t.Errorf("expected 42, got %v (%T)", got, got)
+	}
+}
+
+func TestTransform_StripCommasFloat_AcceptsPlainIntInput(t *testing.T) {
+	got, err := Transform("strip_commas_float", int(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != float64(42) {
+		t.Errorf("expected 42.0, got %v (%T)", got, got)
+	}
+}
+
+func TestTransform_NullifSentinels_AcceptsPlainIntInput(t *testing.T) {
+	got, err := Transform("nullif_sentinels", int(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != int64(42) {
+		t.Errorf("expected 42, got %v (%T)", got, got)
 	}
 }

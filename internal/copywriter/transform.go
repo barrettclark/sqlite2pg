@@ -48,45 +48,126 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return raw, nil
 
 	case "strip_commas":
-		s, ok := raw.(string)
-		if !ok {
-			return raw, nil
+		// CommaNumber.Evaluate (the paired heuristic) skips non-string
+		// samples with `continue` rather than disqualifying the column,
+		// so a column can be mostly int64/float64-storage REAL/INTEGER
+		// values with only a rare comma-formatted string row — a
+		// raw.(string)-only check used to hand a raw float64 straight to
+		// an int4 target column unconverted (`return raw, nil`), which
+		// full-table verification's fitsTargetType range check has no
+		// float64 case for, so the gap was never caught before COPY
+		// (issue #86's audit, finding M7). An already-numeric raw value
+		// needs no comma-stripping; convert it directly instead of
+		// passing it through unexamined.
+		switch v := raw.(type) {
+		case string:
+			n, err := strconv.ParseInt(strings.ReplaceAll(v, ",", ""), 10, 64)
+			if err != nil {
+				return nil, fmt.Errorf("strip_commas: %q: %w", v, err)
+			}
+			return n, nil
+		case int64:
+			return v, nil
+		case int:
+			// The rest of the pipeline treats a plain int as an
+			// integer-shaped value alongside int64 (e.g. fallbackTypeFor,
+			// verify_transform's asInt64) — this switch needs the same
+			// coverage or a real int-storage row false-fails as
+			// "unexpected type" (Copilot PR #98 finding).
+			return int64(v), nil
+		case float64:
+			if v != math.Trunc(v) {
+				return nil, fmt.Errorf("strip_commas: %v is not a whole number", v)
+			}
+			// Converting an out-of-int64-range float64 is implementation-
+			// dependent per the Go spec, not an error — it would silently
+			// produce a garbage int64 for a genuinely huge value instead
+			// of failing loudly (Copilot PR #98 finding). -2^63/2^63 are
+			// both exactly representable in float64, so this bounds check
+			// itself carries no precision loss.
+			if v < -9223372036854775808.0 || v >= 9223372036854775808.0 {
+				return nil, fmt.Errorf("strip_commas: %v overflows int64", v)
+			}
+			return int64(v), nil
+		default:
+			return nil, fmt.Errorf("strip_commas: unexpected type %T", raw)
 		}
-		n, err := strconv.ParseInt(strings.ReplaceAll(s, ",", ""), 10, 64)
-		if err != nil {
-			return nil, fmt.Errorf("strip_commas: %q: %w", s, err)
-		}
-		return n, nil
 
 	case "strip_commas_float":
-		s, ok := raw.(string)
-		if !ok {
-			return raw, nil
+		// Same reasoning as strip_commas above: an already-numeric raw
+		// value (int64 or float64) needs no comma-stripping and fits a
+		// double precision target directly.
+		switch v := raw.(type) {
+		case string:
+			f, err := strconv.ParseFloat(strings.ReplaceAll(v, ",", ""), 64)
+			if err != nil {
+				return nil, fmt.Errorf("strip_commas_float: %q: %w", v, err)
+			}
+			return f, nil
+		case int64:
+			return float64(v), nil
+		case int:
+			// Same coverage gap as strip_commas above (Copilot PR #98
+			// finding).
+			return float64(v), nil
+		case float64:
+			return v, nil
+		default:
+			return nil, fmt.Errorf("strip_commas_float: unexpected type %T", raw)
 		}
-		f, err := strconv.ParseFloat(strings.ReplaceAll(s, ",", ""), 64)
-		if err != nil {
-			return nil, fmt.Errorf("strip_commas_float: %q: %w", s, err)
-		}
-		return f, nil
 
 	case "unix_epoch_seconds":
-		sec, ok := toInt64(raw)
+		// toInt64's float64 case truncates toward zero, silently dropping
+		// up to a full second of real sub-second precision (e.g.
+		// 1712345678.9 -> 1712345678) — undocumented and, at up to 999ms,
+		// too large a loss to call incidental (issue #90's audit, finding
+		// L4). Split the fractional part into nanoseconds instead of
+		// truncating it away; an int64 input (the overwhelmingly common
+		// shape — epoch seconds are tiny relative to float64's exact
+		// range) converts through with no precision change at all.
+		f, ok := toFloat64(raw)
 		if !ok {
 			return nil, fmt.Errorf("unix_epoch_seconds: unexpected type %T", raw)
 		}
-		return time.Unix(sec, 0).UTC(), nil
+		sec := math.Floor(f)
+		// int64(sec) is implementation-dependent per the Go spec for NaN,
+		// ±Inf, or any value outside int64's range (Copilot PR #98
+		// finding, same class as strip_commas' overflow above) — check
+		// explicitly rather than relying on it. -2^63/2^63 are both
+		// exactly representable in float64, so this bound comparison
+		// itself carries no precision loss. (time.Unix's own nsec
+		// parameter is documented to normalize a carry past 1e9 from the
+		// rounding just below, so that part needs no extra guard.)
+		if math.IsNaN(sec) || sec < -9223372036854775808.0 || sec >= 9223372036854775808.0 {
+			return nil, fmt.Errorf("unix_epoch_seconds: %v is out of range", f)
+		}
+		nanos := int64(math.Round((f - sec) * float64(time.Second)))
+		return time.Unix(int64(sec), nanos).UTC(), nil
 
 	case "unix_epoch_millis":
-		ms, ok := toInt64(raw)
-		if !ok {
-			return nil, fmt.Errorf("unix_epoch_millis: unexpected type %T", raw)
+		// A fractional millisecond is sub-millisecond precision — small
+		// relative to unix_epoch_seconds' up-to-999ms loss above, and
+		// still not the deliberate microsecond-resolution cutoff
+		// unix_epoch_micros hits below, but truncated here the same way
+		// for now rather than as a documented accepted limit. The
+		// conversion itself still needs the same NaN/Inf/range guard as
+		// unix_epoch_seconds (Copilot PR #98 finding) — toInt64's raw
+		// int64(f) is implementation-dependent outside that range.
+		ms, err := epochToInt64("unix_epoch_millis", raw)
+		if err != nil {
+			return nil, err
 		}
 		return time.UnixMilli(ms).UTC(), nil
 
 	case "unix_epoch_micros":
-		us, ok := toInt64(raw)
-		if !ok {
-			return nil, fmt.Errorf("unix_epoch_micros: unexpected type %T", raw)
+		// Any fractional part here is sub-microsecond — below Postgres's
+		// own timestamptz storage resolution (microseconds), so
+		// truncating it away loses nothing Postgres could have kept
+		// anyway; genuinely intended, unlike unix_epoch_seconds above.
+		// Same NaN/Inf/range guard as unix_epoch_millis, though.
+		us, err := epochToInt64("unix_epoch_micros", raw)
+		if err != nil {
+			return nil, err
 		}
 		return time.UnixMicro(us).UTC(), nil
 
@@ -107,10 +188,6 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return nil, fmt.Errorf("iso8601_to_timestamptz: cannot parse %q", s)
 
 	case "iso8601_to_date":
-		s, ok := raw.(string)
-		if !ok {
-			return raw, nil
-		}
 		// Shares profiler.ParseTimestamp with the iso8601_timestamp
 		// heuristic that assigns this transform when every *sampled*
 		// value's time-of-day is midnight (issue #14) — same reasoning as
@@ -129,13 +206,34 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// function against every row, and this error is what lets it
 		// catch the case and route the column to review instead of
 		// silently discarding real data at load.
-		if tm, ok := profiler.ParseTimestamp(s); ok {
+		//
+		// The heuristic that assigns this transform (iso8601_timestamp)
+		// fires on both a string sample AND a time.Time sample — the
+		// modernc.org/sqlite driver scans a DATE/DATETIME/TIMESTAMP-
+		// declared column straight into time.Time rather than a string
+		// (see internal/pipeline/profile.go), so streamed rows for such a
+		// column arrive here as time.Time, not string. A raw.(string)-only
+		// check used to let every such row bypass the non-midnight guard
+		// entirely (issue #79's audit, finding H3) — the same
+		// "type-switch fall-through" shape as M6/M7 below.
+		switch v := raw.(type) {
+		case string:
+			tm, ok := profiler.ParseTimestamp(v)
+			if !ok {
+				return nil, fmt.Errorf("iso8601_to_date: cannot parse %q", v)
+			}
 			if tm.Hour() != 0 || tm.Minute() != 0 || tm.Second() != 0 || tm.Nanosecond() != 0 {
-				return nil, fmt.Errorf("iso8601_to_date: %q has a non-midnight time-of-day component", s)
+				return nil, fmt.Errorf("iso8601_to_date: %q has a non-midnight time-of-day component", v)
 			}
 			return time.Date(tm.Year(), tm.Month(), tm.Day(), 0, 0, 0, 0, time.UTC), nil
+		case time.Time:
+			if v.Hour() != 0 || v.Minute() != 0 || v.Second() != 0 || v.Nanosecond() != 0 {
+				return nil, fmt.Errorf("iso8601_to_date: %s has a non-midnight time-of-day component", v.Format(time.RFC3339Nano))
+			}
+			return time.Date(v.Year(), v.Month(), v.Day(), 0, 0, 0, 0, time.UTC), nil
+		default:
+			return nil, fmt.Errorf("iso8601_to_date: unexpected type %T", raw)
 		}
-		return nil, fmt.Errorf("iso8601_to_date: cannot parse %q", s)
 
 	case "int_to_bool":
 		// Also accepts a "0"/"1" string (not routed through toInt64,
@@ -162,10 +260,6 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return n != 0, nil
 
 	case "text_to_jsonb":
-		s, ok := raw.(string)
-		if !ok {
-			return raw, nil
-		}
 		// Issue #22: this used to be a bare `return raw, nil` that could
 		// never fail, which made full-table verification (issue #13) a
 		// silent no-op for geojson_text columns — a rare non-JSON value
@@ -174,10 +268,39 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// "invalid input syntax for type json". Validating the JSON here
 		// keeps the "verify by running the real transform" model intact
 		// instead of duplicating this check in the verifier.
-		if !json.Valid([]byte(s)) {
-			return nil, fmt.Errorf("text_to_jsonb: %q is not valid JSON", s)
+		//
+		// GeoJSON.Evaluate (the paired heuristic) skips non-string samples
+		// with `continue` rather than disqualifying the column, so a
+		// column can be mostly GeoJSON text with a rare BLOB row (SQLite's
+		// dynamic typing permits it — the same shape issue #83 found). A
+		// raw.(string)-only check reintroduced the exact "can never fail"
+		// gap this transform was fixed for issue #22 to avoid, just for
+		// []byte instead of string (issue #86's audit, finding M7):
+		// json.Valid accepts a []byte directly, same rules either way.
+		// Always returns a string, not `raw` unchanged: verify_load.go's
+		// expectedForCompare only canonicalizes a jsonb comparison's
+		// expected value when it's a string (issue #61) — a []byte
+		// passed through as-is would skip that canonicalization and
+		// false-fail the moment Postgres reformats whitespace/key order
+		// on storage, reintroducing #61's exact bug for the []byte-input
+		// case (Copilot PR #98 finding). The string case returns v
+		// directly rather than string(b) after a []byte round-trip —
+		// same validation, one fewer allocation/copy on the common path
+		// (Copilot PR #98 follow-up finding).
+		switch v := raw.(type) {
+		case string:
+			if !json.Valid([]byte(v)) {
+				return nil, fmt.Errorf("text_to_jsonb: %q is not valid JSON", v)
+			}
+			return v, nil
+		case []byte:
+			if !json.Valid(v) {
+				return nil, fmt.Errorf("text_to_jsonb: %q is not valid JSON", v)
+			}
+			return string(v), nil
+		default:
+			return nil, fmt.Errorf("text_to_jsonb: unexpected type %T", raw)
 		}
-		return raw, nil
 
 	case "julian_day_to_date":
 		f, ok := toFloat64(raw)
@@ -191,7 +314,15 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// the range belongs to the FOLLOWING day's JDN; math.Floor(f + 0.5)
 		// is the standard JD-to-JDN conversion that accounts for that,
 		// where int64(f) truncation always floored to the earlier day.
-		return julianDayToDate(int64(math.Floor(f + 0.5))), nil
+		jd := math.Floor(f + 0.5)
+		// Same NaN/±Inf/out-of-range guard as the epoch transforms above
+		// (issue #90's audit; Copilot PR #98 round-4 pattern) — int64(jd)
+		// for a value outside this range is implementation-dependent per
+		// the Go spec, not an error.
+		if math.IsNaN(jd) || jd < -9223372036854775808.0 || jd >= 9223372036854775808.0 {
+			return nil, fmt.Errorf("julian_day_to_date: %v is out of range", f)
+		}
+		return julianDayToDate(int64(jd)), nil
 
 	case "yyyymmdd_to_date":
 		s, ok := toYYYYMMDDString(raw)
@@ -326,17 +457,50 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return list, nil
 
 	case "nullif_sentinels":
-		if s, ok := raw.(string); ok {
-			if sentinelTokens[strings.ToLower(s)] {
+		// SentinelNull.Evaluate (the paired heuristic) skips a sample
+		// value it doesn't recognize (not int64/float64/string) with
+		// `continue` rather than disqualifying the column, so a rare
+		// non-string, non-numeric value (e.g. a BLOB — SQLite's dynamic
+		// typing permits it) can still reach here with this transform
+		// assigned. A raw.(string)-only check let such a value pass
+		// through unexamined (Copilot PR #98 finding, same class as
+		// issue #86/M7): full-table verification wouldn't flag it, and
+		// COPY would only fail once pgx tried and failed to encode it.
+		switch v := raw.(type) {
+		case string:
+			if sentinelTokens[strings.ToLower(v)] {
 				return nil, nil
 			}
-			cleaned := strings.ReplaceAll(s, ",", "")
+			cleaned := strings.ReplaceAll(v, ",", "")
 			if n, err := strconv.ParseInt(cleaned, 10, 64); err == nil {
 				return n, nil
 			}
-			return raw, nil
+			// SentinelNull suggests "double precision" whenever a sampled
+			// value has a decimal component (commaNumberPattern/
+			// plainNumberPattern with a "."), so a value like "1,234.56"
+			// is a real, expected input here — ParseInt alone rejects it,
+			// and `return raw, nil` used to hand the resulting Go string
+			// straight to pgx's float8 codec, which can't binary-encode
+			// it (issue #85's audit, finding M6). Try float64 before
+			// falling back.
+			if f, err := strconv.ParseFloat(cleaned, 64); err == nil {
+				return f, nil
+			}
+			return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel token and not numeric", v)
+		case int64:
+			return v, nil
+		case int:
+			// The rest of the pipeline treats a plain int as an
+			// integer-shaped value alongside int64 (e.g. fallbackTypeFor,
+			// verify_transform's asInt64) — this switch needs the same
+			// coverage or a real int-storage row false-fails as
+			// "unexpected type" (Copilot PR #98 finding).
+			return int64(v), nil
+		case float64:
+			return v, nil
+		default:
+			return nil, fmt.Errorf("nullif_sentinels: unexpected type %T", raw)
 		}
-		return raw, nil
 
 	case "nullif_empty":
 		// No heuristic currently assigns this transform (issue #22
@@ -420,6 +584,29 @@ func toInt64(v profiler.Value) (int64, bool) {
 	}
 }
 
+// epochToInt64 is toInt64 with an explicit NaN/±Inf/out-of-range guard on
+// the float64 case, for the epoch transforms: int64(f) for a float64
+// outside int64's exactly-representable range is implementation-dependent
+// per the Go spec, not an error — it can silently produce a bogus int64
+// and, downstream, a bogus timestamp (Copilot PR #98 finding). An
+// int64/int input (the common case for these transforms) is unaffected —
+// no float64 round-trip at all.
+func epochToInt64(transform string, v profiler.Value) (int64, error) {
+	switch n := v.(type) {
+	case int64:
+		return n, nil
+	case int:
+		return int64(n), nil
+	case float64:
+		if math.IsNaN(n) || n < -9223372036854775808.0 || n >= 9223372036854775808.0 {
+			return 0, fmt.Errorf("%s: %v is out of range", transform, n)
+		}
+		return int64(n), nil
+	default:
+		return 0, fmt.Errorf("%s: unexpected type %T", transform, v)
+	}
+}
+
 // toYYYYMMDDString normalizes v (an int64 from an INTEGER column or a
 // string from a TEXT column — both forms seen in real source data) to its
 // 8-digit string form, or reports false for any other shape. It does not
@@ -444,6 +631,14 @@ func toFloat64(v profiler.Value) (float64, bool) {
 		return float64(n), true
 	case int64:
 		return float64(n), true
+	case int:
+		// toInt64 (above) has always accepted a plain int; toFloat64
+		// didn't, which went unnoticed until unix_epoch_seconds switched
+		// from toInt64 to toFloat64 (issue #90's fix) and silently
+		// stopped accepting an int input it used to (Copilot PR #98
+		// finding) — the two helpers should have matched coverage
+		// regardless of which call site exposed the gap.
+		return float64(n), true
 	default:
 		return 0, false
 	}
@@ -457,12 +652,73 @@ var excelEpoch = time.Date(1899, time.December, 30, 0, 0, 0, 0, time.UTC)
 // excelSerialToTime converts an Excel/Access serial date number to a
 // time.Time, preserving any fractional part as a time-of-day offset (e.g.
 // 44197.5 is noon on the day 44197 alone represents).
+//
+// The whole-day component goes through AddDate, not
+// time.Duration(days)*24*time.Hour: ExcelSerialDate's heuristic
+// (profiler/heuristics/excel_serial_date.go) only requires 50% of sampled
+// values to land in the plausible Excel-serial window — it deliberately
+// tolerates a minority outside it — and the transform then runs on every
+// row. A genuinely out-of-range serial (e.g. an epoch-seconds value like
+// 1.7e9 sitting in an otherwise Excel-serial column) turns into a days
+// count whose Duration form overflows int64 nanoseconds (~292-year range)
+// and silently wraps to an arbitrary, plausible-*looking* wrong date
+// (issue #82's audit, finding M3) — the exact kind of error nothing
+// downstream catches, since full-table verification recomputes the same
+// wrapped value on both sides. AddDate does plain calendar arithmetic with
+// no Duration-sized intermediate, so an out-of-range serial instead
+// produces a wildly implausible far-future/past date that Postgres's own
+// timestamp range check (~4713 BC to 294276 AD) will reject at COPY time —
+// a loud, catchable failure instead of silent corruption.
 func excelSerialToTime(serial float64) time.Time {
 	days := math.Trunc(serial)
 	fracSeconds := (serial - days) * 24 * 60 * 60
+	// clampDaysToInt handles NaN/out-of-range for the whole-day component,
+	// but fracSeconds needs its own guard: for a NaN or ±Inf serial,
+	// serial-days is NaN (Inf - Inf is NaN under IEEE 754, and any op on
+	// NaN stays NaN), and time.Duration(NaN * time.Second) is the same
+	// implementation-dependent float64->int64 conversion clampDaysToInt
+	// exists to avoid (Copilot PR #98 finding). Neither NaN nor Inf carry
+	// a meaningful time-of-day fraction anyway — zero it instead.
+	if math.IsNaN(fracSeconds) || math.IsInf(fracSeconds, 0) {
+		fracSeconds = 0
+	}
 	return excelEpoch.
-		Add(time.Duration(days) * 24 * time.Hour).
+		AddDate(0, 0, clampDaysToInt(days)).
 		Add(time.Duration(fracSeconds * float64(time.Second)))
+}
+
+// maxPlausibleExcelDays bounds clampDaysToInt at math.MaxInt32 rather than
+// a larger constant like 1e12: Go only guarantees int is *at least* 32
+// bits, so a bigger untyped constant here would fail to compile on a
+// 32-bit target (Copilot PR #98 finding) — and math.MaxInt32 (±5.8 million
+// years from the Excel epoch) is still obscenely larger than any real
+// calendar date, safely within time.Time.AddDate's own working range
+// (confirmed empirically: ±math.MaxInt32 days lands on a correctly-signed,
+// non-overflowed year; AddDate itself silently wraps/overflows for a days
+// argument far larger than this, e.g. 1e15 flips the resulting year's
+// sign), and within float64's exact-integer range (2^53), so the bound
+// comparison itself carries no precision loss.
+const maxPlausibleExcelDays = math.MaxInt32
+
+// clampDaysToInt converts days (already an integer-valued float64, per
+// excelSerialToTime's math.Trunc) to an int for AddDate, clamping to
+// ±maxPlausibleExcelDays instead of relying on Go's implementation-
+// dependent behavior for a float64 conversion outside int's range (or,
+// past AddDate's own safe range, wrapping to a plausible-looking wrong
+// date — the same silent-corruption class this function's AddDate switch
+// was already fixed to avoid). NaN clamps to 0 (the epoch itself) since it
+// has no defined sign to clamp toward.
+func clampDaysToInt(days float64) int {
+	switch {
+	case math.IsNaN(days):
+		return 0
+	case days <= -maxPlausibleExcelDays:
+		return -maxPlausibleExcelDays
+	case days >= maxPlausibleExcelDays:
+		return maxPlausibleExcelDays
+	default:
+		return int(days)
+	}
 }
 
 // julianDayToDate converts an astronomical Julian Day Number to a Gregorian
@@ -470,15 +726,41 @@ func excelSerialToTime(serial float64) time.Time {
 // same integer-JDN-to-date conversion Postgres's own date_in() Julian date
 // parsing is equivalent to. jdn is treated as noon-based per convention.
 func julianDayToDate(jdn int64) time.Time {
+	// Fliegel & Van Flandern's algorithm requires floor division
+	// throughout; Go's / truncates toward zero, which only agrees with
+	// floor division when both operands are non-negative or the division
+	// is exact. p = jdn+68569 goes negative for any jdn < -68569 — a
+	// negative-but-plausible date (year < -4900ish), not merely a
+	// theoretical edge case — and Go's truncating / then produces a wildly
+	// wrong result (confirmed against an independent day-count-to-
+	// civil-date algorithm: jdn=-70000 truncated to year -4903, month -7,
+	// day -30; floor division correctly gives -4904-03-30). floorDiv
+	// throughout keeps every intermediate exact for the full int64 range
+	// (issue #89's audit, finding L3).
 	p := jdn + 68569
-	q := 4 * p / 146097
-	r := p - (146097*q+3)/4
-	s := 4000 * (r + 1) / 1461001
-	r = r - 1461*s/4 + 31
-	tt := 80 * r / 2447
-	day := r - 2447*tt/80
-	u := tt / 11
+	q := floorDiv(4*p, 146097)
+	r := p - floorDiv(146097*q+3, 4)
+	s := floorDiv(4000*(r+1), 1461001)
+	r = r - floorDiv(1461*s, 4) + 31
+	tt := floorDiv(80*r, 2447)
+	day := r - floorDiv(2447*tt, 80)
+	u := floorDiv(tt, 11)
 	month := tt + 2 - 12*u
 	year := 100*(q-49) + s + u
 	return time.Date(int(year), time.Month(month), int(day), 0, 0, 0, 0, time.UTC)
+}
+
+// floorDiv returns floor(a/b) for any nonzero b (the (a < 0) != (b < 0)
+// check below handles a negative divisor too, not just a negative
+// dividend) — unlike Go's built-in /, which truncates toward zero and so
+// disagrees with floor division whenever the operands' signs differ and
+// the division isn't exact. julianDayToDate's own divisors are always
+// positive literals, but the function itself isn't restricted to that
+// case.
+func floorDiv(a, b int64) int64 {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
 }
