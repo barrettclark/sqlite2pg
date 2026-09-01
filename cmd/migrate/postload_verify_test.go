@@ -189,6 +189,43 @@ func TestDetermineVerify_NonTerminalPipeSaysWhyItSkipped(t *testing.T) {
 	}
 }
 
+// TestDetermineVerify_NonTerminalPipeDistinguishesEmptyAnswerFromNoAnswer
+// is issue #94's (audit finding L8) regression: a scripted bare newline
+// (`printf '\n' | migrate load ...`) is a real, explicit answer the user
+// (or script) provided — just an empty one — not the same thing as a
+// silent, unwritten pipe that never answers at all. Both used to report
+// gotAnswer=false and print the same "no answer was provided" message;
+// the final skip-verification behavior is unaffected either way (an empty
+// answer already means "no"), but the message must reflect what actually
+// happened.
+func TestDetermineVerify_NonTerminalPipeDistinguishesEmptyAnswerFromNoAnswer(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	if _, err := w.WriteString("\n"); err != nil {
+		t.Fatalf("writing scripted blank answer: %v", err)
+	}
+	w.Close()
+
+	var out strings.Builder
+	done := make(chan bool, 1)
+	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+
+	select {
+	case got := <-done:
+		if got {
+			t.Error("expected an empty answer to still default to false (skip verification)")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("determineVerify blocked on a scripted blank answer")
+	}
+	if strings.Contains(out.String(), "no answer was provided") {
+		t.Errorf("expected no \"no answer was provided\" message for an explicit (if blank) scripted answer, got %q", out.String())
+	}
+}
+
 // --- flag wiring at the `run`/`load` CLI level --------------------------
 
 // TestRun_LoadDryRunWithVerifyIsUsageError covers the second half of issue

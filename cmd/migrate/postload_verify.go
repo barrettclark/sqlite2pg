@@ -108,20 +108,28 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) bool {
 // harmless (it's a one-shot, not a loop, and nothing else reads stdin
 // after this point).
 func readAnswerWithDeadline(r io.Reader, d time.Duration) (string, bool) {
-	type result struct {
-		line string
-		ok   bool
-	}
-	ch := make(chan result, 1)
+	ch := make(chan string, 1)
 	go func() {
 		line, _ := bufio.NewReader(r).ReadString('\n')
-		line = strings.TrimRight(line, "\r\n")
-		ch <- result{line, line != ""}
+		ch <- strings.TrimRight(line, "\r\n")
 	}()
 
 	select {
-	case res := <-ch:
-		return res.line, res.ok
+	case line := <-ch:
+		// Whether a real answer arrived is entirely determined by which
+		// select case fired — the read completing (this one) versus the
+		// deadline elapsing (below) — not by what the line's content
+		// happened to be. The old `line != ""` check conflated "no answer
+		// arrived before the deadline" with "an answer arrived and it was
+		// a bare empty line" (e.g. a scripted `printf '\n' | migrate load
+		// ...`): both reported gotAnswer=false and the same "stdin is not
+		// a terminal and no answer was provided" message, even though the
+		// second case genuinely did receive the user's (blank) input
+		// (issue #94's audit, finding L8). determineVerify's final
+		// behavior is unaffected either way (an empty answer already
+		// means "no" via the y/yes check below) — only the diagnostic
+		// message was misleading.
+		return line, true
 	case <-time.After(d):
 		return "", false
 	}
