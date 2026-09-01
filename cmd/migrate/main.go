@@ -546,11 +546,13 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	pgTableNames := ddl.PostgresTableNames(cfg)
 
 	var totalRows int64
+	sourceRowCounts := make(map[string]int64, len(tableNames))
 	for _, tableName := range tableNames {
 		n, err := sqlitereader.CountRows(sourceDB, tableName)
 		if err != nil {
 			return fmt.Errorf("counting rows in %s: %w", tableName, err)
 		}
+		sourceRowCounts[tableName] = int64(n)
 		totalRows += int64(n)
 	}
 	progress := newProgressReporter(totalRows)
@@ -558,6 +560,77 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	for _, tableName := range tableNames {
 		tc := cfg.Tables[tableName]
 		pgTable := pgTableNames[tableName]
+		// A table only reaches this point if it's not yet in Completed
+		// (filtered out above), but --resume can still find it already
+		// created: markTableCompleted only runs after COPY finishes, so a
+		// mid-COPY failure in a prior run leaves the (empty — a single
+		// COPY statement outside an explicit transaction is its own
+		// implicit transaction, so a failure here leaves zero rows, never
+		// a partial load) table behind. Without a check here, CREATE
+		// TABLE below would hit "relation already exists" and --resume
+		// could never get past the exact table it's supposed to resume
+		// (issue #78).
+		//
+		// A NONZERO row count means something different, though: COPY
+		// itself already committed successfully (per the same
+		// one-statement-one-implicit-transaction guarantee — there's no
+		// such thing as a partially-committed COPY), and the process
+		// simply died in the narrow window between LoadTable returning
+		// and markTableCompleted's write below. Dropping and reloading in
+		// that case would silently destroy real, correctly-loaded data —
+		// strictly worse than the original bug, an error instead of data
+		// loss (Copilot PR #99 finding). Reconcile the state file with
+		// what Postgres actually has instead: treat it as already done.
+		//
+		// Gated on resume: a fresh (non-resume) run always provisions a
+		// brand-new, empty database (connectForLoad), so this catalog
+		// probe would always resolve to "doesn't exist" there anyway —
+		// gating it avoids the extra round-trip per table on every
+		// ordinary load and keeps a non-resume run's behavior exactly
+		// what it was before this fix (Copilot PR #99 finding).
+		if resume {
+			qualifiedPgTable := pgx.Identifier{pgTable}.Sanitize()
+			var alreadyExists bool
+			if err := conn.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", qualifiedPgTable).Scan(&alreadyExists); err != nil {
+				return fmt.Errorf("checking whether %s (Postgres table %q) already exists: %w", tableName, pgTable, err)
+			}
+			if alreadyExists {
+				// EXISTS(... LIMIT 1), not COUNT(*): the empty-vs-nonempty
+				// distinction is all this needs, and COUNT(*) forces a
+				// full sequential scan that would make --resume
+				// unexpectedly slow on a large already-loaded table
+				// (Copilot PR #99 finding).
+				var hasRows bool
+				if err := conn.QueryRow(ctx, fmt.Sprintf("SELECT EXISTS (SELECT 1 FROM %s LIMIT 1)", qualifiedPgTable)).Scan(&hasRows); err != nil {
+					return fmt.Errorf("checking whether existing %s (Postgres table %q) has any rows: %w", tableName, pgTable, err)
+				}
+				if hasRows {
+					if err := markTableCompleted(statePath, tableName); err != nil {
+						return err
+					}
+					// The already-known SQLite source count, not another
+					// live Postgres query: besides avoiding yet another
+					// table scan, it keeps progress.done consistent with
+					// progress.total (built from these same source counts)
+					// by construction — a live Postgres count could exceed
+					// the source count (e.g. rows added outside this tool)
+					// and push the bar over 100% on later tables (Copilot
+					// PR #99 finding).
+					progress.skipAlreadyLoadedTable(tableName, sourceRowCounts[tableName])
+					continue
+				}
+				// IF EXISTS even though existence was just confirmed
+				// above: makes this resilient to a race between the
+				// to_regclass probe and this statement (e.g. a second
+				// concurrent --resume against the same database), and
+				// matches the "best-effort cleanup then recreate" intent
+				// (Copilot PR #99 finding) better than a bare DROP that
+				// would itself error on a table that's already gone.
+				if _, err := conn.Exec(ctx, "DROP TABLE IF EXISTS "+qualifiedPgTable); err != nil {
+					return fmt.Errorf("dropping empty partially-created %s (Postgres table %q) before recreating it: %w", tableName, pgTable, err)
+				}
+			}
+		}
 		stmt, err := ddl.GenerateCreateTable(pgTable, tc)
 		if err != nil {
 			return fmt.Errorf("generating DDL for %s: %w", tableName, err)
