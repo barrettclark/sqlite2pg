@@ -211,6 +211,84 @@ func TestDecideColumn_FlagsForReviewWhenDefaultPassthroughSampleMixesIncompatibl
 	}
 }
 
+func TestDecideColumn_FlagsForReviewWhenNoTransformPassthroughFullTableHasAStorageClassMismatch(t *testing.T) {
+	// Issue #69: a column with no heuristic opinion resolves to
+	// default_passthrough. fallbackTypeFor sees an all-INTEGER sample and
+	// picks "integer" at 0.99, and fallbackSampleMismatch finds nothing
+	// wrong in the sample. But SQLite's dynamic typing let one row hold a
+	// text value ("Unknown" — DisabilityCompByCounty.db's real FIPS code
+	// column, 1 row of 3148) the 500-row sample missed. With no transform
+	// attached, this used to skip the full-table check entirely and
+	// auto-approve, then crash at COPY. It must be flagged for review.
+	db, _ := openTestDB(t, `CREATE TABLE counties (name TEXT, fips INTEGER);`)
+	db.Exec(`INSERT INTO counties (name, fips) VALUES ('Ada', 16001), ('Adams', 16003), ('Unknown', 'Unknown')`)
+
+	col := sqlitereader.ColumnInfo{Name: "fips", DeclaredType: "INTEGER"}
+	sample := []any{int64(16001), int64(16003)} // the "Unknown" row not drawn
+
+	cc, unresolved, err := decideColumn(db, "counties", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.TargetType != "integer" {
+		t.Errorf("expected the suggested type integer to still be shown, got %q", cc.TargetType)
+	}
+	if cc.Confidence >= 0.9 {
+		t.Errorf("expected confidence dropped below threshold once the full-table check found a non-integer value, got %f", cc.Confidence)
+	}
+	if !cc.NeedsReview {
+		t.Error("expected NeedsReview=true")
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase once the full-table check found a value default_passthrough's target can't hold")
+	}
+}
+
+func TestDecideColumn_NoTransformPassthroughAutoApprovesWhenFullTableIsClean(t *testing.T) {
+	// The counterpart: a genuinely clean INTEGER column still auto-approves
+	// at 0.99 — the issue #69 check must not gate every default_passthrough
+	// column, only the ones a full-table scan actually contradicts.
+	db, _ := openTestDB(t, `CREATE TABLE counties (fips INTEGER);`)
+	db.Exec(`INSERT INTO counties (fips) VALUES (16001), (16003), (16005), (16007)`)
+
+	col := sqlitereader.ColumnInfo{Name: "fips", DeclaredType: "INTEGER"}
+	sample := []any{int64(16001), int64(16003)}
+
+	cc, unresolved, err := decideColumn(db, "counties", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if unresolved != nil {
+		t.Fatalf("expected auto-approve for a clean full table, got UnresolvedCase: %+v", unresolved)
+	}
+	if cc.Confidence < 0.9 || cc.NeedsReview {
+		t.Errorf("expected auto-approve at high confidence, got confidence=%f needsReview=%v", cc.Confidence, cc.NeedsReview)
+	}
+	if cc.Source != "heuristic:default_passthrough" {
+		t.Errorf("expected default_passthrough source, got %q", cc.Source)
+	}
+}
+
+func TestDecideColumn_FlagsForReviewWhenNoTransformPassthroughFullTableHasAnInt4Overflow(t *testing.T) {
+	// Issue #69, second shape: fallbackTypeFor picks "integer" from an
+	// all-small-int sample, but the full table holds a value outside
+	// int4's range that the sample missed — the same COPY crash, caught by
+	// the same full-table scan (fitsTargetType's range check).
+	db, _ := openTestDB(t, `CREATE TABLE t (n INTEGER);`)
+	db.Exec(`INSERT INTO t (n) VALUES (10), (20), (5000000000)`)
+
+	col := sqlitereader.ColumnInfo{Name: "n", DeclaredType: "INTEGER"}
+	sample := []any{int64(10), int64(20)}
+
+	cc, unresolved, err := decideColumn(db, "t", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if unresolved == nil || !cc.NeedsReview {
+		t.Fatalf("expected a full-table int4-overflow value to be flagged for review, got needsReview=%v unresolved=%+v", cc.NeedsReview, unresolved)
+	}
+}
+
 func TestDecideColumn_PersistsDisagreementTieAsNeedsReview(t *testing.T) {
 	// Issue #20 bug 2: when resolver.Decide flags needsReview because two
 	// findings genuinely tie (as opposed to one being simply below
