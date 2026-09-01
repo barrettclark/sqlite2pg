@@ -138,7 +138,15 @@ func decideColumnTentative(table string, col sqlitereader.ColumnInfo, samples []
 	// the full-table check against it would always "find a violation" on
 	// row 1, streaming the entire table for an answer already known
 	// statically from the transform name.
-	if !needsReview && best.TransformExpr != "" && best.SuggestedType != ddl.DropSentinel {
+	// Issue #84: a heuristic can also win with a concrete SuggestedType and
+	// an EMPTY TransformExpr (the raw sample value already looks like the
+	// target type, nothing to convert) — the same "auto-approving with no
+	// full-table check" gap issue #69 closed for the zero-findings
+	// default_passthrough path, just reachable here too. CheckFallbackFit
+	// asks verifyTransformsAgainstFullTable to storage/range-check the raw
+	// value against SuggestedType even with no transform to run.
+	if !needsReview && best.SuggestedType != ddl.DropSentinel &&
+		(best.TransformExpr != "" || fallbackTargetNeedsStorageCheck(best.SuggestedType)) {
 		return config.ColumnConfig{}, nil, &pendingColumnDecision{
 			table:       table,
 			col:         col,
@@ -148,10 +156,11 @@ func decideColumnTentative(table string, col sqlitereader.ColumnInfo, samples []
 			needsReview: needsReview,
 			reason:      reason,
 			verifySpec: columnVerifySpec{
-				Column:     col.Name,
-				Transform:  best.TransformExpr,
-				TargetType: best.SuggestedType,
-				RejectNull: col.PrimaryKeySeq > 0 || col.NotNull,
+				Column:           col.Name,
+				Transform:        best.TransformExpr,
+				TargetType:       best.SuggestedType,
+				CheckFallbackFit: best.TransformExpr == "",
+				RejectNull:       col.PrimaryKeySeq > 0 || col.NotNull,
 			},
 		}
 	}

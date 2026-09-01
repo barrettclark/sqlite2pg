@@ -591,3 +591,37 @@ func TestDecideColumn_SkipsTheFullTableCheckForADroppedColumn(t *testing.T) {
 		t.Errorf("expected no UnresolvedCase for a dropped column, got %+v", unresolved)
 	}
 }
+
+// TestDecideColumn_HeuristicWinnerWithNoTransformStillGetsFullTableCheck is
+// a regression test for issue #84's latent half: decideColumnTentative's
+// "auto-approve" branch only ran a full-table check when the winning
+// finding carried a Transform. Issue #69 already proved a no-transform
+// decision can still crash COPY on a full-table value the sample missed
+// — but it only closed that gap for the zero-findings default_passthrough
+// path, not for a genuine heuristic that wins with a concrete SuggestedType
+// and an empty TransformExpr (the raw sample value already looks like the
+// target type). This injects such a finding via extraFindings — standing
+// in for a future/hypothetical heuristic of that shape, since none
+// currently registered actually attaches an empty TransformExpr — and
+// confirms the full table's one non-conforming row still gets caught.
+func TestDecideColumn_HeuristicWinnerWithNoTransformStillGetsFullTableCheck(t *testing.T) {
+	db, _ := openTestDB(t, `CREATE TABLE t (n INTEGER);`)
+	db.Exec(`INSERT INTO t (n) VALUES (10), (20), (3.5)`)
+
+	col := sqlitereader.ColumnInfo{Name: "n", DeclaredType: "INTEGER"}
+	sample := []any{int64(10), int64(20)}
+	noTransformFinding := profiler.Finding{
+		SuggestedType: "integer",
+		Confidence:    0.99,
+		Rationale:     "test: raw sample value already looks like the target type",
+		Heuristic:     "test_no_transform_heuristic",
+	}
+
+	cc, unresolved, err := decideColumn(db, "t", col, sample, 0.9, noTransformFinding)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if unresolved == nil || !cc.NeedsReview {
+		t.Fatalf("expected the full-table REAL row to be caught even though the winning finding had no transform, got needsReview=%v unresolved=%+v", cc.NeedsReview, unresolved)
+	}
+}
