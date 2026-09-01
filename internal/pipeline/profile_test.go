@@ -266,3 +266,37 @@ func TestProfileDatabase_RescuesASparseColumnMissedByRandomSampling(t *testing.T
 		t.Errorf("expected creation_date to resolve to date via yyyymmdd_date despite being almost entirely NULL, got %q via %q", col.TargetType, col.Source)
 	}
 }
+
+// TestProfileDatabase_WidensVARCHARSuggestionToFitRealData is a regression
+// test for issue #84: varcharSuggestions derives N purely from the
+// declared SQLite type, which SQLite never enforces — a real row can
+// exceed it. If the reviewer accepts the suggestion as originally shown,
+// that row would abort COPY with "value too long for type character
+// varying(N)". The suggestion must widen to the table's actual longest
+// value instead.
+func TestProfileDatabase_WidensVARCHARSuggestionToFitRealData(t *testing.T) {
+	db, path := openTestDB(t, `
+		CREATE TABLE customers (
+			id INTEGER PRIMARY KEY,
+			first_name VARCHAR(5),
+			city VARCHAR(100)
+		);
+	`)
+	db.Exec(`INSERT INTO customers (first_name, city) VALUES (?, ?)`, "Alex", "Springfield")
+	// SQLite doesn't enforce VARCHAR(5); this row's first_name is 11 bytes,
+	// well past the declared length.
+	db.Exec(`INSERT INTO customers (first_name, city) VALUES (?, ?)`, "Bartholomew", "Shelbyville")
+
+	result, err := ProfileDatabase(db, path, 500, 0.9)
+	if err != nil {
+		t.Fatalf("ProfileDatabase: %v", err)
+	}
+
+	firstName := result.Config.Tables["customers"].Columns["first_name"]
+	if firstName.TargetType != "varchar(11)" {
+		t.Errorf("expected first_name widened to varchar(11) to fit \"Bartholomew\", got %q", firstName.TargetType)
+	}
+	if firstName.Reviewed {
+		t.Error("expected first_name to still be flagged for review, not auto-applied")
+	}
+}

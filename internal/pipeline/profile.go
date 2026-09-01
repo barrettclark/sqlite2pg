@@ -160,6 +160,21 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 
 		varcharLens := varcharSuggestions(table.Columns)
 
+		// One batched scan for every VARCHAR-suggested column's actual max
+		// length, not one MAX(LENGTH(...)) query per column — a table with
+		// several varying VARCHAR(N) declarations (the "MySQL-origin
+		// export" shape varcharSuggestions specifically targets) would
+		// otherwise partially undermine issue #55's whole point just below
+		// (Copilot PR #96 finding).
+		varcharCols := make([]string, 0, len(varcharLens))
+		for name := range varcharLens {
+			varcharCols = append(varcharCols, name)
+		}
+		varcharMaxLens, err := sqlitereader.MaxTextLengths(db, table.Name, varcharCols)
+		if err != nil {
+			return nil, fmt.Errorf("measuring VARCHAR lengths against the full table for %s: %w", table.Name, err)
+		}
+
 		// Issue #55: phase 1 decides every column from its sample alone
 		// (decideColumnTentative never touches db), collecting a
 		// *pendingColumnDecision for any column that would otherwise
@@ -184,7 +199,11 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 
 			var extra []profiler.Finding
 			if n, ok := varcharLens[col.Name]; ok {
-				extra = append(extra, varcharFinding(n))
+				widened := n
+				if maxLen, found := varcharMaxLens[col.Name]; found && maxLen > widened {
+					widened = maxLen
+				}
+				extra = append(extra, varcharFinding(n, widened))
 			}
 
 			cc, uc, pending := decideColumnTentative(table.Name, col, samples, threshold, extra...)
@@ -378,16 +397,29 @@ func varcharSuggestions(columns []sqlitereader.ColumnInfo) map[string]int {
 }
 
 // varcharFinding builds the Finding that gets a VARCHAR(N) column
-// suggested as varchar(N) instead of text. Its confidence is deliberately
-// held below any normal auto-approve threshold — this issue (#7) requires
-// a human confirm the length looks real before it's carried into the
-// target schema, since a wrong carried-over length risks a load failure
-// text would never have.
-func varcharFinding(n int) profiler.Finding {
+// suggested as varchar(target) instead of text. Its confidence is
+// deliberately held below any normal auto-approve threshold — this issue
+// (#7) requires a human confirm the length looks real before it's carried
+// into the target schema, since a wrong carried-over length risks a load
+// failure text would never have.
+//
+// declaredN is the length SQLite's own VARCHAR(N) declaration carries;
+// target is what's actually suggested, which may be wider — issue #84:
+// SQLite never enforces a declared VARCHAR(N) length, so a real row can
+// (and, per the audit that found this, does in practice) exceed it. Widening
+// the suggestion to the table's actual longest value up front means
+// accepting the suggestion as shown can never itself abort a COPY on
+// length; declaredN stays in the rationale so a reviewer can still see the
+// original schema intent even when the tool corrected it.
+func varcharFinding(declaredN, target int) profiler.Finding {
+	rationale := fmt.Sprintf("declared VARCHAR(%d), and this table's VARCHAR column lengths vary rather than sharing one blanket value — the length looks like a real constraint, but SQLite never enforced it, so confirm before keeping it", declaredN)
+	if target > declaredN {
+		rationale = fmt.Sprintf("%s (widened to %d: a full-table scan found a value longer than the declared %d, which SQLite never enforced)", rationale, target, declaredN)
+	}
 	return profiler.Finding{
-		SuggestedType: fmt.Sprintf("varchar(%d)", n),
+		SuggestedType: fmt.Sprintf("varchar(%d)", target),
 		Confidence:    0.5,
-		Rationale:     fmt.Sprintf("declared VARCHAR(%d), and this table's VARCHAR column lengths vary rather than sharing one blanket value — the length looks like a real constraint, but SQLite never enforced it, so confirm before keeping it", n),
+		Rationale:     rationale,
 		Heuristic:     "varchar_length_preservation",
 	}
 }
