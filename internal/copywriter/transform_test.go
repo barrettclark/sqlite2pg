@@ -735,8 +735,18 @@ func TestTransform_TextToJsonb_ValidatesBlobInput(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Transform: %v", err)
 	}
-	if _, ok := got.([]byte); !ok {
-		t.Fatalf("expected []byte passed through, got %T", got)
+	// Must return a string, not the raw []byte, even though the input was
+	// []byte: verify_load.go's expectedForCompare only canonicalizes a
+	// jsonb comparison's expected value when it's a string (issue #61) —
+	// returning []byte unchanged would skip that and false-fail the
+	// moment Postgres reformats whitespace/key order on storage
+	// (Copilot PR #98 finding).
+	s, ok := got.(string)
+	if !ok {
+		t.Fatalf("expected string, got %T", got)
+	}
+	if s != `{"type":"Point","coordinates":[1,2]}` {
+		t.Errorf("expected the JSON text unchanged, got %q", s)
 	}
 
 	if _, err := Transform("text_to_jsonb", []byte("not json")); err == nil {

@@ -278,7 +278,14 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		if !json.Valid(b) {
 			return nil, fmt.Errorf("text_to_jsonb: %q is not valid JSON", b)
 		}
-		return raw, nil
+		// Always a string, not `raw` unchanged: verify_load.go's
+		// expectedForCompare only canonicalizes a jsonb comparison's
+		// expected value when it's a string (issue #61) — a []byte
+		// passed through as-is would skip that canonicalization and
+		// false-fail the moment Postgres reformats whitespace/key order
+		// on storage, reintroducing #61's exact bug for the []byte-input
+		// case (Copilot PR #98 finding).
+		return string(b), nil
 
 	case "julian_day_to_date":
 		f, ok := toFloat64(raw)
