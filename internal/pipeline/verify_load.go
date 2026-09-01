@@ -6,6 +6,7 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
+	"io"
 	"math"
 	"math/big"
 	"sort"
@@ -843,8 +844,12 @@ func canonicalJSON(s string) string {
 	if err := dec.Decode(&v); err != nil {
 		return s
 	}
-	// Reject trailing content after one JSON value (json.Unmarshal did).
-	if dec.More() {
+	// json.Unmarshal rejects trailing content after a top-level value
+	// ("1 2", "{}x"); mirror that so canonicalJSON only ever transforms a
+	// genuine single JSON document and passes anything else through
+	// unchanged. After a complete value the decoder's next Token is
+	// io.EOF (whitespace aside) iff nothing else follows.
+	if _, err := dec.Token(); err != io.EOF {
 		return s
 	}
 	var b strings.Builder

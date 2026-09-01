@@ -66,3 +66,26 @@ func TestCanonicalJSON_NonJSONPassesThrough(t *testing.T) {
 		t.Errorf("canonicalJSON(%q) = %q, want it unchanged", "not json", got)
 	}
 }
+
+// TestCanonicalJSON_TrailingContentPassesThrough covers the Copilot PR #72
+// follow-up: input that parses as one JSON value but has extra tokens
+// after it (`1 2`, `{}x`) is not a single valid JSON document —
+// json.Unmarshal rejects it — so canonicalJSON must return it unchanged,
+// not canonicalize the leading value.
+func TestCanonicalJSON_TrailingContentPassesThrough(t *testing.T) {
+	for _, s := range []string{`1 2`, `{}x`, `[1,2] 3`, `"a" "b"`, `true false`} {
+		if got := canonicalJSON(s); got != s {
+			t.Errorf("canonicalJSON(%q) = %q, want it unchanged (trailing content is not one valid JSON value)", s, got)
+		}
+	}
+}
+
+// TestCanonicalJSON_TrailingWhitespaceIsFine confirms the trailing-content
+// check doesn't over-reach: whitespace after a value is valid JSON.
+func TestCanonicalJSON_TrailingWhitespaceIsFine(t *testing.T) {
+	a := canonicalJSON("{\"a\":1}\n\t ")
+	b := canonicalJSON(`{"a":1}`)
+	if a != b {
+		t.Errorf("canonicalJSON rejected trailing whitespace: %q vs %q", a, b)
+	}
+}
