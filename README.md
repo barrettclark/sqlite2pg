@@ -59,10 +59,9 @@ migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the l
 
 - **`run`** is `profile` + `review` + `load` collapsed into one command, with
   a Confirm/Cancel gate in the review screen controlling whether `load` runs
-  at all.
-  `--keep-config` keeps the generated `<source>.migration.yaml` afterward
-  instead of deleting it (useful for inspecting exactly what was loaded, or
-  for a later `--resume`).
+  at all. `--keep-config` keeps the generated `<source>.migration.yaml`
+  afterward instead of deleting it (useful for inspecting exactly what was
+  loaded, or for a later `--resume`).
 - **`profile`** never touches Postgres. It reads the SQLite schema, samples
   rows per column, runs every registered heuristic, and writes a draft
   `*.migration.yaml` config. Columns below the confidence threshold (default
@@ -88,57 +87,35 @@ migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the l
   row and every included column from *both* sides and confirms the Postgres
   copy is byte-for-byte correct — not a spot check. It reads the database
   name to connect to from `<config>.state.json` (the same file `--resume`
-  uses), so it always needs a completed `migrate load` (or `load --resume`)
-  against that exact config first. Run it after every load as the real
-  pass/fail gate on data integrity — exit code is non-zero on any mismatch.
+  uses), so it needs a completed `migrate load` (or `load --resume`) against
+  that exact config first. Run it after every load as the real pass/fail
+  gate on data integrity — exit code is non-zero on any mismatch.
   `--out <path>` writes the detailed report to a file instead of stdout; a
   clean run reports 0 mismatches, a dirty one lists every mismatching
-  column with up to 20 examples plus the true total count even when
-  capped. How precisely those examples correspond to source rows depends
-  on whether the table has a primary key:
-    - **With a primary key**, both SQLite and Postgres are read genuinely
-      `ORDER BY <primary key>` — not a bare sequential scan on either side
-      — so the comparison is a real, deterministic row-by-row match. This
-      closes a gap found during this feature's own development: without an
-      explicit `ORDER BY`, Postgres 18 was observed, directly and
-      reproducibly (on real fixtures — `bikes.db`, `chinook.db`'s `tracks`
-      table), not to reliably return a freshly-COPY'd, entirely untouched
-      table's rows in insertion order on a plain sequential scan — which
-      could make `verify` report a mismatch that was really just
-      scan-order drift, not corrupted data. Ordering both sides by the
-      primary key sidesteps that risk entirely (as does a table modified
-      since its load, e.g. by an `UPDATE`, which rewrites a row as a new
-      physical tuple not guaranteed to land back in its old scan position —
-      the same fix covers that case too). For a text-typed (or partially
-      text) primary key, "genuinely `ORDER BY <primary key>`" specifically
-      means byte-order on both sides: SQLite's default text comparison is
-      `BINARY`, while a bare Postgres `ORDER BY` uses whatever collation
-      the target database happens to be configured with (e.g.
-      `en_US.UTF-8`, locale-aware) — these routinely disagree (`"Makefile.in"`
-      sorts before `"aclocal.m4"` under `BINARY` but after it under
-      `en_US.UTF-8`), which would otherwise silently misalign the two
-      sides' row order and produce false-positive mismatches despite the
-      data being identical (found during a validation campaign against
-      `sqliterepo.db`'s `vcache` table — 1,424 of 1,525 rows falsely
-      flagged). `verify` closes this by appending `COLLATE "C"` (Postgres's
-      byte-order collation) to every text-typed primary-key column in its
-      `ORDER BY`. Each reported example names the exact row (source value,
-      expected transformed value, actual Postgres value).
-    - **Without a primary key**, there's no column set to order by that's
-      both guaranteed unique and safe to trust for this — so `verify`
-      instead compares each included column as a value *multiset*: every
-      value from both sides is collected and sorted into the same
-      canonical order, then compared position by position in that sorted
-      order. This still exhaustively catches any genuine value difference
-      with no scan-order false positives, but a reported example is a
-      position in the *sorted comparison*, not a source row — the report
-      says so explicitly rather than implying row-position precision it
-      doesn't have. This path also holds a full column's worth of values
-      from both sides in memory to sort them, more expensive than the
-      primary-key path's streaming comparison — an accepted tradeoff, paid
-      only by tables that lack a primary key.
-  See the doc comment on `internal/pipeline.VerifyTable` for the full
-  detail on both paths.
+  column with up to 20 examples plus the true total count even when capped.
+  When the table has a primary key, both sides are read in genuine
+  `ORDER BY <primary key>` order (byte-order-collated on both sides, even
+  for text keys), so mismatches are a real, deterministic row-by-row match —
+  this ordering was added specifically because a bare sequential scan proved
+  unsafe: Postgres 18 doesn't reliably return a freshly-COPY'd table's rows
+  in insertion order, and a locale-aware Postgres collation can disagree
+  with SQLite's default byte-order text comparison, either of which used to
+  produce false-positive mismatches. Without a usable primary key, `verify`
+  instead compares each column as a sorted value multiset — still
+  exhaustive, but a reported example is a position in the sorted comparison,
+  not a source row. See the doc comment on `internal/pipeline.VerifyTable`
+  for the full detail on both paths.
+- **Automatic post-load verification**: `run` and `load` both accept
+  `--verify` (run verification unconditionally after a successful load) and
+  `--noverify` (never run it); passing both is a usage error. With neither
+  flag, they prompt interactively (`Run migrate verify now? [y/N]:`) and
+  default to *not* verifying on a bare Enter, since verification re-streams
+  every row and can take a while. This runs against the in-memory config and
+  connection the load itself just used, not by re-reading files from disk,
+  so it works for `run` whether or not `--keep-config` was passed. A
+  mismatch found here is reported as a distinct, serious finding (the load
+  already succeeded) and exits non-zero, mirroring standalone `verify`. See
+  `cmd/migrate/postload_verify.go`'s doc comments for the full detail.
 
 ## Extending the profiler
 
@@ -158,45 +135,29 @@ real-world dogfooding caught a gap — never requires touching an existing
 heuristic. Every heuristic has a same-named `_test.go` with table-driven
 unit tests and no I/O.
 
-## Known limitation: sampling can miss rare rows
+## Known limitations
 
-Type decisions start from a bounded sample (`--sample-size`, default 500),
-not a full table scan. A rare edge-case value that falls outside the sample
-(e.g. a single aggregate/catch-all row) can look fine at profiling time —
-but before any such decision is auto-approved, it's re-verified by running
-the real transform against *every* row in the full table, not just the
-sample. A value the sample never saw that would break the transform (or
-that overflows the target column's numeric range, or would NULL out a
-primary-key column) drops the column's confidence and routes it to human
-review instead of silently reaching COPY. This closed the original gap
-for auto-approved decisions — see `internal/pipeline/verify_transform.go`.
-
-What full-table verification does *not* catch: a decision a human
-explicitly reviews and approves is taken on trust, since review is the
-whole point of that gate. And a transform that can never itself return an
-error (a bare pass-through) only catches what its underlying validity
-check covers — e.g. `text_to_jsonb` verifies well-formed JSON, but a
-transform with no such check of its own has nothing for the full-table
-pass to catch. For small tables, passing a `--sample-size` at or above the
-row count still avoids the sample/full-table distinction entirely. This
-surfaced for real during development — see
-`internal/pipeline/integration_test.go`'s comment on
-`DisabilityCompByCounty.db`.
-
-## Known limitation: no transform for a genuinely per-row-polymorphic column
-
-SQLite's dynamic typing allows a single column to legitimately hold
-different storage classes in different rows — e.g. Fossil SCM's
-`config.value`, which holds integers, blobs, and text in different rows of
-the same column, all by design, not as dirty data. There is currently no
-`copywriter` transform that can losslessly migrate a truly mixed-type
-column like this into one static Postgres column type. This is a
-deliberate, known limitation rather than a bug: Postgres has no direct
-equivalent to SQLite's per-value dynamic typing, and closing this gap would
-mean either a `jsonb`-wrapping transform (won't preserve the exact source
-type of every value) or a human-reviewed, table-specific approach — neither
-of which this tool does automatically today. A table with a column like
-this needs manual handling.
+- **Sampling can miss rare rows.** Type decisions start from a bounded
+  sample (`--sample-size`, default 500), not a full table scan. Before any
+  auto-approved decision is trusted, it's re-verified by running the real
+  transform against *every* row in the full table — a value the sample
+  never saw that would break the transform, overflow the target column's
+  range, or NULL out a primary key drops confidence and routes the column
+  to human review instead of silently reaching COPY (see
+  `internal/pipeline/verify_transform.go`). Two things this doesn't catch:
+  a decision a human explicitly approves is taken on trust, and a transform
+  that can never itself error (a bare pass-through) only catches what its
+  own underlying validity check covers — e.g. `text_to_jsonb` verifies
+  well-formed JSON, but a transform with no such check has nothing for the
+  full-table pass to catch. For small tables, a `--sample-size` at or above
+  the row count avoids the distinction entirely.
+- **No transform for a genuinely per-row-polymorphic column.** SQLite's
+  dynamic typing allows a single column to legitimately hold different
+  storage classes per row (e.g. Fossil SCM's `config.value`, mixing
+  integers, blobs, and text by design). There's no `copywriter` transform
+  that can losslessly migrate that into one static Postgres column type —
+  a deliberate limitation, since Postgres has no equivalent to per-value
+  dynamic typing. Such a table needs manual handling.
 
 ## Testing
 

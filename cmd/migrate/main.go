@@ -72,11 +72,17 @@ func runRun(args []string) error {
 	sampleSize := fs.Int("sample-size", 500, "rows to sample per column")
 	threshold := fs.Float64("threshold", 0.9, "confidence below which a column is highlighted as needing review")
 	keepConfig := fs.Bool("keep-config", false, "keep the generated <source>.migration.yaml after the run instead of deleting it")
+	verifyFlag := fs.Bool("verify", false, "automatically run verification after a successful load, no prompt (mutually exclusive with --noverify)")
+	noverifyFlag := fs.Bool("noverify", false, "skip verification after a successful load, no prompt (mutually exclusive with --verify)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	verifyMode, err := resolveVerifyMode(*verifyFlag, *noverifyFlag)
+	if err != nil {
+		return err
+	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: migrate run --pg url [--sample-size N] [--threshold F] <source.db>")
+		return errors.New("usage: migrate run --pg url [--sample-size N] [--threshold F] [--keep-config] [--verify|--noverify] <source.db>")
 	}
 	if *pgURL == "" {
 		return errors.New("--pg is required (use `migrate profile` + `migrate review` separately if you don't have a target yet)")
@@ -137,7 +143,34 @@ func runRun(args []string) error {
 	}
 
 	loadErr := executeLoad(cfg, connCfg, false, statePath)
-	return cleanupConfigAfterLoad(loadErr, configPath, *keepConfig)
+	if loadErr != nil {
+		return cleanupConfigAfterLoad(loadErr, configPath, *keepConfig)
+	}
+
+	// Verification runs against cfg/connCfg — already fully resolved
+	// in-memory — deliberately BEFORE cleanupConfigAfterLoad below, so it
+	// works correctly regardless of whether --keep-config was passed (see
+	// runPostLoadVerify's doc comment). Cleanup itself always runs
+	// afterward exactly as it did before these flags existed; a
+	// verification failure is reported but does not change what cleanup
+	// does.
+	verifyErr := runPostLoadVerify(context.Background(), cfg, connCfg, verifyMode, os.Stdin, os.Stdout)
+	return runRunFinish(verifyErr, configPath, *keepConfig)
+}
+
+// runRunFinish is the tail of runRun's success path, extracted so it can be
+// exercised directly by tests that need to force a genuine cleanup failure
+// (e.g. an unremovable config path) alongside a genuine verification
+// failure. A post-load verification mismatch is a real data-integrity
+// finding — the load already succeeded and the bad/mismatched data is
+// already sitting in Postgres — so it must never be silently replaced by a
+// subsequent, usually far less important, cleanup error (e.g. "permission
+// denied" removing the generated config). errors.Join combines both when
+// both occur; when only one occurs (the common case) it is returned
+// unchanged, and when neither occurs the result is nil.
+func runRunFinish(verifyErr error, configPath string, keepConfig bool) error {
+	cleanupErr := cleanupConfigAfterLoad(nil, configPath, keepConfig)
+	return errors.Join(verifyErr, cleanupErr)
 }
 
 // cleanupConfigAfterLoad decides what becomes of a `run`-generated config
@@ -305,11 +338,17 @@ func runLoad(args []string) error {
 	force := fs.Bool("force", false, "proceed even with unreviewed columns above the confidence gate")
 	resume := fs.Bool("resume", false, "skip tables already completed in a prior run, per <config>.state.json")
 	threshold := fs.Float64("threshold", 0.9, "confidence gate enforced unless --force")
+	verifyFlag := fs.Bool("verify", false, "automatically run verification after a successful load, no prompt (mutually exclusive with --noverify)")
+	noverifyFlag := fs.Bool("noverify", false, "skip verification after a successful load, no prompt (mutually exclusive with --verify)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
+	verifyMode, err := resolveVerifyMode(*verifyFlag, *noverifyFlag)
+	if err != nil {
+		return err
+	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: migrate load [--pg url] [--dry-run] [--force] <config.migration.yaml>")
+		return errors.New("usage: migrate load [--pg url] [--dry-run] [--force] [--resume] [--threshold F] [--verify|--noverify] <config.migration.yaml>")
 	}
 	configPath := fs.Arg(0)
 
@@ -368,7 +407,10 @@ func runLoad(args []string) error {
 		return err
 	}
 
-	return executeLoad(cfg, connCfg, *resume, statePath)
+	if err := executeLoad(cfg, connCfg, *resume, statePath); err != nil {
+		return err
+	}
+	return runPostLoadVerify(context.Background(), cfg, connCfg, verifyMode, os.Stdin, os.Stdout)
 }
 
 // printDryRunDDL writes the CREATE TABLE statements, foreign key
