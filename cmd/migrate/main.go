@@ -558,6 +558,21 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	for _, tableName := range tableNames {
 		tc := cfg.Tables[tableName]
 		pgTable := pgTableNames[tableName]
+		// A table only reaches this point if it's not yet in Completed
+		// (filtered out above), but --resume can still find it already
+		// created: markTableCompleted only runs after COPY finishes, so a
+		// mid-COPY failure in a prior run leaves the (empty — a single
+		// COPY statement outside an explicit transaction is its own
+		// implicit transaction, so a failure here leaves zero rows, never
+		// a partial load) table behind. Without this, CREATE TABLE below
+		// would hit "relation already exists" and --resume could never
+		// get past the exact table it's supposed to resume (issue #78).
+		// Unconditional rather than resume-gated: a fresh (non-resume)
+		// run always provisions a brand-new database (connectForLoad),
+		// so this is a genuine no-op there.
+		if _, err := conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", pgx.Identifier{pgTable}.Sanitize())); err != nil {
+			return fmt.Errorf("dropping any partially-created %s before recreating it: %w", tableName, err)
+		}
 		stmt, err := ddl.GenerateCreateTable(pgTable, tc)
 		if err != nil {
 			return fmt.Errorf("generating DDL for %s: %w", tableName, err)
