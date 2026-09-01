@@ -746,9 +746,13 @@ func julianDayToDate(jdn int64) time.Time {
 	return time.Date(int(year), time.Month(month), int(day), 0, 0, 0, 0, time.UTC)
 }
 
-// floorDiv returns floor(a/b) for b > 0 — unlike Go's built-in /, which
-// truncates toward zero and so disagrees with floor division whenever a is
-// negative and the division isn't exact.
+// floorDiv returns floor(a/b) for any nonzero b (the (a < 0) != (b < 0)
+// check below handles a negative divisor too, not just a negative
+// dividend) — unlike Go's built-in /, which truncates toward zero and so
+// disagrees with floor division whenever the operands' signs differ and
+// the division isn't exact. julianDayToDate's own divisors are always
+// positive literals, but the function itself isn't restricted to that
+// case.
 func floorDiv(a, b int64) int64 {
 	q := a / b
 	if a%b != 0 && (a < 0) != (b < 0) {
