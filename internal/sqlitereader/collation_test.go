@@ -113,3 +113,31 @@ func TestParseColumnCollations_NoEmptyKeyFromMalformedInput(t *testing.T) {
 		t.Errorf("parseColumnCollations produced a \"\"-keyed entry: %+v", got)
 	}
 }
+
+// TestColumnCollations_TableNameContainingAParenDoesNotConfuseTheParser is
+// issue #91's (audit finding L5) regression: parseColumnCollations used to
+// find the column-definition list's opening '(' by searching for the
+// first '(' anywhere in the CREATE TABLE text — but a table literally
+// named with one (a valid, if unusual, quoted identifier) makes that
+// search match the '(' inside the quoted table name instead, parsing the
+// column-definition body from the wrong offset and silently leaving every
+// column at its BINARY default.
+func TestColumnCollations_TableNameContainingAParenDoesNotConfuseTheParser(t *testing.T) {
+	db := openTestDB(t, `
+		CREATE TABLE "foo(bar)" (
+			name TEXT COLLATE NOCASE,
+			bio TEXT
+		);
+	`)
+
+	got, err := ColumnCollations(db, "foo(bar)")
+	if err != nil {
+		t.Fatalf("ColumnCollations: %v", err)
+	}
+	if got["name"] != "NOCASE" {
+		t.Errorf("ColumnCollations()[\"name\"] = %q, want \"NOCASE\"", got["name"])
+	}
+	if got["bio"] != "BINARY" {
+		t.Errorf("ColumnCollations()[\"bio\"] = %q, want \"BINARY\"", got["bio"])
+	}
+}
