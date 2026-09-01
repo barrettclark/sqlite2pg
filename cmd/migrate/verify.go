@@ -78,6 +78,44 @@ func runVerify(args []string) error {
 	}
 	defer sourceDB.Close()
 
+	reportOut := io.Writer(os.Stdout)
+	if *outPath != "" {
+		f, err := os.Create(*outPath)
+		if err != nil {
+			return fmt.Errorf("creating report file %s: %w", *outPath, err)
+		}
+		defer f.Close()
+		reportOut = f
+	}
+
+	summary, err := verifyLoadedTables(ctx, sourceDB, conn, cfg, os.Stdout, reportOut)
+	if err != nil {
+		return err
+	}
+	if *outPath != "" {
+		fmt.Printf("report written to %s\n", *outPath)
+	}
+
+	if !summary.passed() {
+		return fmt.Errorf("verification FAILED: %d table(s) with row-count mismatches, %d value mismatch(es) across %d table(s) checked",
+			summary.rowCountFailures, summary.totalMismatches, summary.tablesChecked)
+	}
+	fmt.Printf("verification passed: %d table(s) checked, %d row(s) compared, 0 mismatches\n", summary.tablesChecked, summary.totalRowsCompared)
+	return nil
+}
+
+// verifyLoadedTables runs pipeline.VerifyTable for every included table in
+// cfg, comparing sourceDB against conn, prints a "verifying <table>..."
+// progress line per table to progressOut as it goes, and writes the full
+// report (via writeVerifyReport) to reportOut. It's the single verification
+// engine both the standalone `migrate verify` command and the automatic
+// post-load verification path (`run`/`load --verify`, see
+// postload_verify.go) call — so the two can never independently drift in
+// what they check or how they report it, the same "two similar paths
+// silently disagree" failure mode this project has already hit more than
+// once (issues #40/#41, and the sortKeyFor/valuesMatch numeric-comparison
+// saga during this very feature's own development).
+func verifyLoadedTables(ctx context.Context, sourceDB *sql.DB, conn *pgx.Conn, cfg *config.MigrationConfig, progressOut io.Writer, reportOut io.Writer) (verifySummary, error) {
 	// Sorted for deterministic output, same convention executeLoad and
 	// printDryRunDDL already follow (cfg.Tables is a Go map).
 	var tableNames []string
@@ -106,35 +144,17 @@ func runVerify(args []string) error {
 			skipped = append(skipped, name)
 			continue
 		}
-		fmt.Printf("verifying %s...\n", name)
+		fmt.Fprintf(progressOut, "verifying %s...\n", name)
 		result, err := pipeline.VerifyTable(ctx, sourceDB, conn, name, pgTableNames[name], tc)
 		if err != nil {
-			return fmt.Errorf("verifying %s: %w", name, err)
+			return verifySummary{}, fmt.Errorf("verifying %s: %w", name, err)
 		}
 		results = append(results, result)
 	}
 
-	out := io.Writer(os.Stdout)
-	if *outPath != "" {
-		f, err := os.Create(*outPath)
-		if err != nil {
-			return fmt.Errorf("creating report file %s: %w", *outPath, err)
-		}
-		defer f.Close()
-		out = f
-	}
-
-	summary := writeVerifyReport(out, results, skipped)
-	if *outPath != "" {
-		fmt.Printf("report written to %s\n", *outPath)
-	}
-
-	if !summary.passed() {
-		return fmt.Errorf("verification FAILED: %d table(s) with row-count mismatches, %d value mismatch(es) across %d table(s) checked",
-			summary.rowCountFailures, summary.totalMismatches, len(results))
-	}
-	fmt.Printf("verification passed: %d table(s) checked, %d row(s) compared, 0 mismatches\n", len(results), summary.totalRowsCompared)
-	return nil
+	summary := writeVerifyReport(reportOut, results, skipped)
+	summary.tablesChecked = len(results)
+	return summary, nil
 }
 
 // verifySummary is writeVerifyReport's aggregate across every table it
@@ -144,6 +164,7 @@ type verifySummary struct {
 	rowCountFailures  int
 	totalMismatches   int
 	totalRowsCompared int
+	tablesChecked     int
 }
 
 func (s verifySummary) passed() bool {

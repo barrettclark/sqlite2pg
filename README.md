@@ -63,6 +63,10 @@ migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the l
   `--keep-config` keeps the generated `<source>.migration.yaml` afterward
   instead of deleting it (useful for inspecting exactly what was loaded, or
   for a later `--resume`).
+  After a successful load, `run` can also run the same checks as `migrate
+  verify` immediately, without a separate invocation — see **Automatic
+  post-load verification** below. This works the same regardless of
+  `--keep-config`.
 - **`profile`** never touches Postgres. It reads the SQLite schema, samples
   rows per column, runs every registered heuristic, and writes a draft
   `*.migration.yaml` config. Columns below the confidence threshold (default
@@ -81,6 +85,9 @@ migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the l
   `--dry-run` to print the generated DDL without connecting to Postgres, or
   `--resume` to skip tables a prior run already completed (tracked in
   `<config>.state.json`).
+  After a successful load, `load` can also run the same checks as `migrate
+  verify` immediately, without a separate invocation — see **Automatic
+  post-load verification** below.
 - **`resolve --apply resolutions.yaml`** merges human- (or Claude Code-)
   supplied answers for an `unresolved_report.yaml` back into the config, for
   cases no heuristic could confidently resolve on its own.
@@ -139,6 +146,39 @@ migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the l
       only by tables that lack a primary key.
   See the doc comment on `internal/pipeline.VerifyTable` for the full
   detail on both paths.
+
+### Automatic post-load verification
+
+`run` and `load` both accept two mutually exclusive flags controlling
+whether verification (the same engine and report `migrate verify` uses)
+runs automatically right after a successful load, without a separate
+`migrate verify` invocation:
+
+- **`--verify`** — run verification unconditionally after a successful
+  load, no prompt.
+- **`--noverify`** — never run verification after a successful load, no
+  prompt.
+- **Neither flag** (the default) — after the load finishes, prompt
+  interactively: `Run migrate verify now? [y/N]:`. Only an explicit `y` or
+  `yes` (case-insensitive) runs it; anything else, including a bare Enter,
+  skips it. This defaults to *not* verifying because verification re-streams
+  every row of the data just loaded and can take a while on a large import —
+  a bare Enter shouldn't silently commit you to that.
+- Passing both `--verify` and `--noverify` together is a usage error.
+
+Verification runs against the in-memory config and Postgres connection the
+load itself just used — never by re-reading `<config>.migration.yaml` or
+`<config>.state.json` from disk — so for `run` it works correctly whether
+or not `--keep-config` was passed, even though `run` deletes both files
+right after a successful load unless `--keep-config` is given.
+
+The load itself has already succeeded and the data is already in Postgres
+by the time verification runs, so a verification mismatch found here is
+reported as a distinct, serious finding — not treated as a failed import.
+`run`/`load` print the mismatch report clearly (making explicit that the
+*load* succeeded but *verification* found a problem) and exit non-zero,
+mirroring standalone `migrate verify`'s own exit-code convention, so a
+script driving `run --verify`/`load --verify` can detect it.
 
 ## Extending the profiler
 
