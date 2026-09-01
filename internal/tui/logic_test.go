@@ -45,10 +45,10 @@ func TestPreviewValueForType_CoercesNumericValuesRatherThanJustFlagging(t *testi
 		value, targetType, wantDisplay string
 		wantValid                      bool
 	}{
-		{"3.7", "integer", "3", true},
+		{"3", "integer", "3", true},
 		{"3", "double precision", "3.0", true},
 		{"3.5", "double precision", "3.5", true},
-		{"-2.9", "bigint", "-2", true},
+		{"-2", "bigint", "-2", true},
 		{"not-a-number", "integer", "not-a-number", false},
 		{"NULL", "integer", "NULL", true},
 	}
@@ -61,13 +61,50 @@ func TestPreviewValueForType_CoercesNumericValuesRatherThanJustFlagging(t *testi
 	}
 }
 
+// TestPreviewValueForType_RejectsFractionalValuesForIntegerTypes is issue
+// #80's (audit finding M1) regression: previewValueForType used to
+// "preview" a genuinely fractional value like "3.7" as "3" under
+// integer — a truncation the real load never performs, since with no
+// transform attached the raw value goes to pgx unconverted and fails.
+// Fractional values must be rejected outright, not silently truncated.
+func TestPreviewValueForType_RejectsFractionalValuesForIntegerTypes(t *testing.T) {
+	cases := []string{"integer", "bigint", "smallint"}
+	for _, targetType := range cases {
+		if _, _, valid := previewValueForType("3.7", targetType); valid {
+			t.Errorf("previewValueForType(%q, %q): expected invalid, not a silent truncation", "3.7", targetType)
+		}
+	}
+}
+
+// TestPreviewValueForType_IntegerPreservesExactPrecisionBeyondFloat64 is
+// issue #81's (audit finding M2) regression: previewValueForType used to
+// route integer previews through strconv.ParseFloat + int64(f), silently
+// corrupting any value beyond float64's ~15-17 significant digits — the
+// same bug numeric_text_to_integer itself was fixed for (issue #15), just
+// never mirrored in the TUI.
+func TestPreviewValueForType_IntegerPreservesExactPrecisionBeyondFloat64(t *testing.T) {
+	display, _, valid := previewValueForType("2124037125711300644", "bigint")
+	if !valid {
+		t.Fatal("expected valid")
+	}
+	if display != "2124037125711300644" {
+		t.Errorf("previewValueForType: got %q, want the exact 19-digit value unchanged (precision lost)", display)
+	}
+}
+
 func TestPreviewValueForType_ValidityForNonNumericTypes(t *testing.T) {
 	cases := []struct {
 		value, targetType string
 		wantValid         bool
 	}{
 		{"1", "boolean", true},
-		{"true", "boolean", true},
+		{"0", "boolean", true},
+		// "true"/"t"/"f" are no longer accepted: int_to_bool (the
+		// transform now backing this preview, issue #80's audit finding
+		// M1) only recognizes "0"/"1", matching the boolean01 heuristic's
+		// own scope — the only real SQLite storage shape this needs to
+		// handle, since SQLite has no boolean storage class.
+		{"true", "boolean", false},
 		{"90b141b9-c39f-4a26", "boolean", false},
 		{"2024-01-02", "date", true},
 		{"90b141b9-c39f-4a26", "date", false},
@@ -78,6 +115,31 @@ func TestPreviewValueForType_ValidityForNonNumericTypes(t *testing.T) {
 		_, _, valid := previewValueForType(c.value, c.targetType)
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, %q) valid = %v, want %v", c.value, c.targetType, valid, c.wantValid)
+		}
+	}
+}
+
+// TestPreviewValueForType_JsonbValidatesRealJSON is issue #80's (audit
+// finding M1) regression: jsonb used to fall into the default: catch-all
+// (meant for text/bytea), so any string — including plain prose —
+// validated as jsonb with no check at all; COPY would then fail with
+// "invalid input syntax for type json".
+func TestPreviewValueForType_JsonbValidatesRealJSON(t *testing.T) {
+	cases := []struct {
+		value     string
+		wantValid bool
+	}{
+		{`{"type":"Point","coordinates":[1,2]}`, true},
+		{"plain prose, not JSON at all", false},
+		{"NULL", true},
+	}
+	for _, c := range cases {
+		_, transform, valid := previewValueForType(c.value, "jsonb")
+		if valid != c.wantValid {
+			t.Errorf("previewValueForType(%q, \"jsonb\") valid = %v, want %v", c.value, valid, c.wantValid)
+		}
+		if valid && c.value != "NULL" && transform != "text_to_jsonb" {
+			t.Errorf("previewValueForType(%q, \"jsonb\") transform = %q, want %q", c.value, transform, "text_to_jsonb")
 		}
 	}
 }
@@ -315,8 +377,9 @@ func TestPreviewValueForType_ReturnsTheTransformUsedToProduceEachPreview(t *test
 	cases := []struct {
 		value, targetType, wantTransform string
 	}{
-		{"3.7", "integer", ""},                              // native numeric passthrough
-		{"1", "boolean", ""},                                // native boolean-shaped passthrough
+		{"3", "integer", "numeric_text_to_integer"},         // issue #80/#81
+		{"1", "boolean", "int_to_bool"},                     // issue #80
+		{`{"a":1}`, "jsonb", "text_to_jsonb"},                // issue #80
 		{"anything at all", "text", ""},                     // native text passthrough
 		{"1712345678", "timestamptz", "unix_epoch_seconds"}, // issue #27/#41
 		{"2024-01-02T03:04:05Z", "timestamptz", "iso8601_to_timestamptz"},

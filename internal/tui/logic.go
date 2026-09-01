@@ -190,11 +190,28 @@ func previewValueForType(value, targetType string) (display, transform string, v
 	}
 	switch targetType {
 	case "integer", "bigint", "smallint":
-		f, err := strconv.ParseFloat(value, 64)
+		// Routed through the real numeric_text_to_integer transform
+		// (issue #80's audit, finding M1/M2) rather than
+		// strconv.ParseFloat + int64(f): that used to silently corrupt
+		// any value beyond float64's ~15-17 significant digits (the same
+		// bug numeric_text_to_integer itself was fixed for, issue #15),
+		// and it accepted a genuinely fractional value like "3.7" as
+		// "valid, previews as 3" — a truncation the real load never
+		// performs, since with no transform attached the raw value would
+		// go to pgx unconverted. Any type this validates for must always
+		// carry the transform that actually makes it work, or a human
+		// selecting it here breaks the real COPY.
+		result, err := copywriter.Transform("numeric_text_to_integer", value)
 		if err != nil {
 			return value, "", false
 		}
-		n := int64(f)
+		if result == nil {
+			// numeric_text_to_integer treats "" as "no value on file"
+			// (matching the numeric_text heuristic's own leniency), same
+			// as a NULL sample.
+			return "NULL", "numeric_text_to_integer", true
+		}
+		n := result.(int64)
 		if !copywriter.FitsRange(n, targetType) {
 			// e.g. 70000 parses fine as a number but is outside
 			// smallint's (int2) range — offering smallint here would
@@ -202,7 +219,7 @@ func previewValueForType(value, targetType string) (display, transform string, v
 			// with "value out of range for type smallint" (issue #27).
 			return value, "", false
 		}
-		return strconv.FormatInt(n, 10), "", true
+		return strconv.FormatInt(n, 10), "numeric_text_to_integer", true
 	case "real", "double precision", "numeric":
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil {
@@ -214,11 +231,23 @@ func previewValueForType(value, targetType string) (display, transform string, v
 		}
 		return formatted, "", true
 	case "boolean":
-		switch strings.ToLower(value) {
-		case "0", "1", "true", "false", "t", "f":
-			return value, "", true
+		// Routed through the real int_to_bool transform (issue #80's
+		// audit, finding M1): picking boolean on a column whose current
+		// target isn't already boolean used to attach no transform at
+		// all, so pgx would try to binary-encode the raw int64/string
+		// straight into bool and fail — reachable on the single most
+		// common review action this tool exists for (converting a 0/1
+		// integer column to boolean). int_to_bool only recognizes "0"/"1"
+		// (matching the boolean01 heuristic's own scope, the only real
+		// SQLite storage shape this ever needs to handle — SQLite has no
+		// boolean storage class), narrower than the "true"/"t"/"f" this
+		// used to accept for display purposes only; those were never
+		// actually convertible before either.
+		result, err := copywriter.Transform("int_to_bool", value)
+		if err != nil {
+			return value, "", false
 		}
-		return value, "", false
+		return strconv.FormatBool(result.(bool)), "int_to_bool", true
 	case "date", "timestamptz":
 		tm, usedTransform, ok := dateTransformPreview(value, targetType)
 		if !ok {
@@ -259,12 +288,24 @@ func previewValueForType(value, targetType string) (display, transform string, v
 		// the raw NUL-joined string never satisfies pgx's array codec on
 		// its own, the same reason uuid_format is always required above.
 		return value, "uuid_list_format", true
+	case "jsonb":
+		// Previously fell into the default: arm below, so any string —
+		// including plain prose — validated as jsonb with no check at
+		// all; COPY would then fail with "invalid input syntax for type
+		// json" (issue #80's audit, finding M1). text_to_jsonb's own
+		// json.Valid check is the real validation the load path runs, so
+		// route the preview through it and attach it as the transform —
+		// unlike the numeric/boolean cases above, text_to_jsonb doesn't
+		// reshape the value pgx receives, but the validation still needs
+		// to happen at COPY time, exactly like it does for a
+		// heuristic-suggested jsonb column (issue #22).
+		if _, err := copywriter.Transform("text_to_jsonb", value); err != nil {
+			return value, "", false
+		}
+		return value, "text_to_jsonb", true
 	default:
-		// text, jsonb, bytea: any string is valid, displayed as-is, and
-		// passed through unconverted — jsonb's own transform
-		// (text_to_jsonb) only adds upfront validation, it doesn't
-		// reshape the value pgx receives, so no transform is needed here
-		// either.
+		// text, bytea: any string is valid, displayed as-is, and passed
+		// through unconverted.
 		return value, "", true
 	}
 }
