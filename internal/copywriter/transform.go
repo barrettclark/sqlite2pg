@@ -474,11 +474,28 @@ var excelEpoch = time.Date(1899, time.December, 30, 0, 0, 0, 0, time.UTC)
 // excelSerialToTime converts an Excel/Access serial date number to a
 // time.Time, preserving any fractional part as a time-of-day offset (e.g.
 // 44197.5 is noon on the day 44197 alone represents).
+//
+// The whole-day component goes through AddDate, not
+// time.Duration(days)*24*time.Hour: ExcelSerialDate's heuristic
+// (profiler/heuristics/excel_serial_date.go) only requires 50% of sampled
+// values to land in the plausible Excel-serial window — it deliberately
+// tolerates a minority outside it — and the transform then runs on every
+// row. A genuinely out-of-range serial (e.g. an epoch-seconds value like
+// 1.7e9 sitting in an otherwise Excel-serial column) turns into a days
+// count whose Duration form overflows int64 nanoseconds (~292-year range)
+// and silently wraps to an arbitrary, plausible-*looking* wrong date
+// (issue #82's audit, finding M3) — the exact kind of error nothing
+// downstream catches, since full-table verification recomputes the same
+// wrapped value on both sides. AddDate does plain calendar arithmetic with
+// no Duration-sized intermediate, so an out-of-range serial instead
+// produces a wildly implausible far-future/past date that Postgres's own
+// timestamp range check (~4713 BC to 294276 AD) will reject at COPY time —
+// a loud, catchable failure instead of silent corruption.
 func excelSerialToTime(serial float64) time.Time {
 	days := math.Trunc(serial)
 	fracSeconds := (serial - days) * 24 * 60 * 60
 	return excelEpoch.
-		Add(time.Duration(days) * 24 * time.Hour).
+		AddDate(0, 0, int(days)).
 		Add(time.Duration(fracSeconds * float64(time.Second)))
 }
 

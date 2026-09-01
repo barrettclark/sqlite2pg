@@ -662,3 +662,32 @@ func TestTransform_ISO8601ToDate_TimeTimeInput_RejectsNonMidnightValues(t *testi
 		t.Error("expected an error for a non-midnight time.Time, not a silent truncation")
 	}
 }
+
+// TestTransform_ExcelSerialToTimestamptz_OutOfRangeSerialDoesNotOverflow is
+// issue #82's (audit finding M3) regression: ExcelSerialDate's heuristic
+// tolerates up to half its sample being outside the plausible Excel-serial
+// window, and the transform then runs on every row regardless. An
+// epoch-seconds-scale value (~1.7e9) sitting in an otherwise Excel-serial
+// column used to overflow time.Duration's int64-nanosecond range and
+// silently wrap to an arbitrary, plausible-looking WRONG date
+// (2122-07-26, confirmed against the pre-fix arithmetic) — this checks the
+// result lands nowhere near that wrapped value, i.e. the overflow is
+// gone, not just relocated.
+func TestTransform_ExcelSerialToTimestamptz_OutOfRangeSerialDoesNotOverflow(t *testing.T) {
+	got, err := Transform("excel_serial_to_timestamptz", float64(1.7e9))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	// The overflow this regression guards against wrapped 1.7e9 days into
+	// the 2100s (a plausible-looking near-term year); the correct,
+	// non-overflowed result for a serial this large is millions of years
+	// in the future. Anything in a normal calendar-plausible range means
+	// the wraparound bug is back.
+	if tm.Year() < 100000 {
+		t.Errorf("expected a wildly out-of-range year (no Duration overflow/wraparound), got %v", tm)
+	}
+}
