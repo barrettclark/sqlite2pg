@@ -367,6 +367,29 @@ func TestPreviewValueForType_TimestamptzViaUnixEpochSecondsTransform(t *testing.
 	}
 }
 
+// TestPreviewValueForType_TimestamptzViaScientificNotationEpoch is issue
+// #92's (audit finding L6) regression: review.formatSampleValue renders a
+// REAL-affinity epoch column's value through %v, which switches to
+// scientific notation for anything this large
+// (fmt.Sprintf("%v", float64(1712345678)) == "1.712345678e+09", confirmed
+// empirically). strconv.ParseInt (dateTransformPreview's old parse call)
+// doesn't understand that form and rejects it outright, silently skipping
+// every epoch-seconds/millis/micros check for exactly the large-magnitude
+// values they exist to catch.
+func TestPreviewValueForType_TimestamptzViaScientificNotationEpoch(t *testing.T) {
+	display, transform, valid := previewValueForType("1.712345678e+09", "timestamptz")
+	if !valid {
+		t.Fatal("expected the scientific-notation form of a valid epoch-seconds value to still validate as timestamptz")
+	}
+	want := "2024-04-05T19:34:38Z"
+	if display != want {
+		t.Errorf("previewValueForType(1.712345678e+09, timestamptz) display = %q, want %q", display, want)
+	}
+	if transform != "unix_epoch_seconds" {
+		t.Errorf("previewValueForType(1.712345678e+09, timestamptz) transform = %q, want %q", transform, "unix_epoch_seconds")
+	}
+}
+
 // TestPreviewValueForType_ReturnsTheTransformUsedToProduceEachPreview
 // covers issue #41: previewValueForType must report which transform (if
 // any) it used to validate/preview each candidate type, so onTypeSelected

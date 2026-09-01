@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -80,7 +81,23 @@ func timeFromTransform(transform string, raw any) (time.Time, bool) {
 // running the wrong one would hand onTypeSelected a transform that
 // doesn't match the type the human actually picked.
 func dateTransformPreview(value, targetType string) (time.Time, string, bool) {
-	if n, err := strconv.ParseInt(value, 10, 64); err == nil && targetType == "timestamptz" {
+	// Parsed via ParseFloat, not ParseInt, even though every epoch bound
+	// below is a whole number: review.formatSampleValue renders a
+	// float64 (a REAL-affinity epoch column, entirely plausible — e.g.
+	// bikes.last_reported stored as REAL) through %v, which switches to
+	// scientific notation for anything this large
+	// (fmt.Sprintf("%v", float64(1712345678)) == "1.712345678e+09").
+	// strconv.ParseInt doesn't understand that form at all and would
+	// reject it outright, silently skipping every epoch check below for
+	// exactly the large-magnitude values they exist to catch (issue #92's
+	// audit, finding L6). ParseFloat parses both plain-integer and
+	// scientific-notation text; f == math.Trunc(f) keeps this from
+	// treating a genuinely fractional value as an epoch integer, the same
+	// thing ParseInt's own strictness did. Every epoch bound here is far
+	// below float64's 2^53 exact-integer range, so int64(f) loses no
+	// precision.
+	if f, err := strconv.ParseFloat(value, 64); err == nil && targetType == "timestamptz" && f == math.Trunc(f) {
+		n := int64(f)
 		switch {
 		case n >= epochSecondsMin && n <= epochSecondsMax:
 			if tm, ok := timeFromTransform("unix_epoch_seconds", n); ok {
