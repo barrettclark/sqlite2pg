@@ -196,6 +196,40 @@ Stray zero-byte `../more data/DisabilityCompByCounty.db` appeared ~1 min
 after the campaign finished — not campaign-created, checked-in fixture
 intact, all originals untouched; flagged in the campaign-results doc.
 
-### Phase C — *pending*
+### Phase C — property/fuzz tests for the comparison hot spots — complete (2026-09-01)
+
+Four new fuzz files (`go test -fuzz`, no new dependency), nine targets:
+`internal/pipeline/verify_load_fuzz_test.go`,
+`internal/sqlitereader/collation_fuzz_test.go`,
+`internal/copywriter/transform_fuzz_test.go`,
+`internal/ddl/identifiers_fuzz_test.go`. Full write-up:
+`docs/superpowers/plans/audit-cycle2-fuzz-results.md`.
+
+**2 findings:**
+
+- **Sharpens [#65](https://github.com/barrettclark/sqlite2pg/issues/65)**
+  (not new): `FuzzNumericMatchSortKeyConsistency` reproduces the
+  `valuesMatch`/`sortKeyFor` divergence with `int64(2^53+1)` vs
+  `float64(2^53)` — any int64 above 2^53, not just `MaxInt64` as originally
+  filed. Also flagged on #65 that `valuesMatch`'s lossy float64 round-trip
+  *masks* a genuine precision loss when a >2^53 NUMERIC value lands in
+  `double precision`. Test carries a `knownIssue65Gap` exemption (stays
+  green); remove when #65 is fixed.
+- **[#70](https://github.com/barrettclark/sqlite2pg/issues/70)** (new,
+  Low): `leadingIdentifier` accepts an empty quoted identifier (`""`) as a
+  valid name, so `parseColumnCollations` can emit a `""`-keyed entry.
+  `ColumnCollations` filters it out — parser-robustness gap, no
+  user-visible impact. Corpus repro checked in at
+  `internal/sqlitereader/testdata/fuzz/FuzzParseColumnCollations/`.
+
+**Clean bills under fuzzing:** `numeric_text_to_integer` exact-integer
+parse (1.4M execs vs `math/big`, #15 solid), `iso8601_to_date`
+midnight-only invariant (1.2M execs, #42 holds), `FitsRange` bounds,
+epoch-scale transforms (no panics), `ColumnCollations` round-trip for
+cleanly-declared collations (83k real-SQLite execs), `disambiguateNames`
+length/uniqueness/order-independence (4.3M execs — the #21/#43/#44
+truncation-collision path held), `quoteIdent` round-trip (2.5M execs, #26
+stays closed).
+
 ### Phase D — *pending*
 ### Phase E — *pending*
