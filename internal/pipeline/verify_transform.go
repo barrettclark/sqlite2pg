@@ -115,7 +115,7 @@ func verifyTransformsAgainstFullTable(db *sql.DB, table string, specs []columnVe
 				}
 			}
 			if bad {
-				results[s.Column] = verifyResult{OK: false, BadValue: fmt.Sprintf("%v", raw)}
+				results[s.Column] = verifyResult{OK: false, BadValue: badValueString(raw)}
 				remaining--
 			}
 		}
@@ -209,6 +209,16 @@ func fitsTargetType(val any, targetType string) bool {
 		return true
 	}
 	return copywriter.FitsRange(n, targetType)
+}
+
+// badValueString renders the offending raw value for a verifyResult /
+// needs-review rationale. A raw SQL NULL is spelled "NULL" rather than
+// Go's "<nil>" (Copilot PR #73) — this is the case a RejectNull spec hits.
+func badValueString(raw profiler.Value) string {
+	if raw == nil {
+		return "NULL"
+	}
+	return fmt.Sprintf("%v", raw)
 }
 
 func asInt64(v any) (int64, bool) {

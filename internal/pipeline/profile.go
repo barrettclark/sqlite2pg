@@ -446,7 +446,20 @@ func fallbackValueFitsTarget(v profiler.Value, target string) bool {
 		return true
 	}
 	switch target {
-	case "integer", "bigint", "double precision":
+	case "integer", "bigint":
+		// Only integer-shaped Go values. A no-transform passthrough hands
+		// the raw value straight to pgx, so a REAL-storage row scanned as
+		// float64 would fail to encode into int4/int8 exactly like a
+		// string would — and a column with any REAL row is mixed-storage,
+		// for which double precision is the right target anyway
+		// (Copilot PR #73).
+		switch v.(type) {
+		case int64, int:
+			return true
+		default:
+			return false
+		}
+	case "double precision":
 		switch v.(type) {
 		case int64, int, float64, float32:
 			return true

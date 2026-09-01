@@ -269,6 +269,68 @@ func TestDecideColumn_NoTransformPassthroughAutoApprovesWhenFullTableIsClean(t *
 	}
 }
 
+func TestFallbackValueFitsTarget_IntegerTargetsRejectFloats(t *testing.T) {
+	// Copilot PR #73: a no-transform passthrough runs copywriter.Transform("", raw)
+	// which returns raw unchanged, so a REAL-storage row scanned as
+	// float64 would still be handed to pgx for an int4/int8 column and
+	// fail to encode — exactly like the "Unknown" string case. Only
+	// integer-shaped Go values fit "integer"/"bigint".
+	cases := []struct {
+		v      profiler.Value
+		target string
+		want   bool
+	}{
+		{int64(5), "integer", true},
+		{int64(5), "bigint", true},
+		{float64(1.5), "integer", false},
+		{float64(2.0), "integer", false}, // even a whole-valued float means mixed storage -> double precision is the right target
+		{float32(1.5), "bigint", false},
+		{float64(1.5), "double precision", true},
+		{int64(5), "double precision", true},
+		{"x", "integer", false},
+		{nil, "integer", true},
+	}
+	for _, c := range cases {
+		if got := fallbackValueFitsTarget(c.v, c.target); got != c.want {
+			t.Errorf("fallbackValueFitsTarget(%#v, %q) = %v, want %v", c.v, c.target, got, c.want)
+		}
+	}
+}
+
+func TestDecideColumn_FlagsForReviewWhenNoTransformPassthroughFullTableHasAFloatInAnIntegerColumn(t *testing.T) {
+	// Copilot PR #73: an all-INTEGER-storage sample makes fallbackTypeFor
+	// pick "integer", but the full table has one REAL row the sample
+	// missed. A no-transform passthrough would send that float64 straight
+	// to an int4 column and fail at COPY, so it must be flagged.
+	db, _ := openTestDB(t, `CREATE TABLE t (n INTEGER);`)
+	db.Exec(`INSERT INTO t (n) VALUES (10), (20), (3.5)`)
+
+	col := sqlitereader.ColumnInfo{Name: "n", DeclaredType: "INTEGER"}
+	sample := []any{int64(10), int64(20)}
+
+	cc, unresolved, err := decideColumn(db, "t", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if unresolved == nil || !cc.NeedsReview {
+		t.Fatalf("expected a full-table REAL row in an integer-targeted column to be flagged, got needsReview=%v unresolved=%+v", cc.NeedsReview, unresolved)
+	}
+}
+
+func TestBadValueString_NilIsNULLNotGoNil(t *testing.T) {
+	// Copilot PR #73 (suppressed): a RejectNull violation on a raw SQL
+	// NULL used to surface as Go's "<nil>" in the needs-review rationale.
+	if got := badValueString(nil); got != "NULL" {
+		t.Errorf("badValueString(nil) = %q, want %q", got, "NULL")
+	}
+	if got := badValueString("Unknown"); got != "Unknown" {
+		t.Errorf("badValueString(%q) = %q, want it unchanged", "Unknown", got)
+	}
+	if got := badValueString(int64(42)); got != "42" {
+		t.Errorf("badValueString(int64(42)) = %q, want %q", got, "42")
+	}
+}
+
 func TestDecideColumn_FlagsForReviewWhenNoTransformPassthroughFullTableHasAnInt4Overflow(t *testing.T) {
 	// Issue #69, second shape: fallbackTypeFor picks "integer" from an
 	// all-small-int sample, but the full table holds a value outside
