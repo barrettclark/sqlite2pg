@@ -125,6 +125,13 @@ func (p *progressReporter) finishTable(tableName string, rows int64) {
 // for the rest of the load.
 func (p *progressReporter) skipAlreadyLoadedTable(tableName string, rows int64) {
 	p.done += rows
+	// Callers pass the source's own row count for exactly this table, so
+	// done should never actually exceed total by construction — but
+	// clamped defensively anyway (Copilot PR #99 finding) so a >100% bar
+	// can't happen even if that assumption is ever violated.
+	if p.done > p.total {
+		p.done = p.total
+	}
 	line := fmt.Sprintf("%s: already loaded (%d row(s), found by --resume)", tableName, rows)
 	if p.isTerminal {
 		fmt.Print("\r" + clearLine + line + "\n")
