@@ -824,3 +824,29 @@ func TestTransform_JulianDayToDate_NegativeJDNUsesFloorDivision(t *testing.T) {
 		}
 	}
 }
+
+// TestTransform_UnixEpochSeconds_PreservesSubSecondFraction is issue #90's
+// (audit finding L4) regression: a REAL-storage epoch-seconds value like
+// 1712345678.9 used to truncate to 1712345678, silently losing up to a
+// full second — undocumented and larger than the "arguably intended"
+// sub-unit rounding this transform's millis/micros siblings do.
+func TestTransform_UnixEpochSeconds_PreservesSubSecondFraction(t *testing.T) {
+	got, err := Transform("unix_epoch_seconds", float64(1712345678.9))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Unix() != 1712345678 {
+		t.Errorf("expected whole-second part 1712345678, got %d", tm.Unix())
+	}
+	// Postgres timestamptz rounds to microseconds, so compare at that
+	// resolution rather than expecting exact float64-derived nanoseconds.
+	gotMicros := tm.Nanosecond() / 1000
+	wantMicros := 900000
+	if gotMicros != wantMicros {
+		t.Errorf("expected sub-second fraction ~900000µs preserved, got %dµs", gotMicros)
+	}
+}

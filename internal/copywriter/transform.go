@@ -97,13 +97,28 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		}
 
 	case "unix_epoch_seconds":
-		sec, ok := toInt64(raw)
+		// toInt64's float64 case truncates toward zero, silently dropping
+		// up to a full second of real sub-second precision (e.g.
+		// 1712345678.9 -> 1712345678) — undocumented and, at up to 999ms,
+		// too large a loss to call incidental (issue #90's audit, finding
+		// L4). Split the fractional part into nanoseconds instead of
+		// truncating it away; an int64 input (the overwhelmingly common
+		// shape — epoch seconds are tiny relative to float64's exact
+		// range) converts through with no precision change at all.
+		f, ok := toFloat64(raw)
 		if !ok {
 			return nil, fmt.Errorf("unix_epoch_seconds: unexpected type %T", raw)
 		}
-		return time.Unix(sec, 0).UTC(), nil
+		sec := math.Floor(f)
+		nanos := int64(math.Round((f - sec) * float64(time.Second)))
+		return time.Unix(int64(sec), nanos).UTC(), nil
 
 	case "unix_epoch_millis":
+		// A fractional millisecond is sub-millisecond precision — small
+		// relative to unix_epoch_seconds' up-to-999ms loss above, and
+		// still not the deliberate microsecond-resolution cutoff
+		// unix_epoch_micros hits below, but truncated here the same way
+		// for now rather than as a documented accepted limit.
 		ms, ok := toInt64(raw)
 		if !ok {
 			return nil, fmt.Errorf("unix_epoch_millis: unexpected type %T", raw)
@@ -111,6 +126,10 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return time.UnixMilli(ms).UTC(), nil
 
 	case "unix_epoch_micros":
+		// Any fractional part here is sub-microsecond — below Postgres's
+		// own timestamptz storage resolution (microseconds), so
+		// truncating it away loses nothing Postgres could have kept
+		// anyway; genuinely intended, unlike unix_epoch_seconds above.
 		us, ok := toInt64(raw)
 		if !ok {
 			return nil, fmt.Errorf("unix_epoch_micros: unexpected type %T", raw)
