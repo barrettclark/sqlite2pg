@@ -26,17 +26,19 @@ var idSuffixPattern = regexp.MustCompile(`(?i)_?id$`)
 // and storing '0'/'1' as text — issue #1) uses a different, higher
 // confidence (textConfidence, close to but below numeric_text's 0.90) than
 // the INTEGER case's 0.55: a plain-digit-string 0/1 column is also claimed
-// by numeric_text at 0.90, and resolver.Decide's disagreementMargin (0.04)
-// only forces review when the two top findings are close enough — 0.55
-// would lose cleanly to 0.90 and change nothing. textConfidence is chosen
+// by numeric_text at 0.90, and resolver.Decide's disagreementMargin (0.02,
+// compared on integer hundredths, not raw float subtraction) only forces
+// review when the two top findings are close enough — 0.55 would lose
+// cleanly to 0.90 and change nothing. textConfidence is chosen
 // specifically to land within that margin.
 type Boolean01 struct{}
 
 // textConfidence is the confidence assigned to a TEXT/CHAR-affinity 0/1
 // finding — high enough to be taken seriously, but within
-// resolver.disagreementMargin (0.04) of numeric_text's 0.90 confidence so
-// the two are treated as disagreeing and routed to review, rather than
-// numeric_text's 0.90 silently winning outright.
+// resolver.disagreementMargin (0.02, i.e. within 2 integer hundredths) of
+// numeric_text's 0.90 confidence so the two are treated as disagreeing and
+// routed to review, rather than numeric_text's 0.90 silently winning
+// outright.
 const textConfidence = 0.88
 
 func (Boolean01) Name() string { return "boolean01" }
