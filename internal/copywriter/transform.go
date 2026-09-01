@@ -602,6 +602,14 @@ func toFloat64(v profiler.Value) (float64, bool) {
 		return float64(n), true
 	case int64:
 		return float64(n), true
+	case int:
+		// toInt64 (above) has always accepted a plain int; toFloat64
+		// didn't, which went unnoticed until unix_epoch_seconds switched
+		// from toInt64 to toFloat64 (issue #90's fix) and silently
+		// stopped accepting an int input it used to (Copilot PR #98
+		// finding) — the two helpers should have matched coverage
+		// regardless of which call site exposed the gap.
+		return float64(n), true
 	default:
 		return 0, false
 	}

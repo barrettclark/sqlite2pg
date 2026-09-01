@@ -1042,3 +1042,23 @@ func TestTransform_JulianDayToDate_RejectsNaNAndOutOfRangeValues(t *testing.T) {
 		t.Error("expected an error for a value wildly outside int64's range")
 	}
 }
+
+// TestTransform_UnixEpochSeconds_AcceptsPlainIntInput is a regression test
+// for Copilot's PR #98 finding: unix_epoch_seconds switched from toInt64
+// (which has always accepted a plain int) to toFloat64 as part of the
+// sub-second-precision fix (issue #90), and toFloat64 didn't have a case
+// for int — silently rejecting an input shape the transform used to
+// accept.
+func TestTransform_UnixEpochSeconds_AcceptsPlainIntInput(t *testing.T) {
+	got, err := Transform("unix_epoch_seconds", int(1620000000))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Unix() != 1620000000 {
+		t.Errorf("expected unix time 1620000000, got %d", tm.Unix())
+	}
+}
