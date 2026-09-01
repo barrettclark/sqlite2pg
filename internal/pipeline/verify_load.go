@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
 	"math"
 	"sort"
@@ -348,6 +349,7 @@ func verifyTableOrdered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn,
 			if err != nil {
 				return fmt.Errorf("re-applying transform for %s.%s at row %d: %w", table, name, rowIndex, err)
 			}
+			expected = expectedForCompare(tc.Columns[name].TargetType, expected)
 			actual := scanners[i].value()
 			if !valuesMatch(expected, actual) {
 				cr := result.ColumnResults[name]
@@ -396,7 +398,7 @@ func verifyTableUnordered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Con
 			if err != nil {
 				return fmt.Errorf("re-applying transform for %s.%s: %w", table, name, err)
 			}
-			expected[name] = append(expected[name], v)
+			expected[name] = append(expected[name], expectedForCompare(tc.Columns[name].TargetType, v))
 		}
 		return nil
 	})
@@ -810,10 +812,52 @@ func (s *pgColumnScanner) value() any {
 		if !d.Valid {
 			return nil
 		}
+		if s.targetType == "jsonb" {
+			// Postgres canonicalizes jsonb on storage (sorted keys,
+			// normalized whitespace/numbers) while the SQLite side, via
+			// validate-only text_to_jsonb, keeps the row's original
+			// spelling. Route both through the same Go encoder so the
+			// comparison is semantic, not string-for-string (issue #61).
+			return canonicalJSON(d.String)
+		}
 		return d.String
 	default:
 		return nil
 	}
+}
+
+// canonicalJSON re-serializes s in one deterministic form (Go's encoder:
+// sorted object keys, minimal whitespace, normalized number formatting),
+// or returns s unchanged if it isn't valid JSON. Both sides of a jsonb
+// column comparison pass through this — see the *pgtype.Text case in
+// pgColumnScanner.value and expectedForCompare (issue #61). Numbers go
+// through float64, so a JSON integer larger than 2^53 nested in a
+// document is compared at float64 precision; that is the same narrow
+// edge as issue #65 and not a concern for the GeoJSON / metadata jsonb
+// this tool actually produces.
+func canonicalJSON(s string) string {
+	var v any
+	if err := json.Unmarshal([]byte(s), &v); err != nil {
+		return s
+	}
+	b, err := json.Marshal(v)
+	if err != nil {
+		return s
+	}
+	return string(b)
+}
+
+// expectedForCompare normalizes copywriter.Transform's output for a column
+// so it can be compared against what pgColumnScanner.value read back. Today
+// this only matters for jsonb (see canonicalJSON); every other target type
+// is already directly comparable.
+func expectedForCompare(targetType string, v any) any {
+	if targetType == "jsonb" {
+		if s, ok := v.(string); ok {
+			return canonicalJSON(s)
+		}
+	}
+	return v
 }
 
 // valuesMatch reports whether expected (copywriter.Transform's output) and
