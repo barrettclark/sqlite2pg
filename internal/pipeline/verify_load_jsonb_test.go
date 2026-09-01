@@ -36,6 +36,28 @@ func TestCanonicalJSON_DistinctDocumentsStayDistinct(t *testing.T) {
 	}
 }
 
+// TestCanonicalJSON_LargeIntegersCompareExactly is the Copilot PR #72
+// finding: numbers must not round-trip through float64, or a jsonb
+// document holding a large integer ID/counter (> 2^53) can collapse with a
+// neighbouring value and verify misses a real corruption inside the JSON.
+func TestCanonicalJSON_LargeIntegersCompareExactly(t *testing.T) {
+	a := canonicalJSON(`{"id":9007199254740993}`) // 2^53 + 1
+	b := canonicalJSON(`{"id":9007199254740992}`) // 2^53
+	c := canonicalJSON(`{"id":9007199254740994}`) // 2^53 + 2
+	if a == b {
+		t.Errorf("canonicalJSON collapsed 2^53+1 and 2^53: %q", a)
+	}
+	if a == c {
+		t.Errorf("canonicalJSON collapsed 2^53+1 and 2^53+2: %q", a)
+	}
+	// An exact 20-digit integer must survive intact.
+	x := canonicalJSON(`{"id":12345678901234567890}`)
+	y := canonicalJSON(`{"id":12345678901234567891}`)
+	if x == y {
+		t.Errorf("canonicalJSON collapsed two distinct 20-digit integers: %q", x)
+	}
+}
+
 // TestCanonicalJSON_NonJSONPassesThrough: a value that isn't valid JSON is
 // returned unchanged (defensive — a validated jsonb load never produces
 // one, but canonicalJSON must not eat it).

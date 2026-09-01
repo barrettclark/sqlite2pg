@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"math"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -826,25 +827,83 @@ func (s *pgColumnScanner) value() any {
 	}
 }
 
-// canonicalJSON re-serializes s in one deterministic form (Go's encoder:
-// sorted object keys, minimal whitespace, normalized number formatting),
-// or returns s unchanged if it isn't valid JSON. Both sides of a jsonb
-// column comparison pass through this — see the *pgtype.Text case in
-// pgColumnScanner.value and expectedForCompare (issue #61). Numbers go
-// through float64, so a JSON integer larger than 2^53 nested in a
-// document is compared at float64 precision; that is the same narrow
-// edge as issue #65 and not a concern for the GeoJSON / metadata jsonb
-// this tool actually produces.
+// canonicalJSON reduces s to one deterministic form — object keys sorted,
+// whitespace removed, every number rendered as its exact rational value
+// (big.Rat) — or returns s unchanged if it isn't valid JSON. Both sides of
+// a jsonb column comparison pass through this (see the *pgtype.Text case
+// in pgColumnScanner.value and expectedForCompare, issue #61), so the
+// comparison is semantic: 1e3 == 1000, 123.0 == 123, key order doesn't
+// matter — while two distinct integers stay distinct even above float64's
+// 2^53 exact-integer range (Copilot PR #72), since numbers are decoded via
+// json.Decoder.UseNumber and never routed through float64.
 func canonicalJSON(s string) string {
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
 	var v any
-	if err := json.Unmarshal([]byte(s), &v); err != nil {
+	if err := dec.Decode(&v); err != nil {
 		return s
 	}
-	b, err := json.Marshal(v)
-	if err != nil {
+	// Reject trailing content after one JSON value (json.Unmarshal did).
+	if dec.More() {
 		return s
 	}
-	return string(b)
+	var b strings.Builder
+	writeCanonicalJSON(&b, v)
+	return b.String()
+}
+
+// writeCanonicalJSON serializes v (a tree of map[string]any / []any /
+// json.Number / string / bool / nil, as produced by a UseNumber decoder)
+// into b in canonicalJSON's deterministic form. It is only ever a sort/
+// comparison key, never re-parsed as JSON, so numbers are written as
+// big.Rat.RatString ("1000", "3/2") — exact and format-independent — with
+// a leading marker so a numeric token can't be confused with a string.
+func writeCanonicalJSON(b *strings.Builder, v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(strconv.Quote(k))
+			b.WriteByte(':')
+			writeCanonicalJSON(b, t[k])
+		}
+		b.WriteByte('}')
+	case []any:
+		b.WriteByte('[')
+		for i, e := range t {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			writeCanonicalJSON(b, e)
+		}
+		b.WriteByte(']')
+	case json.Number:
+		if r, ok := new(big.Rat).SetString(string(t)); ok {
+			b.WriteString("#" + r.RatString())
+		} else {
+			b.WriteString("#" + string(t))
+		}
+	case string:
+		b.WriteString(strconv.Quote(t))
+	case bool:
+		if t {
+			b.WriteString("true")
+		} else {
+			b.WriteString("false")
+		}
+	case nil:
+		b.WriteString("null")
+	default:
+		fmt.Fprintf(b, "%v", t)
+	}
 }
 
 // expectedForCompare normalizes copywriter.Transform's output for a column
