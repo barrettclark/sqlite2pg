@@ -277,26 +277,30 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// gap this transform was fixed for issue #22 to avoid, just for
 		// []byte instead of string (issue #86's audit, finding M7):
 		// json.Valid accepts a []byte directly, same rules either way.
-		var b []byte
-		switch v := raw.(type) {
-		case string:
-			b = []byte(v)
-		case []byte:
-			b = v
-		default:
-			return nil, fmt.Errorf("text_to_jsonb: unexpected type %T", raw)
-		}
-		if !json.Valid(b) {
-			return nil, fmt.Errorf("text_to_jsonb: %q is not valid JSON", b)
-		}
-		// Always a string, not `raw` unchanged: verify_load.go's
+		// Always returns a string, not `raw` unchanged: verify_load.go's
 		// expectedForCompare only canonicalizes a jsonb comparison's
 		// expected value when it's a string (issue #61) — a []byte
 		// passed through as-is would skip that canonicalization and
 		// false-fail the moment Postgres reformats whitespace/key order
 		// on storage, reintroducing #61's exact bug for the []byte-input
-		// case (Copilot PR #98 finding).
-		return string(b), nil
+		// case (Copilot PR #98 finding). The string case returns v
+		// directly rather than string(b) after a []byte round-trip —
+		// same validation, one fewer allocation/copy on the common path
+		// (Copilot PR #98 follow-up finding).
+		switch v := raw.(type) {
+		case string:
+			if !json.Valid([]byte(v)) {
+				return nil, fmt.Errorf("text_to_jsonb: %q is not valid JSON", v)
+			}
+			return v, nil
+		case []byte:
+			if !json.Valid(v) {
+				return nil, fmt.Errorf("text_to_jsonb: %q is not valid JSON", v)
+			}
+			return string(v), nil
+		default:
+			return nil, fmt.Errorf("text_to_jsonb: unexpected type %T", raw)
+		}
 
 	case "julian_day_to_date":
 		f, ok := toFloat64(raw)
