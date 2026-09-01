@@ -850,3 +850,13 @@ func TestTransform_UnixEpochSeconds_PreservesSubSecondFraction(t *testing.T) {
 		t.Errorf("expected sub-second fraction ~900000µs preserved, got %dµs", gotMicros)
 	}
 }
+
+// TestTransform_StripCommas_RejectsOutOfInt64RangeFloat64 is a regression
+// test for Copilot's PR #98 finding: converting a float64 outside int64's
+// range is implementation-dependent per the Go spec, not an error — it
+// would silently produce a garbage int64 instead of failing loudly.
+func TestTransform_StripCommas_RejectsOutOfInt64RangeFloat64(t *testing.T) {
+	if _, err := Transform("strip_commas", float64(1e20)); err == nil {
+		t.Error("expected an error for a float64 outside int64's range")
+	}
+}

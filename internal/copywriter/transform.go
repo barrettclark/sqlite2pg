@@ -72,6 +72,15 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			if v != math.Trunc(v) {
 				return nil, fmt.Errorf("strip_commas: %v is not a whole number", v)
 			}
+			// Converting an out-of-int64-range float64 is implementation-
+			// dependent per the Go spec, not an error — it would silently
+			// produce a garbage int64 for a genuinely huge value instead
+			// of failing loudly (Copilot PR #98 finding). -2^63/2^63 are
+			// both exactly representable in float64, so this bounds check
+			// itself carries no precision loss.
+			if v < -9223372036854775808.0 || v >= 9223372036854775808.0 {
+				return nil, fmt.Errorf("strip_commas: %v overflows int64", v)
+			}
 			return int64(v), nil
 		default:
 			return nil, fmt.Errorf("strip_commas: unexpected type %T", raw)
@@ -179,7 +188,7 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// (see internal/pipeline/profile.go), so streamed rows for such a
 		// column arrive here as time.Time, not string. A raw.(string)-only
 		// check used to let every such row bypass the non-midnight guard
-		// entirely (issue #84's audit, finding H3) — the same
+		// entirely (issue #79's audit, finding H3) — the same
 		// "type-switch fall-through" shape as M6/M7 below.
 		switch v := raw.(type) {
 		case string:
