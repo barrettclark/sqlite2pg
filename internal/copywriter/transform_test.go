@@ -960,3 +960,69 @@ func TestTransform_UnixEpochSeconds_NanosecondCarryNormalizesCorrectly(t *testin
 		t.Errorf("expected the rounding carry to land on unix time 100, got %d", tm.Unix())
 	}
 }
+
+// TestTransform_UnixEpochMillis_RejectsNaNAndOutOfRangeValues and
+// TestTransform_UnixEpochMicros_RejectsNaNAndOutOfRangeValues are
+// regression tests for Copilot's PR #98 finding: unix_epoch_millis/micros
+// routed a float64 input through toInt64's unchecked int64(f) conversion,
+// implementation-dependent per the Go spec for NaN/±Inf/out-of-range
+// values, same class already fixed for unix_epoch_seconds.
+func TestTransform_UnixEpochMillis_RejectsNaNAndOutOfRangeValues(t *testing.T) {
+	if _, err := Transform("unix_epoch_millis", math.NaN()); err == nil {
+		t.Error("expected an error for NaN")
+	}
+	if _, err := Transform("unix_epoch_millis", math.Inf(-1)); err == nil {
+		t.Error("expected an error for -Inf")
+	}
+	if _, err := Transform("unix_epoch_millis", 1e300); err == nil {
+		t.Error("expected an error for a value wildly outside int64's range")
+	}
+}
+
+func TestTransform_UnixEpochMicros_RejectsNaNAndOutOfRangeValues(t *testing.T) {
+	if _, err := Transform("unix_epoch_micros", math.NaN()); err == nil {
+		t.Error("expected an error for NaN")
+	}
+	if _, err := Transform("unix_epoch_micros", math.Inf(-1)); err == nil {
+		t.Error("expected an error for -Inf")
+	}
+	if _, err := Transform("unix_epoch_micros", 1e300); err == nil {
+		t.Error("expected an error for a value wildly outside int64's range")
+	}
+}
+
+// TestTransform_ExcelSerialToTimestamptz_NaNAndInfDoNotOverflow is a
+// regression test for Copilot's PR #98 finding: for a NaN or ±Inf serial,
+// fracSeconds itself becomes NaN (Inf - Inf is NaN under IEEE 754), and
+// time.Duration(NaN * time.Second) is the same implementation-dependent
+// conversion clampDaysToInt was already fixed to avoid for the day
+// component — must not panic and must produce a deterministic result.
+func TestTransform_ExcelSerialToTimestamptz_NaNAndInfDoNotOverflow(t *testing.T) {
+	// A NaN serial clamps both its day and fractional-second components
+	// to 0, landing exactly on excelEpoch — asserting the exact value
+	// (not just "no error/no panic") is what actually distinguishes the
+	// fix from relying on time.Duration(NaN)'s implementation-dependent
+	// conversion, which happens to also yield 0 on this architecture and
+	// so wouldn't otherwise show a difference.
+	got, err := Transform("excel_serial_to_timestamptz", math.NaN())
+	if err != nil {
+		t.Fatalf("Transform(NaN): %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("Transform(NaN): expected time.Time, got %T", got)
+	}
+	if !tm.Equal(excelEpoch) {
+		t.Errorf("Transform(NaN) = %v, want exactly excelEpoch (%v)", tm, excelEpoch)
+	}
+
+	for _, serial := range []float64{math.Inf(1), math.Inf(-1)} {
+		got, err := Transform("excel_serial_to_timestamptz", serial)
+		if err != nil {
+			t.Fatalf("Transform(%v): %v", serial, err)
+		}
+		if _, ok := got.(time.Time); !ok {
+			t.Fatalf("Transform(%v): expected time.Time, got %T", serial, got)
+		}
+	}
+}

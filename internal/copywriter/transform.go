@@ -138,10 +138,13 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// relative to unix_epoch_seconds' up-to-999ms loss above, and
 		// still not the deliberate microsecond-resolution cutoff
 		// unix_epoch_micros hits below, but truncated here the same way
-		// for now rather than as a documented accepted limit.
-		ms, ok := toInt64(raw)
-		if !ok {
-			return nil, fmt.Errorf("unix_epoch_millis: unexpected type %T", raw)
+		// for now rather than as a documented accepted limit. The
+		// conversion itself still needs the same NaN/Inf/range guard as
+		// unix_epoch_seconds (Copilot PR #98 finding) — toInt64's raw
+		// int64(f) is implementation-dependent outside that range.
+		ms, err := epochToInt64("unix_epoch_millis", raw)
+		if err != nil {
+			return nil, err
 		}
 		return time.UnixMilli(ms).UTC(), nil
 
@@ -150,9 +153,10 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// own timestamptz storage resolution (microseconds), so
 		// truncating it away loses nothing Postgres could have kept
 		// anyway; genuinely intended, unlike unix_epoch_seconds above.
-		us, ok := toInt64(raw)
-		if !ok {
-			return nil, fmt.Errorf("unix_epoch_micros: unexpected type %T", raw)
+		// Same NaN/Inf/range guard as unix_epoch_millis, though.
+		us, err := epochToInt64("unix_epoch_micros", raw)
+		if err != nil {
+			return nil, err
 		}
 		return time.UnixMicro(us).UTC(), nil
 
@@ -543,6 +547,29 @@ func toInt64(v profiler.Value) (int64, bool) {
 	}
 }
 
+// epochToInt64 is toInt64 with an explicit NaN/±Inf/out-of-range guard on
+// the float64 case, for the epoch transforms: int64(f) for a float64
+// outside int64's exactly-representable range is implementation-dependent
+// per the Go spec, not an error — it can silently produce a bogus int64
+// and, downstream, a bogus timestamp (Copilot PR #98 finding). An
+// int64/int input (the common case for these transforms) is unaffected —
+// no float64 round-trip at all.
+func epochToInt64(transform string, v profiler.Value) (int64, error) {
+	switch n := v.(type) {
+	case int64:
+		return n, nil
+	case int:
+		return int64(n), nil
+	case float64:
+		if math.IsNaN(n) || n < -9223372036854775808.0 || n >= 9223372036854775808.0 {
+			return 0, fmt.Errorf("%s: %v is out of range", transform, n)
+		}
+		return int64(n), nil
+	default:
+		return 0, fmt.Errorf("%s: unexpected type %T", transform, v)
+	}
+}
+
 // toYYYYMMDDString normalizes v (an int64 from an INTEGER column or a
 // string from a TEXT column — both forms seen in real source data) to its
 // 8-digit string form, or reports false for any other shape. It does not
@@ -600,6 +627,16 @@ var excelEpoch = time.Date(1899, time.December, 30, 0, 0, 0, 0, time.UTC)
 func excelSerialToTime(serial float64) time.Time {
 	days := math.Trunc(serial)
 	fracSeconds := (serial - days) * 24 * 60 * 60
+	// clampDaysToInt handles NaN/out-of-range for the whole-day component,
+	// but fracSeconds needs its own guard: for a NaN or ±Inf serial,
+	// serial-days is NaN (Inf - Inf is NaN under IEEE 754, and any op on
+	// NaN stays NaN), and time.Duration(NaN * time.Second) is the same
+	// implementation-dependent float64->int64 conversion clampDaysToInt
+	// exists to avoid (Copilot PR #98 finding). Neither NaN nor Inf carry
+	// a meaningful time-of-day fraction anyway — zero it instead.
+	if math.IsNaN(fracSeconds) || math.IsInf(fracSeconds, 0) {
+		fracSeconds = 0
+	}
 	return excelEpoch.
 		AddDate(0, 0, clampDaysToInt(days)).
 		Add(time.Duration(fracSeconds * float64(time.Second)))
