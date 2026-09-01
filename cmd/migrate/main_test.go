@@ -108,6 +108,97 @@ func TestRunResolve_OverridingTargetTypeClearsAStaleTransform(t *testing.T) {
 	}
 }
 
+func TestRunResolve_PreservesNeedsReviewAsAStableProfilerVerdict(t *testing.T) {
+	// Issue #53: NeedsReview records the profiler's "heuristics disagreed"
+	// verdict (issue #20) and, like internal/tui/logic.go's flaggedColumns
+	// (see the comment there), is deliberately left untouched by an
+	// override — Reviewed is the field that tracks whether a human has
+	// acted on a column, not NeedsReview. This locks in that runResolve
+	// follows the same documented contract as review.State.ApplyDecision,
+	// rather than merely happening to match it by accident.
+	dir := t.TempDir()
+	configPath := filepath.Join(dir, "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
+		Tables: map[string]config.TableConfig{
+			"invoice_items": {
+				ColumnOrder: []string{"Quantity"},
+				Columns: map[string]config.ColumnConfig{
+					"Quantity": {TargetType: "boolean", Transform: "int_to_bool", Confidence: 0.55, Source: "heuristic:boolean01", NeedsReview: true},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, configPath); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	resolutionsPath := filepath.Join(dir, "resolutions.yaml")
+	resolutionsYAML := "invoice_items.Quantity:\n  type: integer\n  transform: \"\"\n  confidence: 0.95\n  source: human\n  rationale: clearly a count\n"
+	if err := os.WriteFile(resolutionsPath, []byte(resolutionsYAML), 0o644); err != nil {
+		t.Fatalf("writing resolutions: %v", err)
+	}
+
+	if err := run([]string{"resolve", "--apply", resolutionsPath, configPath}); err != nil {
+		t.Fatalf("run resolve: %v", err)
+	}
+
+	loaded, err := config.Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["invoice_items"].Columns["Quantity"]
+	if !col.Reviewed {
+		t.Errorf("expected Reviewed to be set true by the override")
+	}
+	if !col.NeedsReview {
+		t.Errorf("expected NeedsReview to remain true (a stable profiler verdict), got false")
+	}
+}
+
+func TestRunLoad_DoesNotBlockOnAnUnreviewedDroppedColumn(t *testing.T) {
+	// Issue #45: esri_typename_mapping assigns a __drop__ column
+	// confidence 0.4 (unresolved by design, once decideColumn's
+	// full-table check is skipped for it) and BuildReviewSummary excludes
+	// __drop__ columns from the review UI entirely — there is nothing a
+	// human can ever do in `migrate review` to mark one Reviewed. If
+	// load's gate iterates every column including dropped ones, an Esri
+	// source can never load without --force. The gate must only ask
+	// about columns the review UI can actually act on.
+	dir := t.TempDir()
+
+	sourcePath := filepath.Join(dir, "source.gdb.sqlite")
+	if err := os.WriteFile(sourcePath, []byte("not a real sqlite file, just needs stable bytes to hash"), 0o644); err != nil {
+		t.Fatalf("writing fake source: %v", err)
+	}
+	hash, err := config.HashFile(sourcePath)
+	if err != nil {
+		t.Fatalf("HashFile: %v", err)
+	}
+
+	configPath := filepath.Join(dir, "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
+		Source:        config.SourceInfo{Path: sourcePath, SQLiteSHA256: hash, Kind: "esri_geodatabase"},
+		Tables: map[string]config.TableConfig{
+			"school_sites": {
+				ColumnOrder: []string{"OBJECTID", "SHAPE"},
+				Columns: map[string]config.ColumnConfig{
+					"OBJECTID": {TargetType: "integer", Confidence: 0.99, Reviewed: true},
+					"SHAPE":    {TargetType: "__drop__", Transform: "drop_column", Confidence: 0.4, Source: "heuristic:esri_typename_mapping"},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, configPath); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	if err := run([]string{"load", "--dry-run", configPath}); err != nil {
+		t.Fatalf("expected load --dry-run to succeed without --force despite the unreviewed __drop__ column, got: %v", err)
+	}
+}
+
 func TestPrintDryRunDDL_OrdersTablesAlphabeticallyRegardlessOfMapIteration(t *testing.T) {
 	// Regression (issue #32): cfg.Tables is a Go map, and ranging over it
 	// directly randomizes CREATE TABLE order between runs, so `migrate

@@ -3,6 +3,7 @@ package sqlitereader
 import (
 	"database/sql"
 	"fmt"
+	"strings"
 
 	"sqlite2pg/internal/profiler"
 )
@@ -125,23 +126,57 @@ func CountRows(db *sql.DB, table string) (int, error) {
 // single forward cursor. It never buffers the full table in memory — this
 // is the direct fix for the pre-processing script's cur.fetchall() pattern,
 // which loaded every row into a Python list before writing it back out.
+//
+// This intentionally has no ORDER BY: every existing caller either doesn't
+// care about row order (a full-table COPY source) or explicitly wants plain
+// sequential-scan order, and this function's behavior for those callers
+// must not change. A caller that needs a specific, deterministic,
+// repeatable order should use StreamTableOrdered instead.
 func StreamTable(db *sql.DB, table string, columns []string, fn func(row []profiler.Value) error) error {
-	colList := ""
-	for i, c := range columns {
-		if i > 0 {
-			colList += ", "
-		}
-		colList += quoteIdent(c)
-	}
+	query := fmt.Sprintf(`SELECT %s FROM %s`, quoteIdentList(columns), quoteIdent(table))
+	return streamQuery(db, table, query, len(columns), fn)
+}
 
-	rows, err := db.Query(fmt.Sprintf(`SELECT %s FROM %s`, colList, quoteIdent(table)))
+// StreamTableOrdered is StreamTable with an added `ORDER BY orderByColumns`
+// clause, for a caller that needs a specific, deterministic, repeatable row
+// order rather than whatever a plain sequential scan happens to return.
+// VerifyTable is the motivating caller: Postgres 18 was observed, directly
+// and reproducibly, not to reliably return a freshly-COPY'd, untouched
+// table's rows in insertion order on a plain sequential scan — so a
+// position-based comparison against a Postgres source that's genuinely
+// ORDER-BY'd needs SQLite's side genuinely ordered the same way too, not
+// just assumed to already match by scan happenstance. orderByColumns is
+// typically a table's primary key columns, in PrimaryKeySeq order (see
+// ddl.PrimaryKeyColumns).
+func StreamTableOrdered(db *sql.DB, table string, columns []string, orderByColumns []string, fn func(row []profiler.Value) error) error {
+	query := fmt.Sprintf(`SELECT %s FROM %s ORDER BY %s`, quoteIdentList(columns), quoteIdent(table), quoteIdentList(orderByColumns))
+	return streamQuery(db, table, query, len(columns), fn)
+}
+
+// quoteIdentList quotes and comma-joins names, e.g. for a SELECT column
+// list or an ORDER BY clause.
+func quoteIdentList(names []string) string {
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = quoteIdent(n)
+	}
+	return strings.Join(quoted, ", ")
+}
+
+// streamQuery runs query (already fully built by StreamTable or
+// StreamTableOrdered) and calls fn once per resulting row, scanning
+// numCols columns into a fresh []profiler.Value per row. Factored out so
+// both callers share identical scanning behavior rather than duplicating
+// it.
+func streamQuery(db *sql.DB, table, query string, numCols int, fn func(row []profiler.Value) error) error {
+	rows, err := db.Query(query)
 	if err != nil {
 		return fmt.Errorf("streaming %s: %w", table, err)
 	}
 	defer rows.Close()
 
-	dest := make([]any, len(columns))
-	ptrs := make([]any, len(columns))
+	dest := make([]any, numCols)
+	ptrs := make([]any, numCols)
 	for i := range dest {
 		ptrs[i] = &dest[i]
 	}

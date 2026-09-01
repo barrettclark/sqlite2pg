@@ -30,6 +30,15 @@ type ProfileResult struct {
 	// generated config simply has no entry for them.
 	SkippedTables []sqlitereader.SkippedTable
 
+	// SkippedForeignKeys are declared foreign keys ReadForeignKeys
+	// deliberately dropped because they're an implicit `REFERENCES parent`
+	// clause whose target column couldn't be resolved — either parent
+	// doesn't have exactly one declared primary key column, or parent is
+	// itself an unsupported virtual table (issue #46). Not a failure, but
+	// not silently ignorable either, since the generated config simply has
+	// no entry for the relationship.
+	SkippedForeignKeys []sqlitereader.SkippedForeignKey
+
 	// FilteredSystemTables are tables FilterSystemTables excluded as Esri
 	// GDB_* or (on a confirmed Esri/Spatialite source) Spatialite st_*
 	// system tables — reported so the exclusion is visible rather than
@@ -45,18 +54,19 @@ type ProfileResult struct {
 // that need human review are both marked reviewed: false and included in
 // Unresolved.
 func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold float64) (*ProfileResult, error) {
-	tables, skippedTables, err := sqlitereader.ReadSchema(db)
+	tables, skippedTables, skippedFKs, err := sqlitereader.ReadSchema(db)
 	if err != nil {
 		return nil, fmt.Errorf("reading schema: %w", err)
 	}
 
 	kind := "sqlite"
 	isEsri := sqlitereader.IsEsriGeodatabase(tables)
+	isSpatialite := sqlitereader.IsSpatialite(tables)
 	if isEsri {
 		kind = "esri_geodatabase"
 	}
 	var filteredSystemTables []sqlitereader.TableInfo
-	tables, filteredSystemTables = sqlitereader.FilterSystemTables(tables, isEsri)
+	tables, filteredSystemTables = sqlitereader.FilterSystemTables(tables, isEsri, isSpatialite)
 
 	sourceHash, err := config.HashFile(sourcePath)
 	if err != nil {
@@ -77,6 +87,18 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 		cfg.SkippedTables = append(cfg.SkippedTables, config.SkippedTable{
 			Name:   st.Name,
 			Reason: st.Reason,
+		})
+	}
+	for _, sfk := range skippedFKs {
+		cfg.SkippedForeignKeys = append(cfg.SkippedForeignKeys, config.SkippedForeignKey{
+			Table:    sfk.Table,
+			RefTable: sfk.RefTable,
+			Reason:   sfk.Reason,
+		})
+	}
+	for _, ft := range filteredSystemTables {
+		cfg.FilteredSystemTables = append(cfg.FilteredSystemTables, config.FilteredSystemTable{
+			Name: ft.Name,
 		})
 	}
 
@@ -138,6 +160,24 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 
 		varcharLens := varcharSuggestions(table.Columns)
 
+		// Issue #55: phase 1 decides every column from its sample alone
+		// (decideColumnTentative never touches db), collecting a
+		// *pendingColumnDecision for any column that would otherwise
+		// auto-approve with a transform attached — instead of each such
+		// column immediately paying its own full-table scan the way
+		// decideColumn used to. Phase 2 below then runs ONE batched
+		// verifyTransformsAgainstFullTable call covering every pending
+		// column in this table, so a table with N auto-approving
+		// transform-bearing columns pays one sequential scan of the
+		// table's rows total, not N.
+		type columnOutcome struct {
+			cc      config.ColumnConfig
+			uc      *resolver.UnresolvedCase
+			pending *pendingColumnDecision
+		}
+		outcomes := make([]columnOutcome, len(table.Columns))
+		var specs []columnVerifySpec
+
 		for i, col := range table.Columns {
 			tc.ColumnOrder = append(tc.ColumnOrder, col.Name)
 			samples := columnSamples[i]
@@ -147,19 +187,35 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 				extra = append(extra, varcharFinding(n))
 			}
 
-			cc, uc, err := decideColumn(db, table.Name, col, samples, threshold, extra...)
+			cc, uc, pending := decideColumnTentative(table.Name, col, samples, threshold, extra...)
+			outcomes[i] = columnOutcome{cc: cc, uc: uc, pending: pending}
+			if pending != nil {
+				specs = append(specs, pending.verifySpec)
+			}
+		}
+
+		var verifyResults map[string]verifyResult
+		if len(specs) > 0 {
+			verifyResults, err = verifyTransformsAgainstFullTable(db, table.Name, specs)
 			if err != nil {
-				return nil, fmt.Errorf("deciding %s.%s: %w", table.Name, col.Name, err)
+				return nil, fmt.Errorf("verifying %s: %w", table.Name, err)
 			}
-			if uc != nil {
-				unresolved = append(unresolved, *uc)
+		}
+
+		for i, col := range table.Columns {
+			o := outcomes[i]
+			if o.pending != nil {
+				o.cc, o.uc = finalizeColumnDecision(o.pending, verifyResults[o.pending.verifySpec.Column])
 			}
-			tc.Columns[col.Name] = cc
+			if o.uc != nil {
+				unresolved = append(unresolved, *o.uc)
+			}
+			tc.Columns[col.Name] = o.cc
 		}
 		cfg.Tables[table.Name] = tc
 	}
 
-	return &ProfileResult{Config: cfg, Unresolved: unresolved, SkippedTables: skippedTables, FilteredSystemTables: filteredSystemTables}, nil
+	return &ProfileResult{Config: cfg, Unresolved: unresolved, SkippedTables: skippedTables, SkippedForeignKeys: skippedFKs, FilteredSystemTables: filteredSystemTables}, nil
 }
 
 // transposeToColumns turns rows (each a slice of numCols values, one row

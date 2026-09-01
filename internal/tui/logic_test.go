@@ -53,7 +53,7 @@ func TestPreviewValueForType_CoercesNumericValuesRatherThanJustFlagging(t *testi
 		{"NULL", "integer", "NULL", true},
 	}
 	for _, c := range cases {
-		display, valid := previewValueForType(c.value, c.targetType)
+		display, _, valid := previewValueForType(c.value, c.targetType)
 		if display != c.wantDisplay || valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, %q) = (%q, %v), want (%q, %v)",
 				c.value, c.targetType, display, valid, c.wantDisplay, c.wantValid)
@@ -75,7 +75,7 @@ func TestPreviewValueForType_ValidityForNonNumericTypes(t *testing.T) {
 		{"NULL", "date", true},
 	}
 	for _, c := range cases {
-		_, valid := previewValueForType(c.value, c.targetType)
+		_, _, valid := previewValueForType(c.value, c.targetType)
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, %q) valid = %v, want %v", c.value, c.targetType, valid, c.wantValid)
 		}
@@ -93,7 +93,7 @@ func TestPreviewValueForType_UUID(t *testing.T) {
 		{"NULL", true},
 	}
 	for _, c := range cases {
-		_, valid := previewValueForType(c.value, "uuid")
+		_, _, valid := previewValueForType(c.value, "uuid")
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, \"uuid\") valid = %v, want %v", c.value, valid, c.wantValid)
 		}
@@ -113,7 +113,7 @@ func TestPreviewValueForType_UUIDList(t *testing.T) {
 		{"NULL", true},
 	}
 	for _, c := range cases {
-		_, valid := previewValueForType(c.value, "uuid[]")
+		_, _, valid := previewValueForType(c.value, "uuid[]")
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, \"uuid[]\") valid = %v, want %v", c.value, valid, c.wantValid)
 		}
@@ -292,13 +292,74 @@ func TestValidTypesForColumn_DoesNotOfferTimestamptzForOrdinarySmallIntegers(t *
 }
 
 func TestPreviewValueForType_TimestamptzViaUnixEpochSecondsTransform(t *testing.T) {
-	display, valid := previewValueForType("1712345678", "timestamptz")
+	display, transform, valid := previewValueForType("1712345678", "timestamptz")
 	if !valid {
 		t.Fatal("expected 1712345678 to be valid as timestamptz via unix_epoch_seconds")
 	}
 	want := "2024-04-05T19:34:38Z"
 	if display != want {
 		t.Errorf("previewValueForType(1712345678, timestamptz) display = %q, want %q", display, want)
+	}
+	if transform != "unix_epoch_seconds" {
+		t.Errorf("previewValueForType(1712345678, timestamptz) transform = %q, want %q", transform, "unix_epoch_seconds")
+	}
+}
+
+// TestPreviewValueForType_ReturnsTheTransformUsedToProduceEachPreview
+// covers issue #41: previewValueForType must report which transform (if
+// any) it used to validate/preview each candidate type, so onTypeSelected
+// can attach that same transform to the decision it applies instead of
+// discarding it. "" means the type is directly compatible with the raw
+// value and needs no transform at COPY time.
+func TestPreviewValueForType_ReturnsTheTransformUsedToProduceEachPreview(t *testing.T) {
+	cases := []struct {
+		value, targetType, wantTransform string
+	}{
+		{"3.7", "integer", ""},                              // native numeric passthrough
+		{"1", "boolean", ""},                                // native boolean-shaped passthrough
+		{"anything at all", "text", ""},                     // native text passthrough
+		{"1712345678", "timestamptz", "unix_epoch_seconds"}, // issue #27/#41
+		{"2024-01-02T03:04:05Z", "timestamptz", "iso8601_to_timestamptz"},
+		{"2024-01-02", "date", "iso8601_to_date"},
+		{"20240102", "date", "yyyymmdd_to_date"},
+		{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "uuid", "uuid_format"},
+		{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "uuid[]", "uuid_list_format"}, // issue #12/#41
+		{"cc75b164-273c-4dce-9cdf-292045a0d38b\x003422ac1a-8dbb-4f23-a337-0bd0a0150022", "uuid[]", "uuid_list_format"},
+	}
+	for _, c := range cases {
+		_, transform, valid := previewValueForType(c.value, c.targetType)
+		if !valid {
+			t.Errorf("previewValueForType(%q, %q): expected valid", c.value, c.targetType)
+			continue
+		}
+		if transform != c.wantTransform {
+			t.Errorf("previewValueForType(%q, %q) transform = %q, want %q", c.value, c.targetType, transform, c.wantTransform)
+		}
+	}
+}
+
+// TestDateTransformPreview_OnlyTriesTransformsThatMatchTheRequestedTargetType
+// guards against a subtle regression: iso8601_to_timestamptz and
+// iso8601_to_date both parse the same ISO-shaped input, but only one
+// produces a value suited to the target column. Requesting a preview for
+// "date" must never come back with a timestamptz-only transform (or vice
+// versa) — onTypeSelected would attach a transform mismatched to the type
+// the human actually picked.
+func TestDateTransformPreview_OnlyTriesTransformsThatMatchTheRequestedTargetType(t *testing.T) {
+	_, transform, ok := dateTransformPreview("2024-01-02", "date")
+	if !ok || transform != "iso8601_to_date" {
+		t.Errorf("dateTransformPreview(2024-01-02, date) = (_, %q, %v), want (_, iso8601_to_date, true)", transform, ok)
+	}
+	_, transform, ok = dateTransformPreview("2024-01-02", "timestamptz")
+	if !ok || transform != "iso8601_to_timestamptz" {
+		t.Errorf("dateTransformPreview(2024-01-02, timestamptz) = (_, %q, %v), want (_, iso8601_to_timestamptz, true)", transform, ok)
+	}
+	// A plausible Julian day number is date-only (julian_day_to_date has no
+	// timestamptz counterpart) — requesting timestamptz for it must not
+	// fall through to some other, wrong transform.
+	_, _, ok = dateTransformPreview("2451545", "timestamptz")
+	if ok {
+		t.Error("expected a Julian day value to not validate as timestamptz (julian_day_to_date targets date only)")
 	}
 }
 
@@ -337,7 +398,7 @@ func TestPreviewValueForType_SmallintRangeCheck(t *testing.T) {
 		{"-32769", false},
 	}
 	for _, c := range cases {
-		_, valid := previewValueForType(c.value, "smallint")
+		_, _, valid := previewValueForType(c.value, "smallint")
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, \"smallint\") valid = %v, want %v", c.value, valid, c.wantValid)
 		}
@@ -354,7 +415,7 @@ func TestPreviewValueForType_IntegerRangeCheck(t *testing.T) {
 		{"-2147483648", true},
 	}
 	for _, c := range cases {
-		_, valid := previewValueForType(c.value, "integer")
+		_, _, valid := previewValueForType(c.value, "integer")
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, \"integer\") valid = %v, want %v", c.value, valid, c.wantValid)
 		}

@@ -11,9 +11,9 @@ import (
 	"sqlite2pg/internal/config"
 )
 
-// dropSentinel marks a column excluded from the target schema entirely
+// DropSentinel marks a column excluded from the target schema entirely
 // (e.g. Esri SHAPE blobs), set by the esri_typename_mapping heuristic.
-const dropSentinel = "__drop__"
+const DropSentinel = "__drop__"
 
 // ErrNoIncludedColumns is returned by GenerateCreateTable when a table has
 // zero columns left after excluding dropped ones (or had none to begin
@@ -45,6 +45,15 @@ var ErrMissingColumnOrder = errors.New("table has columns but no column_order �
 // otherwise collide once Postgres truncates overlong identifiers (issue
 // #21) come out disambiguated instead.
 //
+// table must already be the identifier CREATE TABLE should actually emit
+// — i.e. cfg's PostgresTableNames(cfg)[sourceTableName], not necessarily
+// the raw source table name — so that two source tables colliding after
+// Postgres's 63-byte truncation come out disambiguated the same way
+// columns do (issue #44). Every caller that also needs to reference this
+// same table elsewhere (COPY's target, an FK's REFERENCES/ON clause) must
+// use the identical resolved name, or the two references will disagree
+// about which relation they mean.
+//
 // It returns ErrMissingColumnOrder or ErrNoIncludedColumns (see both) if tc
 // has no columns to emit, rather than the invalid `CREATE TABLE "t" ();`
 // issue #30 reported.
@@ -67,7 +76,7 @@ func GenerateCreateTable(table string, tc config.TableConfig) (string, error) {
 		}
 		cols = append(cols, col)
 	}
-	if pk := primaryKeyColumns(tc); len(pk) > 0 {
+	if pk := PrimaryKeyColumns(tc); len(pk) > 0 {
 		pkIDs := make([]string, len(pk))
 		for i, name := range pk {
 			pkIDs[i] = ids[name]
@@ -112,13 +121,15 @@ func ValidateTableConfigs(cfg *config.MigrationConfig) error {
 	return nil
 }
 
-// primaryKeyColumns returns tc's included primary-key columns ordered by
+// PrimaryKeyColumns returns tc's included primary-key columns ordered by
 // their declared PrimaryKeySeq (1-based), not by ColumnOrder — a composite
 // primary key's declared column order can differ from the table's overall
 // column order. A dropped or otherwise excluded column that happened to be
 // part of the primary key is simply omitted, same as it is from the
-// column list itself.
-func primaryKeyColumns(tc config.TableConfig) []string {
+// column list itself. Exported for VerifyTable (internal/pipeline), which
+// needs the same primary-key column set to order both sides of its
+// comparison identically.
+func PrimaryKeyColumns(tc config.TableConfig) []string {
 	type seqCol struct {
 		seq  int
 		name string
@@ -154,7 +165,7 @@ func quoteJoin(names []string) string {
 func IncludedColumns(tc config.TableConfig) []string {
 	var names []string
 	for _, name := range tc.ColumnOrder {
-		if col, ok := tc.Columns[name]; ok && col.TargetType != dropSentinel {
+		if col, ok := tc.Columns[name]; ok && col.TargetType != DropSentinel {
 			names = append(names, name)
 		}
 	}

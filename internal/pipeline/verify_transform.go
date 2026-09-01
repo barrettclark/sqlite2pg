@@ -10,10 +10,111 @@ import (
 	"sqlite2pg/internal/sqlitereader"
 )
 
-// errFullTableViolation is a sentinel used only to short-circuit
-// sqlitereader.StreamTable at the first offending row — never returned to
-// verifyTransformAgainstFullTable's own caller.
-var errFullTableViolation = errors.New("full-table verification found a value the transform can't convert")
+// columnVerifySpec is one column's request into
+// verifyTransformsAgainstFullTable: the transform that will run at real
+// COPY time, the Postgres target type its result must fit, and whether a
+// transform-produced NULL is itself a violation (see rejectNull on
+// verifyTransformAgainstFullTable below — same meaning here).
+type columnVerifySpec struct {
+	Column     string
+	Transform  string
+	TargetType string
+	RejectNull bool
+}
+
+// verifyResult is one column's outcome from
+// verifyTransformsAgainstFullTable: OK true means every value converted
+// cleanly, fit the target type, and (when the spec's RejectNull was set)
+// never came out NULL. BadValue is the first offending raw value's string
+// form when OK is false.
+type verifyResult struct {
+	OK       bool
+	BadValue string
+}
+
+// errAllColumnsResolved is a sentinel used only to short-circuit
+// sqlitereader.StreamTable once every requested column has already found
+// its first violation — there's nothing left for the remaining rows to
+// tell any of them. Never returned to verifyTransformsAgainstFullTable's
+// own caller.
+var errAllColumnsResolved = errors.New("full-table verification: every requested column already resolved")
+
+// verifyTransformsAgainstFullTable is verifyTransformAgainstFullTable
+// (see its docs below for the full rationale) generalized to check many
+// columns of the same table in a single sequential scan instead of one
+// scan per column (issue #55): a table with N auto-approving,
+// transform-bearing columns used to pay N full scans of the same rows.
+// Every spec with a non-empty Transform is checked against the SAME
+// row-by-row cursor; each column keeps its own independent "first
+// violation" state, exactly as if it had been checked alone — a column
+// that finds its violation early stops being re-checked on later rows
+// (there's nothing more its own check needs), but other columns in the
+// same row keep being checked until each has either found its own first
+// violation or the scan completes. The scan itself only stops early once
+// every requested column has resolved.
+//
+// A spec whose Transform is empty needs no scan at all (nothing to
+// verify) and resolves to OK immediately without being included in the
+// shared query — matching verifyTransformAgainstFullTable's own
+// short-circuit for an empty transform.
+func verifyTransformsAgainstFullTable(db *sql.DB, table string, specs []columnVerifySpec) (map[string]verifyResult, error) {
+	results := make(map[string]verifyResult, len(specs))
+
+	active := make([]columnVerifySpec, 0, len(specs))
+	columns := make([]string, 0, len(specs))
+	for _, s := range specs {
+		if s.Transform == "" {
+			results[s.Column] = verifyResult{OK: true}
+			continue
+		}
+		active = append(active, s)
+		columns = append(columns, s.Column)
+	}
+	if len(active) == 0 {
+		return results, nil
+	}
+
+	remaining := len(active)
+	streamErr := sqlitereader.StreamTable(db, table, columns, func(row []profiler.Value) error {
+		for i, s := range active {
+			if _, done := results[s.Column]; done {
+				continue
+			}
+			raw := row[i]
+			val, err := copywriter.Transform(s.Transform, raw)
+			bad := false
+			switch {
+			case err != nil:
+				bad = true
+			case s.RejectNull && val == nil:
+				bad = true
+			case !fitsTargetType(val, s.TargetType):
+				bad = true
+			}
+			if bad {
+				results[s.Column] = verifyResult{OK: false, BadValue: fmt.Sprintf("%v", raw)}
+				remaining--
+			}
+		}
+		if remaining == 0 {
+			return errAllColumnsResolved
+		}
+		return nil
+	})
+	if streamErr != nil && !errors.Is(streamErr, errAllColumnsResolved) {
+		return nil, fmt.Errorf("verifying %s against the full table: %w", table, streamErr)
+	}
+
+	// Every active column that never hit a violation across the whole
+	// scan (or the scan stopped early because every OTHER column already
+	// had) verified clean.
+	for _, s := range active {
+		if _, ok := results[s.Column]; !ok {
+			results[s.Column] = verifyResult{OK: true}
+		}
+	}
+	return results, nil
+}
 
 // verifyTransformAgainstFullTable streams every value in table.column and
 // runs copywriter.Transform against it — the exact function that will run
@@ -35,47 +136,39 @@ var errFullTableViolation = errors.New("full-table verification found a value th
 // lets verifyTransformAgainstFullTable range-check the *produced* value
 // against the target, not just detect a transform error.
 //
-// isPrimaryKey additionally rejects any value the transform maps to NULL
-// (issue #31): uuid_format, numeric_text_to_integer, numeric_text_to_double,
-// and nullif_empty all map an empty string to NULL by design — a
-// reasonable default for an ordinary column, but internal/ddl/generate.go
-// emits an inline PRIMARY KEY (...) clause for any PrimaryKeySeq > 0
-// column, so a transform-produced NULL there would abort the whole COPY
-// with a not-null violation instead of merely losing one column's value.
+// rejectNull additionally rejects any value the transform maps to NULL
+// (issue #31, widened by issue #40): uuid_format, numeric_text_to_integer,
+// numeric_text_to_double, and nullif_empty all map an empty string to NULL
+// by design — a reasonable default for an ordinary nullable column, but
+// internal/ddl/generate.go emits a NOT NULL constraint (either the inline
+// PRIMARY KEY (...) clause for any PrimaryKeySeq > 0 column, or an explicit
+// NOT NULL for any column with ColumnConfig.NotNull set) — so a
+// transform-produced NULL on either kind of column would abort the whole
+// COPY with a not-null violation instead of merely losing one column's
+// value. Callers pass col.PrimaryKeySeq > 0 || col.NotNull.
 //
 // ok is true when every value converted cleanly, fit the target type, and
-// (for a primary-key column) never came out NULL — or transform is empty
+// (when rejectNull is set) never came out NULL — or transform is empty
 // (nothing to check). badValue is the first offending raw value's string
 // form when ok is false. err is a real I/O/query failure, distinct from a
 // found violation.
-func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform, targetType string, isPrimaryKey bool) (ok bool, badValue string, err error) {
-	if transform == "" {
-		return true, "", nil
+//
+// This single-column form is now implemented in terms of
+// verifyTransformsAgainstFullTable (issue #55) — kept alongside it because
+// its tests, and the shape of a caller checking exactly one column,
+// benefit from not having to build a one-element spec slice by hand.
+func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform, targetType string, rejectNull bool) (ok bool, badValue string, err error) {
+	results, err := verifyTransformsAgainstFullTable(db, table, []columnVerifySpec{{
+		Column:     column,
+		Transform:  transform,
+		TargetType: targetType,
+		RejectNull: rejectNull,
+	}})
+	if err != nil {
+		return false, "", err
 	}
-
-	streamErr := sqlitereader.StreamTable(db, table, []string{column}, func(row []profiler.Value) error {
-		val, err := copywriter.Transform(transform, row[0])
-		if err != nil {
-			badValue = fmt.Sprintf("%v", row[0])
-			return errFullTableViolation
-		}
-		if isPrimaryKey && val == nil {
-			badValue = fmt.Sprintf("%v", row[0])
-			return errFullTableViolation
-		}
-		if !fitsTargetType(val, targetType) {
-			badValue = fmt.Sprintf("%v", row[0])
-			return errFullTableViolation
-		}
-		return nil
-	})
-	if streamErr == nil {
-		return true, "", nil
-	}
-	if errors.Is(streamErr, errFullTableViolation) {
-		return false, badValue, nil
-	}
-	return false, "", fmt.Errorf("verifying %s.%s against the full table: %w", table, column, streamErr)
+	r := results[column]
+	return r.OK, r.BadValue, nil
 }
 
 // fitsTargetType reports whether a value a transform produced actually

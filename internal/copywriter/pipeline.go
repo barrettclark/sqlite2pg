@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"sync"
 
 	"sqlite2pg/internal/config"
 	"sqlite2pg/internal/ddl"
@@ -23,12 +24,13 @@ var errClosed = errors.New("table source closed")
 // (Next() bool, Values() ([]any, error), Err() error) — the pull side of a
 // producer/consumer pipeline that never buffers a full table in memory.
 type TableSource struct {
-	rowsCh  chan []any
-	errCh   chan error
-	done    chan struct{}
-	current []any
-	err     error
-	onRow   func()
+	rowsCh   chan []any
+	errCh    chan error
+	done     chan struct{}
+	doneOnce sync.Once
+	current  []any
+	err      error
+	onRow    func()
 }
 
 // NewTableSource starts streaming table in the background. Columns marked
@@ -83,9 +85,12 @@ func NewTableSource(db *sql.DB, table string, tc config.TableConfig) *TableSourc
 // cursor. Callers that abandon a TableSource before draining it via Next()
 // — as LoadTable does whenever pgx's CopyFrom returns early — must call
 // Close so the goroutine doesn't leak parked on a full rowsCh. Close is a
-// no-op from Next's point of view: it never itself sets Err().
+// no-op from Next's point of view: it never itself sets Err(). Close is
+// safe to call more than once — a second call is a no-op.
 func (ts *TableSource) Close() {
-	close(ts.done)
+	ts.doneOnce.Do(func() {
+		close(ts.done)
+	})
 }
 
 // OnRow registers fn to be called once per row Next() successfully pulls

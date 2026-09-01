@@ -138,6 +138,66 @@ func TestGenerateForeignKeyIndexes_TruncatesAndDisambiguatesLongIndexNames(t *te
 	}
 }
 
+func TestGenerateForeignKeyIndexes_DisambiguatesAcrossDifferentTables(t *testing.T) {
+	// Issue #43: a Postgres index is schema-scoped, not table-scoped like a
+	// constraint, so disambiguation has to span every table's foreign keys
+	// together — not run per-table the way foreignKeyConstraintNames
+	// correctly does. Two tables whose names differ only after the 63-byte
+	// NAMEDATALEN cutoff, each with a one-column FK to a shared parent,
+	// independently generate the identical truncated index name unless
+	// disambiguation sees both tables at once.
+	base := strings.Repeat("a", 60)
+	table1 := base + "x"
+	table2 := base + "y"
+
+	cfg := &config.MigrationConfig{
+		Tables: map[string]config.TableConfig{
+			"parents": {
+				Include:     true,
+				ColumnOrder: []string{"p"},
+				Columns:     map[string]config.ColumnConfig{"p": {TargetType: "integer"}},
+			},
+			table1: {
+				Include:     true,
+				ColumnOrder: []string{"p"},
+				Columns:     map[string]config.ColumnConfig{"p": {TargetType: "integer"}},
+				ForeignKeys: []config.ForeignKey{
+					{Columns: []string{"p"}, RefTable: "parents", RefColumns: []string{"p"}},
+				},
+			},
+			table2: {
+				Include:     true,
+				ColumnOrder: []string{"p"},
+				Columns:     map[string]config.ColumnConfig{"p": {TargetType: "integer"}},
+				ForeignKeys: []config.ForeignKey{
+					{Columns: []string{"p"}, RefTable: "parents", RefColumns: []string{"p"}},
+				},
+			},
+		},
+	}
+
+	statements := GenerateForeignKeyIndexes(cfg)
+
+	if len(statements) != 2 {
+		t.Fatalf("expected 2 statements, got %d: %v", len(statements), statements)
+	}
+
+	names := make(map[string]bool, len(statements))
+	for _, stmt := range statements {
+		start := strings.Index(stmt, "CREATE INDEX \"") + len("CREATE INDEX \"")
+		end := strings.Index(stmt[start:], "\"")
+		name := stmt[start : start+end]
+
+		if len(name) > 63 {
+			t.Errorf("index name %q is %d bytes, exceeds Postgres's 63-byte NAMEDATALEN limit", name, len(name))
+		}
+		if names[name] {
+			t.Fatalf("index name %q was generated for foreign keys on two different tables; Postgres would reject the second CREATE INDEX as a duplicate", name)
+		}
+		names[name] = true
+	}
+}
+
 func TestGenerateForeignKeyIndexes_SkipsAnInvalidForeignKey(t *testing.T) {
 	// Same shape as GenerateForeignKeyConstraints' skip tests: a foreign
 	// key referencing an excluded table never becomes a real constraint,

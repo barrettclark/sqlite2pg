@@ -296,3 +296,28 @@ loop:
 		t.Fatalf("producer streamed all %d remaining rows after Close() instead of exiting early (goroutine/cursor leak not fixed)", remaining)
 	}
 }
+
+// Issue #54: Close() is a bare close(ts.done) with no guard, so a second
+// call panics on an already-closed channel. Nothing in the current code
+// calls Close() twice, but the doc comment doesn't say it's single-use, so
+// a future defensive caller (e.g. an error path calling Close() in addition
+// to a defer) would panic. Close must tolerate being called more than once,
+// mirroring internal/review/state.go's doneOnce pattern.
+func TestTableSource_CloseIsIdempotent(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE t (n INTEGER);`)
+	tc := config.TableConfig{
+		ColumnOrder: []string{"n"},
+		Columns:     map[string]config.ColumnConfig{"n": {TargetType: "integer"}},
+	}
+
+	src := NewTableSource(db, "t", tc)
+
+	defer func() {
+		if r := recover(); r != nil {
+			t.Fatalf("calling Close() twice panicked: %v", r)
+		}
+	}()
+
+	src.Close()
+	src.Close()
+}

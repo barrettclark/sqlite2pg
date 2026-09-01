@@ -14,15 +14,6 @@ import (
 	"sqlite2pg/internal/review"
 )
 
-// dateLayouts are the formats previewValueForType accepts for
-// "date"/"timestamptz" — matching what a plain COPY (no transform) would
-// need to parse, not every format Postgres itself understands.
-var dateLayouts = []string{
-	time.RFC3339,
-	"2006-01-02 15:04:05",
-	"2006-01-02",
-}
-
 // uuidPattern mirrors the canonical-UUID check the uuid_format heuristic
 // uses (internal/profiler/heuristics/uuid_format.go) — kept as its own
 // copy since that package is internal to the profiler and not meant to be
@@ -73,51 +64,62 @@ func timeFromTransform(transform string, raw any) (time.Time, bool) {
 
 // dateTransformPreview reports whether value would convert to a real date
 // or timestamp under any transform a profiler heuristic could plausibly
-// have assigned it — by actually running it through copywriter.Transform,
-// not by re-deriving date-string parsing here (issue #27: this is what
-// lets a Unix epoch integer like bikes.last_reported's raw 1712345678
-// validate as timestamptz even when timestamptz isn't already the
-// column's current type). Each purely-numeric transform is only tried
-// when value's magnitude falls in that transform's own real-world
-// plausibility window, so an ordinary small integer or float doesn't
-// "convert" its way into looking like a date.
-func dateTransformPreview(value string) (time.Time, bool) {
-	if n, err := strconv.ParseInt(value, 10, 64); err == nil {
+// have assigned it for targetType — by actually running it through
+// copywriter.Transform, not by re-deriving date-string parsing here (issue
+// #27: this is what lets a Unix epoch integer like bikes.last_reported's
+// raw 1712345678 validate as timestamptz even when timestamptz isn't
+// already the column's current type). Each purely-numeric transform is
+// only tried when value's magnitude falls in that transform's own
+// real-world plausibility window, so an ordinary small integer or float
+// doesn't "convert" its way into looking like a date.
+//
+// The returned transform name is the transform that actually produced the
+// preview (issue #41): only transforms targeting targetType are ever
+// tried, since e.g. iso8601_to_timestamptz and iso8601_to_date parse the
+// same input but produce values suited to different Postgres columns —
+// running the wrong one would hand onTypeSelected a transform that
+// doesn't match the type the human actually picked.
+func dateTransformPreview(value, targetType string) (time.Time, string, bool) {
+	if n, err := strconv.ParseInt(value, 10, 64); err == nil && targetType == "timestamptz" {
 		switch {
 		case n >= epochSecondsMin && n <= epochSecondsMax:
 			if tm, ok := timeFromTransform("unix_epoch_seconds", n); ok {
-				return tm, true
+				return tm, "unix_epoch_seconds", true
 			}
 		case n >= epochMillisMin && n <= epochMillisMax:
 			if tm, ok := timeFromTransform("unix_epoch_millis", n); ok {
-				return tm, true
+				return tm, "unix_epoch_millis", true
 			}
 		case n >= epochMicrosMin && n <= epochMicrosMax:
 			if tm, ok := timeFromTransform("unix_epoch_micros", n); ok {
-				return tm, true
+				return tm, "unix_epoch_micros", true
 			}
 		}
 	}
 	if f, err := strconv.ParseFloat(value, 64); err == nil {
 		switch {
-		case f >= excelSerialMin && f <= excelSerialMax:
+		case targetType == "timestamptz" && f >= excelSerialMin && f <= excelSerialMax:
 			if tm, ok := timeFromTransform("excel_serial_to_timestamptz", f); ok {
-				return tm, true
+				return tm, "excel_serial_to_timestamptz", true
 			}
-		case f >= julianDayMin && f <= julianDayMax:
+		case targetType == "date" && f >= julianDayMin && f <= julianDayMax:
 			if tm, ok := timeFromTransform("julian_day_to_date", f); ok {
-				return tm, true
+				return tm, "julian_day_to_date", true
 			}
 		}
 	}
 	// String-shaped transforms are self-limiting (time.Parse against a
 	// fixed layout), so no extra plausibility window is needed for these.
-	for _, transform := range []string{"iso8601_to_timestamptz", "iso8601_to_date", "dayfirst_to_timestamptz", "yyyymmdd_to_date"} {
+	stringTransforms := []string{"iso8601_to_timestamptz", "dayfirst_to_timestamptz"}
+	if targetType == "date" {
+		stringTransforms = []string{"iso8601_to_date", "yyyymmdd_to_date"}
+	}
+	for _, transform := range stringTransforms {
 		if tm, ok := timeFromTransform(transform, value); ok {
-			return tm, true
+			return tm, transform, true
 		}
 	}
-	return time.Time{}, false
+	return time.Time{}, "", false
 }
 
 // findTable returns name's TableView from summary, or a zero-value
@@ -172,15 +174,25 @@ func columnSampleValues(tv review.TableView, columnName string) []string {
 // string under "boolean". "NULL" (the preview grid's placeholder for a nil
 // value) always displays as-is and is always valid, since NULL is valid
 // for any nullable column.
-func previewValueForType(value, targetType string) (display string, valid bool) {
+//
+// The returned transform is the transform name (copywriter.Transform's
+// vocabulary) that produced this preview, or "" when targetType needs no
+// transform at all — a directly-compatible raw value for a plain numeric,
+// boolean, text, jsonb, or bytea column, which pgx's COPY protocol accepts
+// unconverted. onTypeSelected (issue #41) attaches this transform to the
+// decision it applies: a type the picker only offers BECAUSE some
+// transform makes it work (date/timestamptz via dateTransformPreview,
+// uuid[] via uuid_list_format) must carry that same transform forward when
+// selected, or the real COPY fails on the untransformed raw value.
+func previewValueForType(value, targetType string) (display, transform string, valid bool) {
 	if value == "NULL" {
-		return value, true
+		return value, "", true
 	}
 	switch targetType {
 	case "integer", "bigint", "smallint":
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil {
-			return value, false
+			return value, "", false
 		}
 		n := int64(f)
 		if !copywriter.FitsRange(n, targetType) {
@@ -188,40 +200,44 @@ func previewValueForType(value, targetType string) (display string, valid bool) 
 			// smallint's (int2) range — offering smallint here would
 			// let the picker promise a type the real COPY then rejects
 			// with "value out of range for type smallint" (issue #27).
-			return value, false
+			return value, "", false
 		}
-		return strconv.FormatInt(n, 10), true
+		return strconv.FormatInt(n, 10), "", true
 	case "real", "double precision", "numeric":
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil {
-			return value, false
+			return value, "", false
 		}
 		formatted := strconv.FormatFloat(f, 'f', -1, 64)
 		if !strings.Contains(formatted, ".") {
 			formatted += ".0"
 		}
-		return formatted, true
+		return formatted, "", true
 	case "boolean":
 		switch strings.ToLower(value) {
 		case "0", "1", "true", "false", "t", "f":
-			return value, true
+			return value, "", true
 		}
-		return value, false
+		return value, "", false
 	case "date", "timestamptz":
-		for _, layout := range dateLayouts {
-			if _, err := time.Parse(layout, value); err == nil {
-				return value, true
-			}
+		tm, usedTransform, ok := dateTransformPreview(value, targetType)
+		if !ok {
+			return value, "", false
 		}
-		if tm, ok := dateTransformPreview(value); ok {
-			if targetType == "date" {
-				return tm.Format("2006-01-02"), true
-			}
-			return tm.Format(time.RFC3339), true
+		if targetType == "date" {
+			return tm.Format("2006-01-02"), usedTransform, true
 		}
-		return value, false
+		return tm.Format(time.RFC3339), usedTransform, true
 	case "uuid":
-		return value, uuidPattern.MatchString(value)
+		if !uuidPattern.MatchString(value) {
+			return value, "", false
+		}
+		// A raw string never satisfies pgx's UUID codec (it requires
+		// UUIDValuer, which plain string doesn't implement) — uuid_format
+		// is what parses the canonical text form into the [16]byte pgx
+		// needs, so it's always required at COPY time, not merely when
+		// the sample happens to look unusual.
+		return value, "uuid_format", true
 	case "uuid[]":
 		// Mirrors the uuid_list heuristic's own check: normalize
 		// beets' real-world "\␀" escape (see
@@ -236,13 +252,20 @@ func previewValueForType(value, targetType string) (display string, valid bool) 
 		normalized := strings.ReplaceAll(value, "\\␀", "\x00")
 		for _, p := range strings.Split(normalized, "\x00") {
 			if !uuidPattern.MatchString(p) {
-				return value, false
+				return value, "", false
 			}
 		}
-		return value, true
+		// uuid_list_format is always required at COPY time (issue #41):
+		// the raw NUL-joined string never satisfies pgx's array codec on
+		// its own, the same reason uuid_format is always required above.
+		return value, "uuid_list_format", true
 	default:
-		// text, jsonb, bytea: any string is valid, displayed as-is.
-		return value, true
+		// text, jsonb, bytea: any string is valid, displayed as-is, and
+		// passed through unconverted — jsonb's own transform
+		// (text_to_jsonb) only adds upfront validation, it doesn't
+		// reshape the value pgx receives, so no transform is needed here
+		// either.
+		return value, "", true
 	}
 }
 
@@ -299,7 +322,12 @@ type flaggedColumn struct {
 // never changes once a human overrides a column (only Reviewed does), so
 // this list is stable for the life of a session: a column already
 // resolved stays on it, so jumping back to something already decided is
-// always possible, not just the columns still outstanding.
+// always possible, not just the columns still outstanding. This is a
+// documented, shared contract, not local to the TUI: review.State.ApplyDecision
+// and `migrate resolve --apply` (cmd/migrate/main.go's runResolve, issue
+// #53) both leave NeedsReview untouched on override for the same reason —
+// it's a permanent profiler verdict, and Reviewed is what tracks whether a
+// human has acted on the column.
 func flaggedColumns(summary review.ReviewSummary) []flaggedColumn {
 	var flagged []flaggedColumn
 	for _, t := range summary.Tables {
@@ -353,7 +381,7 @@ func validTypesForColumn(values []string, currentType string) []string {
 	for _, t := range review.TypeOptions {
 		ok := true
 		for _, v := range values {
-			if _, valueValid := previewValueForType(v, t); !valueValid {
+			if _, _, valueValid := previewValueForType(v, t); !valueValid {
 				ok = false
 				break
 			}

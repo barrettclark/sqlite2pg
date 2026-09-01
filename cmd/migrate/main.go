@@ -37,7 +37,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: migrate <profile|review|load|resolve> ...")
+		return errors.New("usage: migrate <profile|review|load|verify|resolve> ...")
 	}
 
 	switch args[0] {
@@ -49,10 +49,12 @@ func run(args []string) error {
 		return runReview(args[1:])
 	case "load":
 		return runLoad(args[1:])
+	case "verify":
+		return runVerify(args[1:])
 	case "resolve":
 		return runResolve(args[1:])
 	default:
-		return fmt.Errorf("unknown command %q (expected run, profile, review, load, or resolve)", args[0])
+		return fmt.Errorf("unknown command %q (expected run, profile, review, load, verify, or resolve)", args[0])
 	}
 }
 
@@ -98,6 +100,7 @@ func runRun(args []string) error {
 	}
 	fmt.Printf("profiled %s: %d table(s), %d column(s) need review\n", sourcePath, len(result.Config.Tables), len(result.Unresolved))
 	warnSkippedTables(result.SkippedTables)
+	warnSkippedForeignKeys(result.SkippedForeignKeys)
 	warnFilteredSystemTables(result.FilteredSystemTables)
 
 	st, err := review.NewState(configPath, *threshold)
@@ -138,13 +141,32 @@ func runRun(args []string) error {
 }
 
 // cleanupConfigAfterLoad decides what becomes of a `run`-generated config
-// once the load step has run its course (issue #38). The config is only
-// ever removed after a load that actually succeeded — on any load error it
-// is left in place, independent of --keep-config, so a user who hits a
-// failure without having anticipated --keep-config up front can still
-// inspect what was decided or retry via `migrate load --resume` against the
-// surviving config and its state file. loadErr, when non-nil, is returned
-// unchanged so callers still see the real failure.
+// (and its companion state file) once the load step has run its course
+// (issue #38, extended by issue #52). The config is only ever removed after
+// a load that actually succeeded — on any load error it is left in place,
+// independent of --keep-config, so a user who hits a failure without having
+// anticipated --keep-config up front can still inspect what was decided or
+// retry via `migrate load --resume` against the surviving config and its
+// state file. loadErr, when non-nil, is returned unchanged so callers still
+// see the real failure.
+//
+// The state file (<configPath>.state.json) is removed alongside the config
+// on success, keeping the invariant "the state file exists if and only if
+// the config file exists" — the two files describe the same run and neither
+// is useful without the other. This is deliberately scoped to `run`'s
+// single-shot flow only (executeLoad, reached from the separate `migrate
+// load` command, never calls this function and so never touches its state
+// file): `migrate verify` locates its target database by reading
+// <configPath>.state.json, but it also needs configPath itself to load the
+// table definitions it verifies against (config.Load in runVerify) — and
+// `run`'s success path already deletes that config file, independent of
+// this fix. So `verify` was already unusable after a plain `migrate run`
+// succeeded; removing the state file here doesn't take away any capability
+// `verify` users actually had. Someone who wants to `verify` after `run`
+// must already pass --keep-config to keep the config around, and that same
+// flag now keeps the state file too. The separate profile/review/load flow
+// — where `verify` is meant to be used — is untouched: `load` leaves both
+// its config and its state file in place after success, exactly as before.
 func cleanupConfigAfterLoad(loadErr error, configPath string, keepConfig bool) error {
 	if loadErr != nil {
 		return loadErr
@@ -154,6 +176,10 @@ func cleanupConfigAfterLoad(loadErr error, configPath string, keepConfig bool) e
 	}
 	if err := os.Remove(configPath); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("removing generated config %s: %w", configPath, err)
+	}
+	statePath := configPath + ".state.json"
+	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("removing generated state file %s: %w", statePath, err)
 	}
 	return nil
 }
@@ -191,6 +217,7 @@ func runProfile(args []string) error {
 	}
 	fmt.Printf("wrote draft config to %s (%d table(s))\n", *out, len(result.Config.Tables))
 	warnSkippedTables(result.SkippedTables)
+	warnSkippedForeignKeys(result.SkippedForeignKeys)
 	warnFilteredSystemTables(result.FilteredSystemTables)
 
 	if len(result.Unresolved) > 0 {
@@ -215,6 +242,23 @@ func warnSkippedTables(skipped []sqlitereader.SkippedTable) {
 	fmt.Fprintf(os.Stderr, "warning: %d table(s) skipped (unsupported SQLite virtual table module) and left out of the config:\n", len(skipped))
 	for _, st := range skipped {
 		fmt.Fprintf(os.Stderr, "  - %s: %s\n", st.Name, st.Reason)
+	}
+}
+
+// warnSkippedForeignKeys prints a stderr warning for every declared foreign
+// key ReadForeignKeys deliberately dropped (issue #46: an implicit
+// `REFERENCES parent` clause whose target column couldn't be resolved,
+// either because parent doesn't have exactly one declared primary key
+// column or because parent is itself an unsupported virtual table) — the
+// generated config simply has no entry for these relationships, so without
+// this warning the drop is invisible.
+func warnSkippedForeignKeys(skipped []sqlitereader.SkippedForeignKey) {
+	if len(skipped) == 0 {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: %d foreign key relationship(s) skipped (couldn't resolve implicit reference) and left out of the config:\n", len(skipped))
+	for _, sfk := range skipped {
+		fmt.Fprintf(os.Stderr, "  - %s -> %s: %s\n", sfk.Table, sfk.RefTable, sfk.Reason)
 	}
 }
 
@@ -284,7 +328,16 @@ func runLoad(args []string) error {
 			return fmt.Errorf("source file %s has changed since this config was generated; re-run `migrate profile` or pass --force", cfg.Source.Path)
 		}
 		for tableName, tc := range cfg.Tables {
-			for colName, col := range tc.Columns {
+			// Scoped to ddl.IncludedColumns(tc) rather than all of
+			// tc.Columns (issue #45): a column mapped to the drop
+			// sentinel (e.g. Esri SHAPE geometry) is excluded from the
+			// generated DDL and from BuildReviewSummary's review UI
+			// alike, so there is no way for a human to ever mark one
+			// Reviewed — gating on it here would refuse every Esri
+			// source's load outright, with no recourse short of
+			// --force.
+			for _, colName := range ddl.IncludedColumns(tc) {
+				col := tc.Columns[colName]
 				// col.NeedsReview persists resolver.Decide's
 				// disagreement-tie verdict (issue #20): a contested
 				// decision can leave Confidence at the winning finding's
@@ -331,12 +384,18 @@ func printDryRunDDL(w io.Writer, cfg *config.MigrationConfig) {
 	}
 	sort.Strings(tableNames)
 
+	// The identifier CREATE TABLE must actually emit for each table (see
+	// ddl.PostgresTableNames/issue #44) — computed once here so every
+	// generator below (CREATE TABLE, foreign keys, foreign key indexes)
+	// agrees on the same disambiguated name for the same table.
+	pgTableNames := ddl.PostgresTableNames(cfg)
+
 	for _, tableName := range tableNames {
 		tc := cfg.Tables[tableName]
 		if !tc.Include {
 			continue
 		}
-		stmt, err := ddl.GenerateCreateTable(tableName, tc)
+		stmt, err := ddl.GenerateCreateTable(pgTableNames[tableName], tc)
 		if err != nil {
 			// ValidateTableConfigs above already rejected the
 			// config-bug case (ErrMissingColumnOrder), so what's
@@ -417,6 +476,17 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	}
 	sort.Strings(tableNames)
 
+	// The identifier CREATE TABLE and COPY must actually target for each
+	// table (see ddl.PostgresTableNames/issue #44) — computed once here
+	// (schema-wide, over the full config, not just the tables this run
+	// will touch) so DDL, COPY, and the foreign key/index step below all
+	// agree on the same disambiguated name for the same table. tableName
+	// (the source name) is still what's used for progress reporting, the
+	// state file, and error messages below — those stay human-readable
+	// and are unaffected by truncation since source table names are never
+	// themselves ambiguous, only their Postgres-truncated form can be.
+	pgTableNames := ddl.PostgresTableNames(cfg)
+
 	var totalRows int64
 	for _, tableName := range tableNames {
 		n, err := sqlitereader.CountRows(sourceDB, tableName)
@@ -429,7 +499,8 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 
 	for _, tableName := range tableNames {
 		tc := cfg.Tables[tableName]
-		stmt, err := ddl.GenerateCreateTable(tableName, tc)
+		pgTable := pgTableNames[tableName]
+		stmt, err := ddl.GenerateCreateTable(pgTable, tc)
 		if err != nil {
 			return fmt.Errorf("generating DDL for %s: %w", tableName, err)
 		}
@@ -438,7 +509,7 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		}
 		progress.startTable(tableName)
 		src := copywriter.NewTableSource(sourceDB, tableName, tc).OnRow(progress.row)
-		n, err := copywriter.LoadTable(ctx, conn, tableName, tc, src)
+		n, err := copywriter.LoadTable(ctx, conn, pgTable, tc, src)
 		if err != nil {
 			progress.abort()
 			return err
@@ -452,35 +523,61 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	// Foreign keys are added only now, after every table exists and is
 	// fully loaded — never interleaved with CREATE TABLE/COPY above, so
 	// table creation and data loading never need to be ordered by FK
-	// dependency. If this fails, the state file is deliberately left in
-	// place: a --resume retry will skip every already-loaded table (per
-	// the completed-tables check above) and land right back here.
-	statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
-	for _, reason := range skipped {
-		fmt.Printf("skipping foreign key: %s\n", reason)
+	// dependency. Guarded by the state file's FKsApplied flag so this step
+	// is itself idempotent across separate --resume invocations: without
+	// it, a --resume run that finds every table already completed but
+	// hasn't yet recorded FKsApplied would either skip foreign keys
+	// entirely (if this guard were "resume implies FKs done") or, worse,
+	// try to re-add constraints Postgres already has and fail.
+	st, err := readState(statePath)
+	if err != nil {
+		return err
 	}
-	for _, stmt := range statements {
-		if _, err := conn.Exec(ctx, stmt); err != nil {
-			return fmt.Errorf("adding foreign key: %w", err)
+	if !st.FKsApplied {
+		statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
+		for _, reason := range skipped {
+			fmt.Printf("skipping foreign key: %s\n", reason)
 		}
+		for _, stmt := range statements {
+			if _, err := conn.Exec(ctx, stmt); err != nil {
+				return fmt.Errorf("adding foreign key: %w", err)
+			}
+		}
+
+		// Postgres doesn't auto-index foreign keys the way some other
+		// databases do, and an index on every FK column is
+		// well-established best practice with no real downside — added
+		// right after the constraints themselves, once every FK is known
+		// to be valid.
+		for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
+			if _, err := conn.Exec(ctx, stmt); err != nil {
+				return fmt.Errorf("adding foreign key index: %w", err)
+			}
+		}
+		if err := markForeignKeysApplied(statePath); err != nil {
+			return err
+		}
+	} else {
+		fmt.Println("foreign keys already applied in a prior run — skipping")
 	}
 
-	// Postgres doesn't auto-index foreign keys the way some other
-	// databases do, and an index on every FK column is well-established
-	// best practice with no real downside — added right after the
-	// constraints themselves, once every FK is known to be valid.
-	for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
-		if _, err := conn.Exec(ctx, stmt); err != nil {
-			return fmt.Errorf("adding foreign key index: %w", err)
-		}
-	}
-
-	// Every included table made it through, so nothing is left to resume —
-	// the state file (and, for a `run`-generated config, the config file
-	// itself, per --keep-config) has no further purpose.
-	if err := os.Remove(statePath); err != nil && !os.IsNotExist(err) {
-		return fmt.Errorf("removing state file %s: %w", statePath, err)
-	}
+	// The state file is deliberately left in place even after a fully
+	// successful load, rather than removed: it's the durable record of
+	// which database this config's data actually landed in (issue #19),
+	// and `migrate verify` (which has no other way to know which database
+	// to check) reads it back out for exactly that reason. A --resume
+	// against an already-fully-loaded config is safe to run again — every
+	// table is skipped via Completed and the FK step above is skipped via
+	// FKsApplied — so there's no correctness reason to remove it once
+	// nothing is left to resume, only the (deliberately declined) tidiness
+	// of an unused file lying around.
+	//
+	// This applies to executeLoad unconditionally — including when it's
+	// reached from `migrate load`, the flow `verify` is meant to be used
+	// with. `migrate run`'s single-shot flow additionally cleans up its
+	// state file after a successful run, but only from cleanupConfigAfterLoad
+	// in main.go, once run has already decided (independent of this
+	// function) to delete its generated config too — see issue #52.
 	return nil
 }
 
@@ -527,6 +624,17 @@ func runResolve(args []string) error {
 		col.Confidence = res.Confidence
 		col.Source = res.Source
 		col.Reviewed = true
+		// col.NeedsReview is deliberately left untouched (issue #53):
+		// it's a permanently-stable profiler verdict ("heuristics
+		// disagreed" at profile time), not a to-do flag that clears once
+		// a human or Claude Code resolves the column — Reviewed already
+		// carries that meaning. This mirrors internal/tui/logic.go's
+		// flaggedColumns comment and review.State.ApplyDecision, which
+		// make the same choice for the same reason: a column that was
+		// once flagged stays discoverable/auditable via NeedsReview
+		// (e.g. in review.BuildReviewSummary's NeedsReviewCount) even
+		// after it's been decided, rather than silently disappearing
+		// from that signal the moment it's resolved.
 		tc.Columns[column] = col
 		cfg.Tables[table] = tc
 	}

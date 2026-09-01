@@ -54,6 +54,7 @@ can't be scripted or run non-interactively:
 migrate profile  <source.db>   # sample + profile every column, write a draft config
 migrate review   <config.yaml>  # open the terminal review UI to approve/override ambiguous columns
 migrate load     <config.yaml> --pg <postgres-url>   # generate DDL, stream rows via COPY
+migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the load was correct
 ```
 
 - **`run`** is `profile` + `review` + `load` collapsed into one command, with
@@ -83,6 +84,61 @@ migrate load     <config.yaml> --pg <postgres-url>   # generate DDL, stream rows
 - **`resolve --apply resolutions.yaml`** merges human- (or Claude Code-)
   supplied answers for an `unresolved_report.yaml` back into the config, for
   cases no heuristic could confidently resolve on its own.
+- **`verify <source.db> <config.yaml> --pg <postgres-url>`** streams every
+  row and every included column from *both* sides and confirms the Postgres
+  copy is byte-for-byte correct — not a spot check. It reads the database
+  name to connect to from `<config>.state.json` (the same file `--resume`
+  uses), so it always needs a completed `migrate load` (or `load --resume`)
+  against that exact config first. Run it after every load as the real
+  pass/fail gate on data integrity — exit code is non-zero on any mismatch.
+  `--out <path>` writes the detailed report to a file instead of stdout; a
+  clean run reports 0 mismatches, a dirty one lists every mismatching
+  column with up to 20 examples plus the true total count even when
+  capped. How precisely those examples correspond to source rows depends
+  on whether the table has a primary key:
+    - **With a primary key**, both SQLite and Postgres are read genuinely
+      `ORDER BY <primary key>` — not a bare sequential scan on either side
+      — so the comparison is a real, deterministic row-by-row match. This
+      closes a gap found during this feature's own development: without an
+      explicit `ORDER BY`, Postgres 18 was observed, directly and
+      reproducibly (on real fixtures — `bikes.db`, `chinook.db`'s `tracks`
+      table), not to reliably return a freshly-COPY'd, entirely untouched
+      table's rows in insertion order on a plain sequential scan — which
+      could make `verify` report a mismatch that was really just
+      scan-order drift, not corrupted data. Ordering both sides by the
+      primary key sidesteps that risk entirely (as does a table modified
+      since its load, e.g. by an `UPDATE`, which rewrites a row as a new
+      physical tuple not guaranteed to land back in its old scan position —
+      the same fix covers that case too). For a text-typed (or partially
+      text) primary key, "genuinely `ORDER BY <primary key>`" specifically
+      means byte-order on both sides: SQLite's default text comparison is
+      `BINARY`, while a bare Postgres `ORDER BY` uses whatever collation
+      the target database happens to be configured with (e.g.
+      `en_US.UTF-8`, locale-aware) — these routinely disagree (`"Makefile.in"`
+      sorts before `"aclocal.m4"` under `BINARY` but after it under
+      `en_US.UTF-8`), which would otherwise silently misalign the two
+      sides' row order and produce false-positive mismatches despite the
+      data being identical (found during a validation campaign against
+      `sqliterepo.db`'s `vcache` table — 1,424 of 1,525 rows falsely
+      flagged). `verify` closes this by appending `COLLATE "C"` (Postgres's
+      byte-order collation) to every text-typed primary-key column in its
+      `ORDER BY`. Each reported example names the exact row (source value,
+      expected transformed value, actual Postgres value).
+    - **Without a primary key**, there's no column set to order by that's
+      both guaranteed unique and safe to trust for this — so `verify`
+      instead compares each included column as a value *multiset*: every
+      value from both sides is collected and sorted into the same
+      canonical order, then compared position by position in that sorted
+      order. This still exhaustively catches any genuine value difference
+      with no scan-order false positives, but a reported example is a
+      position in the *sorted comparison*, not a source row — the report
+      says so explicitly rather than implying row-position precision it
+      doesn't have. This path also holds a full column's worth of values
+      from both sides in memory to sort them, more expensive than the
+      primary-key path's streaming comparison — an accepted tradeoff, paid
+      only by tables that lack a primary key.
+  See the doc comment on `internal/pipeline.VerifyTable` for the full
+  detail on both paths.
 
 ## Extending the profiler
 
@@ -127,6 +183,21 @@ surfaced for real during development — see
 `internal/pipeline/integration_test.go`'s comment on
 `DisabilityCompByCounty.db`.
 
+## Known limitation: no transform for a genuinely per-row-polymorphic column
+
+SQLite's dynamic typing allows a single column to legitimately hold
+different storage classes in different rows — e.g. Fossil SCM's
+`config.value`, which holds integers, blobs, and text in different rows of
+the same column, all by design, not as dirty data. There is currently no
+`copywriter` transform that can losslessly migrate a truly mixed-type
+column like this into one static Postgres column type. This is a
+deliberate, known limitation rather than a bug: Postgres has no direct
+equivalent to SQLite's per-value dynamic typing, and closing this gap would
+mean either a `jsonb`-wrapping transform (won't preserve the exact source
+type of every value) or a human-reviewed, table-specific approach — neither
+of which this tool does automatically today. A table with a column like
+this needs manual handling.
+
 ## Testing
 
 ```
@@ -148,7 +219,7 @@ opt-in via the `integration` build tag — it's not part of the default
 ## Package layout
 
 ```
-cmd/migrate/          CLI entrypoint (run, profile, review, load, resolve subcommands)
+cmd/migrate/          CLI entrypoint (run, profile, review, load, verify, resolve subcommands)
 internal/
   sqlitereader/        schema + streaming row reading (modernc.org/sqlite, no CGO)
   profiler/            heuristic interface + registry

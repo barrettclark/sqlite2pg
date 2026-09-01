@@ -24,6 +24,18 @@ func GenerateForeignKeyIndexes(cfg *config.MigrationConfig) (statements []string
 	}
 	sort.Strings(tableNames)
 
+	// Every included table's valid foreign keys, and the column-identifier
+	// map needed to render each one's statement, gathered up front so index
+	// names can be disambiguated once across ALL of them below — a Postgres
+	// index is unique per schema, not per table the way a constraint is
+	// (issue #43), so per-table disambiguation isn't enough to prevent two
+	// different tables from independently generating the same name.
+	type tableFKs struct {
+		table string
+		fks   []config.ForeignKey
+		ids   map[string]string
+	}
+	var perTable []tableFKs
 	for _, table := range tableNames {
 		tc := cfg.Tables[table]
 		if !tc.Include {
@@ -31,7 +43,6 @@ func GenerateForeignKeyIndexes(cfg *config.MigrationConfig) (statements []string
 		}
 		included := includedSet(tc)
 
-		ids := PostgresColumnNames(tc)
 		valid := make([]config.ForeignKey, 0, len(tc.ForeignKeys))
 		for _, fk := range tc.ForeignKeys {
 			if invalidForeignKeyReason(cfg, table, included, fk) != "" {
@@ -39,26 +50,36 @@ func GenerateForeignKeyIndexes(cfg *config.MigrationConfig) (statements []string
 			}
 			valid = append(valid, fk)
 		}
-		names := foreignKeyIndexNames(table, valid)
-		for i, fk := range valid {
-			statements = append(statements, foreignKeyIndexStatement(table, fk, names[i], ids))
+		if len(valid) == 0 {
+			continue
+		}
+		perTable = append(perTable, tableFKs{table: table, fks: valid, ids: PostgresColumnNames(tc)})
+	}
+
+	var display, identity []string
+	for _, pt := range perTable {
+		for _, fk := range pt.fks {
+			d := fmt.Sprintf("idx_%s_%s", pt.table, strings.Join(fk.Columns, "_"))
+			display = append(display, d)
+			identity = append(identity, pt.table+"\x00"+d+"\x00"+fk.RefTable+"\x00"+strings.Join(fk.RefColumns, "\x00"))
+		}
+	}
+	names := disambiguateNames(display, identity)
+
+	// The identifier CREATE TABLE actually emitted for each table (see
+	// PostgresTableNames/issue #44) — the index's ON clause must name the
+	// same disambiguated relation CREATE TABLE created, not the raw
+	// source table name.
+	pgTableNames := PostgresTableNames(cfg)
+
+	i := 0
+	for _, pt := range perTable {
+		for _, fk := range pt.fks {
+			statements = append(statements, foreignKeyIndexStatement(pgTableNames[pt.table], fk, names[i], pt.ids))
+			i++
 		}
 	}
 	return statements
-}
-
-// foreignKeyIndexNames returns the "idx_<table>_<columns>" index name to
-// use for each foreign key in fks (index-parallel with fks), disambiguated
-// against Postgres's 63-byte NAMEDATALEN limit the same way
-// foreignKeyConstraintNames disambiguates constraint names (issue #36).
-func foreignKeyIndexNames(table string, fks []config.ForeignKey) []string {
-	display := make([]string, len(fks))
-	identity := make([]string, len(fks))
-	for i, fk := range fks {
-		display[i] = fmt.Sprintf("idx_%s_%s", table, strings.Join(fk.Columns, "_"))
-		identity[i] = display[i] + "\x00" + fk.RefTable + "\x00" + strings.Join(fk.RefColumns, "\x00")
-	}
-	return disambiguateNames(display, identity)
 }
 
 // foreignKeyIndexStatement renders one CREATE INDEX statement, named name
@@ -66,7 +87,9 @@ func foreignKeyIndexNames(table string, fks []config.ForeignKey) []string {
 // they're declared in fk.Columns. ids maps those declared names to the
 // identifiers CREATE TABLE actually emitted for them (see
 // PostgresColumnNames) — kept consistent with foreignKeyStatement for the
-// same issue #21 reason.
+// same issue #21 reason. table must likewise already be the resolved
+// identifier CREATE TABLE emitted for it (see PostgresTableNames/issue
+// #44), not necessarily the raw source table name.
 func foreignKeyIndexStatement(table string, fk config.ForeignKey, name string, ids map[string]string) string {
 	return fmt.Sprintf("CREATE INDEX %s ON %s (%s);", quoteIdent(name), quoteIdent(table), quoteJoin(mapNames(fk.Columns, ids)))
 }

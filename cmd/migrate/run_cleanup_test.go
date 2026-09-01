@@ -24,6 +24,11 @@ func TestCleanupConfigAfterLoad_LoadFailureLeavesConfigInPlace(t *testing.T) {
 		}
 		loadErr := errors.New("load failed on table widgets: constraint violation")
 
+		statePath := configPath + ".state.json"
+		if err := os.WriteFile(statePath, []byte(`{"database":"sqlite2pg_source_abc123","completed":["widgets"]}`), 0o644); err != nil {
+			t.Fatalf("writing fixture state file: %v", err)
+		}
+
 		got := cleanupConfigAfterLoad(loadErr, configPath, keepConfig)
 
 		if !errors.Is(got, loadErr) {
@@ -31,6 +36,9 @@ func TestCleanupConfigAfterLoad_LoadFailureLeavesConfigInPlace(t *testing.T) {
 		}
 		if _, err := os.Stat(configPath); err != nil {
 			t.Errorf("keepConfig=%v: expected the config file to survive a failed load, but stat failed: %v", keepConfig, err)
+		}
+		if _, err := os.Stat(statePath); err != nil {
+			t.Errorf("keepConfig=%v: expected the state file to survive a failed load, but stat failed: %v", keepConfig, err)
 		}
 	}
 }
@@ -44,12 +52,19 @@ func TestCleanupConfigAfterLoad_SuccessDeletesConfigUnlessKeepConfig(t *testing.
 		if err := os.WriteFile(configPath, []byte("tables: {}\n"), 0o644); err != nil {
 			t.Fatalf("writing fixture config: %v", err)
 		}
+		statePath := configPath + ".state.json"
+		if err := os.WriteFile(statePath, []byte(`{"database":"sqlite2pg_source_abc123","completed":["widgets"]}`), 0o644); err != nil {
+			t.Fatalf("writing fixture state file: %v", err)
+		}
 
 		if err := cleanupConfigAfterLoad(nil, configPath, false); err != nil {
 			t.Fatalf("cleanupConfigAfterLoad: %v", err)
 		}
 		if _, err := os.Stat(configPath); !os.IsNotExist(err) {
 			t.Errorf("expected the config file to be removed after a successful load, stat err: %v", err)
+		}
+		if _, err := os.Stat(statePath); !os.IsNotExist(err) {
+			t.Errorf("expected the state file to be removed after a successful load, stat err: %v", err)
 		}
 	})
 
@@ -58,12 +73,38 @@ func TestCleanupConfigAfterLoad_SuccessDeletesConfigUnlessKeepConfig(t *testing.
 		if err := os.WriteFile(configPath, []byte("tables: {}\n"), 0o644); err != nil {
 			t.Fatalf("writing fixture config: %v", err)
 		}
+		statePath := configPath + ".state.json"
+		if err := os.WriteFile(statePath, []byte(`{"database":"sqlite2pg_source_abc123","completed":["widgets"]}`), 0o644); err != nil {
+			t.Fatalf("writing fixture state file: %v", err)
+		}
 
 		if err := cleanupConfigAfterLoad(nil, configPath, true); err != nil {
 			t.Fatalf("cleanupConfigAfterLoad: %v", err)
 		}
 		if _, err := os.Stat(configPath); err != nil {
 			t.Errorf("expected the config file to survive with --keep-config, stat err: %v", err)
+		}
+		if _, err := os.Stat(statePath); err != nil {
+			t.Errorf("expected the state file to survive with --keep-config, stat err: %v", err)
+		}
+	})
+
+	t.Run("succeeds when the state file was never created", func(t *testing.T) {
+		// A load that succeeds on its very first attempt, with no prior
+		// partial run to resume, may never have written a state file at
+		// all if it fails before the first markTableCompleted call — or,
+		// for an empty config, never call it. Cleanup must tolerate that
+		// rather than erroring on a missing state file.
+		configPath := filepath.Join(t.TempDir(), "source.db.migration.yaml")
+		if err := os.WriteFile(configPath, []byte("tables: {}\n"), 0o644); err != nil {
+			t.Fatalf("writing fixture config: %v", err)
+		}
+
+		if err := cleanupConfigAfterLoad(nil, configPath, false); err != nil {
+			t.Fatalf("cleanupConfigAfterLoad: %v", err)
+		}
+		if _, err := os.Stat(configPath); !os.IsNotExist(err) {
+			t.Errorf("expected the config file to be removed after a successful load, stat err: %v", err)
 		}
 	})
 }

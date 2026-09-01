@@ -37,7 +37,7 @@ func TestReadSchema_ReturnsTablesAndColumns(t *testing.T) {
 		);
 	`)
 
-	tables, _, err := ReadSchema(db)
+	tables, _, _, err := ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}
@@ -80,7 +80,7 @@ func TestReadSchema_ReturnsCompositePrimaryKeyInDeclaredOrder(t *testing.T) {
 		);
 	`)
 
-	tables, _, err := ReadSchema(db)
+	tables, _, _, err := ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}
@@ -106,7 +106,7 @@ func TestReadForeignKeys_ReturnsSingleColumnForeignKeys(t *testing.T) {
 		);
 	`)
 
-	fks, err := ReadForeignKeys(db, "addresses")
+	fks, _, err := ReadForeignKeys(db, "addresses")
 	if err != nil {
 		t.Fatalf("ReadForeignKeys: %v", err)
 	}
@@ -138,7 +138,7 @@ func TestReadForeignKeys_GroupsCompositeForeignKeysByID(t *testing.T) {
 		);
 	`)
 
-	fks, err := ReadForeignKeys(db, "children")
+	fks, _, err := ReadForeignKeys(db, "children")
 	if err != nil {
 		t.Fatalf("ReadForeignKeys: %v", err)
 	}
@@ -162,9 +162,12 @@ func TestReadForeignKeys_ResolvesImplicitReferenceToParentPrimaryKey(t *testing.
 		);
 	`)
 
-	fks, err := ReadForeignKeys(db, "delta")
+	fks, skipped, err := ReadForeignKeys(db, "delta")
 	if err != nil {
 		t.Fatalf("ReadForeignKeys: %v", err)
+	}
+	if len(skipped) != 0 {
+		t.Fatalf("expected no skipped foreign keys, got %+v", skipped)
 	}
 	if len(fks) != 1 {
 		t.Fatalf("expected 1 foreign key, got %d: %+v", len(fks), fks)
@@ -183,12 +186,104 @@ func TestReadForeignKeys_ResolvesImplicitReferenceToParentPrimaryKey(t *testing.
 
 func TestReadForeignKeys_ReturnsEmptyForTableWithNoForeignKeys(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE standalone (id INTEGER PRIMARY KEY);`)
-	fks, err := ReadForeignKeys(db, "standalone")
+	fks, _, err := ReadForeignKeys(db, "standalone")
 	if err != nil {
 		t.Fatalf("ReadForeignKeys: %v", err)
 	}
 	if len(fks) != 0 {
 		t.Errorf("expected no foreign keys, got %+v", fks)
+	}
+}
+
+// --- issue #46: implicit-FK primary-key resolution must degrade, not abort ----
+//
+// primaryKeyColumn (issue #17) returns a hard error whenever the referenced
+// table doesn't have exactly one declared primary key column. That's a
+// legitimate, common SQLite shape (a plain rowid table with no declared
+// PRIMARY KEY at all), not a driver failure — so ReadForeignKeys must drop
+// just the one FK relationship it can't resolve, not abort the whole call
+// and, transitively, the whole `migrate profile` run.
+
+func TestReadForeignKeys_DropsImplicitReferenceWhenParentHasNoPrimaryKey(t *testing.T) {
+	db := openTestDB(t, `
+		CREATE TABLE parent (name TEXT);
+		CREATE TABLE child (
+			parent_id INTEGER REFERENCES parent
+		);
+	`)
+
+	fks, skipped, err := ReadForeignKeys(db, "child")
+	if err != nil {
+		t.Fatalf("ReadForeignKeys: expected no error (should degrade gracefully), got: %v", err)
+	}
+	if len(fks) != 0 {
+		t.Errorf("expected the unresolvable FK to be dropped, got: %+v", fks)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("expected 1 skipped foreign key, got %d: %+v", len(skipped), skipped)
+	}
+	if skipped[0].Table != "child" {
+		t.Errorf("expected skipped FK table child, got %q", skipped[0].Table)
+	}
+	if skipped[0].RefTable != "parent" {
+		t.Errorf("expected skipped FK ref table parent, got %q", skipped[0].RefTable)
+	}
+	if !strings.Contains(skipped[0].Reason, "0 primary key columns") {
+		t.Errorf("expected skipped FK reason to explain the 0-primary-key-columns cause, got %q", skipped[0].Reason)
+	}
+}
+
+func TestReadForeignKeys_DropsImplicitReferenceWhenParentHasCompositePrimaryKey(t *testing.T) {
+	db := openTestDB(t, `
+		CREATE TABLE parent (a INTEGER, b INTEGER, PRIMARY KEY (a, b));
+		CREATE TABLE child (
+			parent_id INTEGER REFERENCES parent
+		);
+	`)
+
+	fks, skipped, err := ReadForeignKeys(db, "child")
+	if err != nil {
+		t.Fatalf("ReadForeignKeys: expected no error (should degrade gracefully), got: %v", err)
+	}
+	if len(fks) != 0 {
+		t.Errorf("expected the unresolvable FK to be dropped, got: %+v", fks)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("expected 1 skipped foreign key, got %d: %+v", len(skipped), skipped)
+	}
+}
+
+func TestReadForeignKeys_DropsImplicitReferenceWhenParentIsUnsupportedVirtualTable(t *testing.T) {
+	// If the referenced table is itself a virtual table backed by a module
+	// ReadSchema would skip (issue #29), primaryKeyColumn's readColumns
+	// call hits the identical "no such module" error. That must degrade
+	// the same way — drop just this FK — rather than surfacing as a plain
+	// fatal error out of ReadForeignKeys, which would silently defeat #29's
+	// skip-and-report mechanism for a table that isn't even the one being
+	// read directly.
+	injectedErr := errors.New(`SQL logic error: no such module: some_esoteric_module (1)`)
+	db := openFailingDB(t, `
+		CREATE TABLE weird_spatial_index (id INTEGER PRIMARY KEY);
+		CREATE TABLE child (
+			parent_id INTEGER REFERENCES weird_spatial_index
+		);
+	`, `table_info("weird_spatial_index")`, injectedErr)
+
+	fks, skipped, err := ReadForeignKeys(db, "child")
+	if err != nil {
+		t.Fatalf("ReadForeignKeys: expected no error (should degrade gracefully), got: %v", err)
+	}
+	if len(fks) != 0 {
+		t.Errorf("expected the unresolvable FK to be dropped, got: %+v", fks)
+	}
+	if len(skipped) != 1 {
+		t.Fatalf("expected 1 skipped foreign key, got %d: %+v", len(skipped), skipped)
+	}
+	if skipped[0].RefTable != "weird_spatial_index" {
+		t.Errorf("expected skipped FK ref table weird_spatial_index, got %q", skipped[0].RefTable)
+	}
+	if !strings.Contains(skipped[0].Reason, "no such module") {
+		t.Errorf("expected skipped FK reason to preserve the underlying driver error, got %q", skipped[0].Reason)
 	}
 }
 
@@ -200,7 +295,7 @@ func TestReadSchema_SkipsSQLiteSystemTables(t *testing.T) {
 		t.Fatalf("insert: %v", err)
 	}
 
-	tables, _, err := ReadSchema(db)
+	tables, _, _, err := ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}
@@ -286,7 +381,7 @@ func TestReadSchema_AbortsOnGenericColumnReadError(t *testing.T) {
 		CREATE TABLE widgets (id INTEGER PRIMARY KEY);
 	`, `table_info("widgets")`, injectedErr)
 
-	tables, skipped, err := ReadSchema(db)
+	tables, skipped, _, err := ReadSchema(db)
 	if err == nil {
 		t.Fatalf("expected ReadSchema to return an error, got tables=%+v skipped=%+v", tables, skipped)
 	}
@@ -311,7 +406,7 @@ func TestReadSchema_SkipsUnsupportedVirtualTableModuleButReportsIt(t *testing.T)
 		CREATE TABLE weird_spatial_index (id INTEGER PRIMARY KEY);
 	`, `table_info("weird_spatial_index")`, injectedErr)
 
-	tables, skipped, err := ReadSchema(db)
+	tables, skipped, _, err := ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}
@@ -337,7 +432,7 @@ func TestReadSchema_ReadsRealRtreeVirtualTableWithoutSkippingIt(t *testing.T) {
 	// load normally, never land in SkippedTable.
 	db := openTestDB(t, `CREATE VIRTUAL TABLE rt USING rtree(id, minX, maxX);`)
 
-	tables, skipped, err := ReadSchema(db)
+	tables, skipped, _, err := ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}
@@ -363,7 +458,7 @@ func TestReadSchema_HandlesTableAndColumnNamesWithEmbeddedDoubleQuote(t *testing
 		);
 	`)
 
-	tables, _, err := ReadSchema(db)
+	tables, _, _, err := ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}
@@ -382,5 +477,47 @@ func TestReadSchema_HandlesTableAndColumnNamesWithEmbeddedDoubleQuote(t *testing
 	}
 	if !found {
 		t.Fatalf("expected column with embedded quote to be read, got columns: %+v", tables[0].Columns)
+	}
+}
+
+func TestReadSchema_DropsUnresolvableImplicitForeignKeyRatherThanAborting(t *testing.T) {
+	// Issue #46: an implicit `REFERENCES parent` where parent is an
+	// ordinary rowid table with no declared PRIMARY KEY (perfectly valid
+	// SQLite) must not abort the whole ReadSchema call — only that one FK
+	// relationship is dropped, reported via SkippedForeignKey, and every
+	// table's columns still come back normally.
+	db := openTestDB(t, `
+		CREATE TABLE parent (name TEXT);
+		CREATE TABLE child (
+			id INTEGER PRIMARY KEY,
+			parent_id INTEGER REFERENCES parent
+		);
+	`)
+
+	tables, skippedTables, skippedFKs, err := ReadSchema(db)
+	if err != nil {
+		t.Fatalf("ReadSchema: expected no error (should degrade gracefully), got: %v", err)
+	}
+	if len(skippedTables) != 0 {
+		t.Errorf("expected no skipped tables, got: %+v", skippedTables)
+	}
+	if len(skippedFKs) != 1 {
+		t.Fatalf("expected 1 skipped foreign key, got %d: %+v", len(skippedFKs), skippedFKs)
+	}
+	if skippedFKs[0].Table != "child" || skippedFKs[0].RefTable != "parent" {
+		t.Errorf("expected skipped FK child->parent, got: %+v", skippedFKs[0])
+	}
+
+	var child TableInfo
+	for _, tbl := range tables {
+		if tbl.Name == "child" {
+			child = tbl
+		}
+	}
+	if len(child.Columns) != 2 {
+		t.Fatalf("expected child's columns to still be read normally, got: %+v", child.Columns)
+	}
+	if len(child.ForeignKeys) != 0 {
+		t.Errorf("expected child's unresolvable FK to be absent, got: %+v", child.ForeignKeys)
 	}
 }

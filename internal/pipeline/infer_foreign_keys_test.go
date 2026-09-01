@@ -16,7 +16,7 @@ func TestInferForeignKeys_SuggestsAColumnMatchingNamingConventionAndContainment(
 	db.Exec(`INSERT INTO Customers (CustomerId) VALUES (1), (2)`)
 	db.Exec(`INSERT INTO Invoices (CustomerId) VALUES (1), (2), (1)`)
 
-	tables, _, err := sqlitereader.ReadSchema(db)
+	tables, _, _, err := sqlitereader.ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}
@@ -53,7 +53,7 @@ func TestInferForeignKeys_MatchesSimplePluralTableNames(t *testing.T) {
 	db.Exec(`INSERT INTO genre (genre_id) VALUES (1)`)
 	db.Exec(`INSERT INTO tracks (genre_id) VALUES (1)`)
 
-	tables, _, err := sqlitereader.ReadSchema(db)
+	tables, _, _, err := sqlitereader.ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}
@@ -79,7 +79,7 @@ func TestInferForeignKeys_SkipsColumnsAlreadyCoveredByADeclaredForeignKey(t *tes
 	db.Exec(`INSERT INTO Customers (CustomerId) VALUES (1)`)
 	db.Exec(`INSERT INTO Invoices (CustomerId) VALUES (1)`)
 
-	tables, _, err := sqlitereader.ReadSchema(db)
+	tables, _, _, err := sqlitereader.ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}
@@ -101,7 +101,7 @@ func TestInferForeignKeys_SkipsWhenValuesAreNotContained(t *testing.T) {
 	db.Exec(`INSERT INTO Customers (CustomerId) VALUES (1)`)
 	db.Exec(`INSERT INTO Invoices (CustomerId) VALUES (1), (99)`)
 
-	tables, _, err := sqlitereader.ReadSchema(db)
+	tables, _, _, err := sqlitereader.ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}
@@ -121,7 +121,7 @@ func TestInferForeignKeys_SkipsWhenNoTableNameMatchesTheNamingConvention(t *test
 	`)
 	db.Exec(`INSERT INTO widgets (status_id) VALUES (1)`)
 
-	tables, _, err := sqlitereader.ReadSchema(db)
+	tables, _, _, err := sqlitereader.ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}
@@ -142,7 +142,7 @@ func TestInferForeignKeys_SkipsWhenReferencedTableHasNoSingleColumnPrimaryKey(t 
 	`)
 	db.Exec(`INSERT INTO Invoices (CustomerId) VALUES (1)`)
 
-	tables, _, err := sqlitereader.ReadSchema(db)
+	tables, _, _, err := sqlitereader.ReadSchema(db)
 	if err != nil {
 		t.Fatalf("ReadSchema: %v", err)
 	}

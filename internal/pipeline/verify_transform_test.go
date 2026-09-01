@@ -99,7 +99,7 @@ func TestVerifyTransformAgainstFullTable_FindsAPrimaryKeyColumnResolvingToNULL(t
 	// default for an ordinary optional-UUID column), but
 	// internal/ddl/generate.go emits an inline PRIMARY KEY (...) for any
 	// PrimaryKeySeq > 0 column — a transform-produced NULL there aborts
-	// the whole COPY with a not-null violation, so isPrimaryKey=true must
+	// the whole COPY with a not-null violation, so rejectNull=true must
 	// catch it even though uuid_format itself never errors on "".
 	db, _ := openTestDB(t, `CREATE TABLE t (station_id TEXT PRIMARY KEY);`)
 	db.Exec(`INSERT INTO t (station_id) VALUES
@@ -117,10 +117,33 @@ func TestVerifyTransformAgainstFullTable_FindsAPrimaryKeyColumnResolvingToNULL(t
 	}
 }
 
+func TestVerifyTransformAgainstFullTable_FindsANotNullColumnResolvingToNULL(t *testing.T) {
+	// Issue #40: rejectNull isn't only about primary keys — issue #34
+	// started emitting a real NOT NULL DDL constraint for any column with
+	// ColumnConfig.NotNull set, so a non-PK source NOT NULL column that
+	// resolves to a nulling transform must be caught here too, or the
+	// generated "NOT NULL" constraint aborts the COPY the same way a
+	// primary-key NULL would.
+	db, _ := openTestDB(t, `CREATE TABLE t (id INTEGER PRIMARY KEY, mb_albumid TEXT NOT NULL);`)
+	db.Exec(`INSERT INTO t (mb_albumid) VALUES
+		('90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10'), ('')`)
+
+	ok, badValue, err := verifyTransformAgainstFullTable(db, "t", "mb_albumid", "uuid_format", "uuid", true)
+	if err != nil {
+		t.Fatalf("verifyTransformAgainstFullTable: %v", err)
+	}
+	if ok {
+		t.Fatal("expected a violation to be found for a NOT NULL column resolving to NULL")
+	}
+	if badValue != "" {
+		t.Errorf("expected the offending empty-string value reported, got %q", badValue)
+	}
+}
+
 func TestVerifyTransformAgainstFullTable_AllowsNullingTransformsOnNonPrimaryKeyColumns(t *testing.T) {
-	// The isPrimaryKey check must not regress the ordinary case these
-	// nulling transforms exist for: an empty string on a non-PK column is
-	// still a legitimate NULL, not a violation.
+	// The rejectNull check must not regress the ordinary case these
+	// nulling transforms exist for: an empty string on a nullable,
+	// non-PK column is still a legitimate NULL, not a violation.
 	db, _ := openTestDB(t, `CREATE TABLE t (id INTEGER PRIMARY KEY, mb_id TEXT);`)
 	db.Exec(`INSERT INTO t (mb_id) VALUES
 		('90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10'), ('')`)

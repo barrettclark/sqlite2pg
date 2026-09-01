@@ -83,3 +83,32 @@ func TestReadState_EmptyWhenFileDoesNotExist(t *testing.T) {
 		t.Errorf("expected zero-value state, got %+v", st)
 	}
 }
+
+// TestMarkForeignKeysApplied_PersistsAndPreservesDatabaseAndCompleted
+// mirrors TestMarkTableCompleted_PreservesRecordedDatabase: recording that
+// the FK step finished must not clobber the database name or the
+// completed-tables list already on file.
+func TestMarkForeignKeysApplied_PersistsAndPreservesDatabaseAndCompleted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "run.state.json")
+
+	if err := writeState(path, loadState{Database: "chinook_20260830_120000", Completed: []string{"albums"}}); err != nil {
+		t.Fatalf("writeState: %v", err)
+	}
+	if err := markForeignKeysApplied(path); err != nil {
+		t.Fatalf("markForeignKeysApplied: %v", err)
+	}
+
+	st, err := readState(path)
+	if err != nil {
+		t.Fatalf("readState: %v", err)
+	}
+	if !st.FKsApplied {
+		t.Error("expected FKsApplied to be true")
+	}
+	if st.Database != "chinook_20260830_120000" {
+		t.Errorf("expected recorded database to survive markForeignKeysApplied, got %q", st.Database)
+	}
+	if len(st.Completed) != 1 || st.Completed[0] != "albums" {
+		t.Errorf("expected completed-tables list to survive markForeignKeysApplied, got %v", st.Completed)
+	}
+}

@@ -126,6 +126,41 @@ func TestDecideColumn_FlagsForReviewWhenFullTableHasAnInt4OverflowTheSampleMisse
 	}
 }
 
+func TestDecideColumn_FlagsForReviewWhenFullTableHasANonMidnightTimestampTheSampleMissed(t *testing.T) {
+	// Issue #42: the iso8601_timestamp heuristic (issue #14) targets
+	// date instead of timestamptz when every *sampled* value's
+	// time-of-day is midnight, but iso8601_to_date used to discard
+	// rather than error on a non-midnight value — so a rare exception
+	// outside the sample (a real ["a handful of genuine non-midnight
+	// timestamps"] row) silently lost its time-of-day at load instead
+	// of being caught here, exactly like issue #13/#22's shape. The
+	// sample below (standing in for 500 midnight-only sampled rows)
+	// is all midnight; the full table additionally has one row with a
+	// genuine time-of-day the sample never drew.
+	db, _ := openTestDB(t, `CREATE TABLE events (id INTEGER PRIMARY KEY, occurred_at TEXT);`)
+	db.Exec(`INSERT INTO events (occurred_at) VALUES
+		('1996-01-02 00:00:00'),
+		('1996-01-03 00:00:00'),
+		('1996-01-04 14:37:00')`)
+
+	col := sqlitereader.ColumnInfo{Name: "occurred_at", DeclaredType: "TEXT"}
+	sample := []any{"1996-01-02 00:00:00", "1996-01-03 00:00:00"}
+
+	cc, unresolved, err := decideColumn(db, "events", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.TargetType != "date" {
+		t.Errorf("expected the suggested type date to still be shown, got %q", cc.TargetType)
+	}
+	if cc.Confidence >= 0.9 {
+		t.Errorf("expected confidence dropped below threshold once the non-midnight value was found, got %f", cc.Confidence)
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase once the full-table check found a non-midnight value outside the sample")
+	}
+}
+
 func TestDecideColumn_SkipsTheFullTableCheckWhenAlreadyFlaggedForReview(t *testing.T) {
 	// A column already below threshold (or with disagreeing heuristics)
 	// gets no benefit from a full-table check — it's already headed to
@@ -281,6 +316,39 @@ func TestDecideColumn_FlagsForReviewWhenAPrimaryKeyColumnHasAnEmptyStringUUID(t 
 	}
 }
 
+func TestDecideColumn_FlagsForReviewWhenANonPrimaryKeyNotNullColumnResolvesToNULL(t *testing.T) {
+	// Issue #40: issue #34's fix started emitting a real NOT NULL DDL
+	// constraint for *any* column with ColumnConfig.NotNull set, not just
+	// primary keys — but issue #31's full-table NULL-rejection guard was
+	// only ever widened to cover PrimaryKeySeq > 0 columns. A source NOT
+	// NULL (non-PK) column whose sample looks like clean UUIDs but whose
+	// full table holds an empty string (mirroring beets' albums.mb_albumid)
+	// must still be caught here, or the generated "NOT NULL" DDL aborts the
+	// whole COPY when uuid_format turns that row into NULL.
+	db, _ := openTestDB(t, `CREATE TABLE albums (id INTEGER PRIMARY KEY, mb_albumid TEXT NOT NULL);`)
+	db.Exec(`INSERT INTO albums (mb_albumid) VALUES
+		('90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10'),
+		('e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10'),
+		('')`)
+
+	col := sqlitereader.ColumnInfo{Name: "mb_albumid", DeclaredType: "TEXT", NotNull: true}
+	sample := []any{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "e4eff6f3-3f1a-4d6e-9c1e-7c3d2a5b9e10"}
+
+	cc, unresolved, err := decideColumn(db, "albums", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.TargetType != "uuid" {
+		t.Errorf("expected the suggested type uuid to still be shown, got %q", cc.TargetType)
+	}
+	if cc.Confidence >= 0.9 {
+		t.Errorf("expected confidence dropped below threshold once a NOT NULL column resolving to NULL was found, got %f", cc.Confidence)
+	}
+	if unresolved == nil {
+		t.Fatal("expected an UnresolvedCase once the full-table check found a non-primary-key NOT NULL column resolving to NULL")
+	}
+}
+
 func TestDecideColumn_FlagsForReviewWhenACharOneFlagColumnStoresTextZeroOne(t *testing.T) {
 	// Issue #1 real-data gap (sakila.db customer.active): a CHAR(1)
 	// column storing only '0'/'1' as text used to be silently claimed by
@@ -347,5 +415,39 @@ func TestDecideColumn_CarriesNotNullThrough(t *testing.T) {
 	}
 	if cc.NotNull {
 		t.Error("expected NotNull=false for a column with no source NOT NULL constraint")
+	}
+}
+
+func TestDecideColumn_SkipsTheFullTableCheckForADroppedColumn(t *testing.T) {
+	// Issue #45: esri_typename_mapping assigns TransformExpr:"drop_column"
+	// at confidence 0.99 for a geometryblob column. copywriter.Transform
+	// unconditionally errors for "drop_column" by design (a dropped
+	// column has nothing to convert), so running the full-table
+	// verification against it always "finds a violation" on row 1 —
+	// pure noise, plus an expensive full scan for an answer already
+	// known statically from the transform name. Passing a table name
+	// that doesn't exist in the database proves decideColumn never even
+	// attempts the scan for a __drop__ decision: if it did,
+	// sqlitereader.StreamTable would surface a real query error here
+	// instead of quietly returning the drop decision.
+	db, _ := openTestDB(t, `CREATE TABLE shapes (id INTEGER PRIMARY KEY, geom geometryblob);`)
+
+	col := sqlitereader.ColumnInfo{Name: "geom", DeclaredType: "geometryblob"}
+
+	cc, unresolved, err := decideColumn(db, "no_such_table", col, nil, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v (a full-table scan was attempted against a nonexistent table)", err)
+	}
+	if cc.TargetType != "__drop__" {
+		t.Errorf("expected __drop__ target type, got %q", cc.TargetType)
+	}
+	if cc.Confidence != 0.99 {
+		t.Errorf("expected the esri_typename_mapping heuristic's original 0.99 confidence preserved, got %f", cc.Confidence)
+	}
+	if cc.NeedsReview {
+		t.Error("expected NeedsReview=false for a dropped column — nothing left to review")
+	}
+	if unresolved != nil {
+		t.Errorf("expected no UnresolvedCase for a dropped column, got %+v", unresolved)
 	}
 }

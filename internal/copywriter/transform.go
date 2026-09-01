@@ -112,14 +112,27 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			return raw, nil
 		}
 		// Shares profiler.ParseTimestamp with the iso8601_timestamp
-		// heuristic that assigns this transform when every sampled value's
-		// time-of-day is midnight (issue #14) — same reasoning as
+		// heuristic that assigns this transform when every *sampled*
+		// value's time-of-day is midnight (issue #14) — same reasoning as
 		// iso8601_to_timestamptz: a format the heuristic accepts must
-		// always be one this transform can convert. The time-of-day is
-		// discarded rather than carried through to a timestamptz, since
-		// the whole point of targeting date here is that there is no real
-		// time-of-day to represent.
+		// always be one this transform can convert.
+		//
+		// The heuristic's "midnight" judgment is made from the sample
+		// alone, so a rare non-midnight value can exist elsewhere in the
+		// full table (issue #42). Silently discarding that time-of-day
+		// component — as this used to do — made the transform unable to
+		// ever fail, which turned issue #13's full-table verification
+		// into a silent no-op for this transform, exactly as issue #22
+		// found for text_to_jsonb. So a non-midnight value is rejected
+		// here rather than truncated: verifyTransformAgainstFullTable
+		// (internal/pipeline/verify_transform.go) runs this exact
+		// function against every row, and this error is what lets it
+		// catch the case and route the column to review instead of
+		// silently discarding real data at load.
 		if tm, ok := profiler.ParseTimestamp(s); ok {
+			if tm.Hour() != 0 || tm.Minute() != 0 || tm.Second() != 0 || tm.Nanosecond() != 0 {
+				return nil, fmt.Errorf("iso8601_to_date: %q has a non-midnight time-of-day component", s)
+			}
 			return time.Date(tm.Year(), tm.Month(), tm.Day(), 0, 0, 0, 0, time.UTC), nil
 		}
 		return nil, fmt.Errorf("iso8601_to_date: cannot parse %q", s)
@@ -343,20 +356,6 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 	}
 }
 
-// parseWholeNumberText parses s as an exact int64 without ever routing
-// through float64 — issue #15: strconv.ParseFloat(s, 64) followed by an
-// int64 cast silently rounds to the nearest representable float64 once s
-// exceeds float64's ~15-17 significant digits (a real fixture,
-// bikes.db.legacy_id's 19-digit IDs, was corrupted by dozens of units this
-// way on an otherwise "successful" load), and saturates to
-// math.MaxInt64/MinInt64 with no error once the value is large enough to
-// overflow int64 entirely after that rounding.
-//
-// The numeric_text heuristic accepts whole numbers spelled with a
-// trailing ".0" (e.g. "1998.0") as well as plain digit strings — see its
-// sawFraction check — so a value containing a decimal point is only valid
-// here when everything after the point is zeros; that suffix is trimmed
-// before the exact integer parse, never fed through ParseFloat.
 // FitsRange reports whether n fits the Postgres integer type targetType
 // names ("smallint"/int2, "integer"/int4, "bigint"/int8) — any int64
 // always fits "bigint" since that's exactly int64's own range. Every other
@@ -381,6 +380,20 @@ func FitsRange(n int64, targetType string) bool {
 	}
 }
 
+// parseWholeNumberText parses s as an exact int64 without ever routing
+// through float64 — issue #15: strconv.ParseFloat(s, 64) followed by an
+// int64 cast silently rounds to the nearest representable float64 once s
+// exceeds float64's ~15-17 significant digits (a real fixture,
+// bikes.db.legacy_id's 19-digit IDs, was corrupted by dozens of units this
+// way on an otherwise "successful" load), and saturates to
+// math.MaxInt64/MinInt64 with no error once the value is large enough to
+// overflow int64 entirely after that rounding.
+//
+// The numeric_text heuristic accepts whole numbers spelled with a
+// trailing ".0" (e.g. "1998.0") as well as plain digit strings — see its
+// sawFraction check — so a value containing a decimal point is only valid
+// here when everything after the point is zeros; that suffix is trimmed
+// before the exact integer parse, never fed through ParseFloat.
 func parseWholeNumberText(s string) (int64, error) {
 	intPart := s
 	if i := strings.IndexByte(s, '.'); i >= 0 {
