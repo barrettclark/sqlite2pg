@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"sort"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -137,7 +138,7 @@ func disambiguateNamesReserving(displayNames, identities []string, reserved map[
 			continue
 		}
 		for _, i := range idxs {
-			result[i] = disambiguateOne(displayNames[i], identities[i])
+			result[i] = disambiguateOne(displayNames[i], identities[i], reserved)
 		}
 	}
 	return result
@@ -147,11 +148,27 @@ func disambiguateNamesReserving(displayNames, identities []string, reserved map[
 // hash suffix of identity — the value that actually distinguishes this
 // entry from the others it collided with (usually identity == display, but
 // see disambiguateNames).
-func disambiguateOne(display, identity string) string {
-	sum := sha1.Sum([]byte(identity))
-	suffix := "_" + hex.EncodeToString(sum[:])[:identifierHashLen]
-	base := truncateBytes(display, maxIdentifierLen-len(suffix))
-	return base + suffix
+//
+// reserved (may be nil) is a set of names already claimed elsewhere in the
+// same Postgres namespace (issue #68): if the salt-0 suffix produces a
+// name that's in it, the identity is re-hashed with an incrementing salt
+// until the result is free. This stays a pure function of (display,
+// identity, reserved) — the salt sequence is deterministic and doesn't
+// depend on any other entry — so disambiguateNames' cross-run stability
+// and order-independence are unaffected.
+func disambiguateOne(display, identity string, reserved map[string]bool) string {
+	for salt := 0; ; salt++ {
+		src := identity
+		if salt > 0 {
+			src = identity + "\x00salt\x00" + strconv.Itoa(salt)
+		}
+		sum := sha1.Sum([]byte(src))
+		suffix := "_" + hex.EncodeToString(sum[:])[:identifierHashLen]
+		candidate := truncateBytes(display, maxIdentifierLen-len(suffix)) + suffix
+		if !reserved[candidate] {
+			return candidate
+		}
+	}
 }
 
 // quoteIdent double-quotes name as a SQL identifier, doubling any embedded

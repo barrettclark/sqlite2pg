@@ -261,16 +261,15 @@ func TestGenerateForeignKeyIndexes_DisambiguatesAgainstTableNames(t *testing.T) 
 	if len(statements) != 1 {
 		t.Fatalf("expected 1 index statement, got %d: %v", len(statements), statements)
 	}
-
-	start := strings.Index(statements[0], `CREATE INDEX "`) + len(`CREATE INDEX "`)
-	end := strings.Index(statements[0][start:], `"`)
-	indexName := statements[0][start : start+end]
+	stmt := statements[0]
 
 	pgTables := PostgresTableNames(cfg)
-	if indexName == pgTables["idx_orders_customer_id"] {
-		t.Errorf("FK index name %q collides with the table of the same name in pg_class; Postgres would reject the CREATE INDEX", indexName)
+	collidingStart := "CREATE INDEX " + quoteIdent(pgTables["idx_orders_customer_id"]) + " "
+	if strings.HasPrefix(stmt, collidingStart) {
+		t.Errorf("FK index is named the same as the table in pg_class; Postgres would reject it:\n%s", stmt)
 	}
-	if !strings.HasPrefix(indexName, "idx_orders_customer_id") {
-		t.Errorf("expected the readable prefix preserved, got %q", indexName)
+	// Still disambiguated from the readable prefix, not renamed wholesale.
+	if !strings.HasPrefix(stmt, `CREATE INDEX "idx_orders_customer_id_`) {
+		t.Errorf("expected the index disambiguated as idx_orders_customer_id_<hash>, got:\n%s", stmt)
 	}
 }
