@@ -564,14 +564,41 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		// mid-COPY failure in a prior run leaves the (empty — a single
 		// COPY statement outside an explicit transaction is its own
 		// implicit transaction, so a failure here leaves zero rows, never
-		// a partial load) table behind. Without this, CREATE TABLE below
-		// would hit "relation already exists" and --resume could never
-		// get past the exact table it's supposed to resume (issue #78).
-		// Unconditional rather than resume-gated: a fresh (non-resume)
-		// run always provisions a brand-new database (connectForLoad),
-		// so this is a genuine no-op there.
-		if _, err := conn.Exec(ctx, fmt.Sprintf("DROP TABLE IF EXISTS %s", pgx.Identifier{pgTable}.Sanitize())); err != nil {
-			return fmt.Errorf("dropping any partially-created %s (Postgres table %q) before recreating it: %w", tableName, pgTable, err)
+		// a partial load) table behind. Without a check here, CREATE
+		// TABLE below would hit "relation already exists" and --resume
+		// could never get past the exact table it's supposed to resume
+		// (issue #78).
+		//
+		// A NONZERO row count means something different, though: COPY
+		// itself already committed successfully (per the same
+		// one-statement-one-implicit-transaction guarantee — there's no
+		// such thing as a partially-committed COPY), and the process
+		// simply died in the narrow window between LoadTable returning
+		// and markTableCompleted's write below. Dropping and reloading in
+		// that case would silently destroy real, correctly-loaded data —
+		// strictly worse than the original bug, an error instead of data
+		// loss (Copilot PR #99 finding). Reconcile the state file with
+		// what Postgres actually has instead: treat it as already done.
+		qualifiedPgTable := pgx.Identifier{pgTable}.Sanitize()
+		var alreadyExists bool
+		if err := conn.QueryRow(ctx, "SELECT to_regclass($1) IS NOT NULL", qualifiedPgTable).Scan(&alreadyExists); err != nil {
+			return fmt.Errorf("checking whether %s (Postgres table %q) already exists: %w", tableName, pgTable, err)
+		}
+		if alreadyExists {
+			var existingRows int64
+			if err := conn.QueryRow(ctx, fmt.Sprintf("SELECT COUNT(*) FROM %s", qualifiedPgTable)).Scan(&existingRows); err != nil {
+				return fmt.Errorf("counting rows in existing %s (Postgres table %q): %w", tableName, pgTable, err)
+			}
+			if existingRows > 0 {
+				if err := markTableCompleted(statePath, tableName); err != nil {
+					return err
+				}
+				progress.skipAlreadyLoadedTable(tableName, existingRows)
+				continue
+			}
+			if _, err := conn.Exec(ctx, "DROP TABLE "+qualifiedPgTable); err != nil {
+				return fmt.Errorf("dropping empty partially-created %s (Postgres table %q) before recreating it: %w", tableName, pgTable, err)
+			}
 		}
 		stmt, err := ddl.GenerateCreateTable(pgTable, tc)
 		if err != nil {

@@ -169,3 +169,114 @@ func TestResume_RecoversFromAMidTableCOPYFailure(t *testing.T) {
 		t.Errorf("expected 2 rows loaded after resume, got %d", count)
 	}
 }
+
+// TestResume_DoesNotDropATableWhoseCOPYAlreadyCommitted is a regression
+// test for Copilot's PR #99 review finding: COPY commits all rows in one
+// implicit transaction, so a table that already has rows after a prior
+// run means that run's COPY genuinely succeeded — the process just died
+// before markTableCompleted's write. Dropping and reloading in that case
+// would silently destroy real, correctly-loaded data. This simulates
+// exactly that crash window: load a table successfully via executeLoad,
+// then manually undo only the state-file bookkeeping (not the data) to
+// reproduce "COPY committed, state file didn't record it," and confirms
+// a resumed run leaves the real data untouched rather than dropping it.
+func TestResume_DoesNotDropATableWhoseCOPYAlreadyCommitted(t *testing.T) {
+	ctx := context.Background()
+	pgURL := resumeTestPgURL(t)
+
+	dir := t.TempDir()
+	sqlitePath := filepath.Join(dir, "steady.db")
+	sourceDB, err := sql.Open("sqlite", sqlitePath)
+	if err != nil {
+		t.Fatalf("open sqlite: %v", err)
+	}
+	defer sourceDB.Close()
+	if _, err := sourceDB.Exec(`CREATE TABLE steady (id INTEGER PRIMARY KEY, n TEXT)`); err != nil {
+		t.Fatalf("creating fixture table: %v", err)
+	}
+	if _, err := sourceDB.Exec(`INSERT INTO steady (id, n) VALUES (1, '10'), (2, '20')`); err != nil {
+		t.Fatalf("seeding fixture rows: %v", err)
+	}
+
+	cfg := &config.MigrationConfig{
+		Source: config.SourceInfo{Path: sqlitePath},
+		Tables: map[string]config.TableConfig{"steady": resumeTestConfig()},
+	}
+
+	configPath := filepath.Join(dir, "steady.db.migration.yaml")
+	if err := config.Save(cfg, configPath); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	statePath := configPath + ".state.json"
+
+	connCfg, err := connectForLoad(ctx, pgURL, sqlitePath, false, statePath)
+	if err != nil {
+		t.Skipf("no Postgres available at %s: %v", pgURL, err)
+	}
+	dbName := connCfg.Database
+	t.Cleanup(func() {
+		maintCfg, err := pgx.ParseConfig(pgURL)
+		if err != nil {
+			return
+		}
+		maintCfg.Database = "postgres"
+		conn, err := pgx.ConnectConfig(ctx, maintCfg)
+		if err != nil {
+			return
+		}
+		defer conn.Close(ctx)
+		conn.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{dbName}.Sanitize())
+	})
+
+	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
+		t.Fatalf("first load: %v", err)
+	}
+
+	// A sentinel row inserted directly into Postgres, not present in the
+	// SQLite source: since the source data is unchanged between attempts,
+	// a wrong "drop and reload" would produce the exact same row COUNT as
+	// a correct "recognize as already loaded" (both end at 2) — count
+	// alone can't tell the two apart. This marker can only survive if the
+	// table is genuinely left untouched; DROP TABLE destroys it.
+	markerConn, err := pgx.ConnectConfig(ctx, connCfg)
+	if err != nil {
+		t.Fatalf("connecting to insert the sentinel row: %v", err)
+	}
+	if _, err := markerConn.Exec(ctx, `INSERT INTO "steady" (id, n) VALUES (999, 999)`); err != nil {
+		markerConn.Close(ctx)
+		t.Fatalf("inserting the sentinel row: %v", err)
+	}
+	markerConn.Close(ctx)
+
+	// Reproduce "COPY committed, state file never recorded it": rewrite
+	// the state file to the database-only shape a crash right after
+	// provisioning (before any table completed) would have left, without
+	// touching the real data executeLoad already loaded into Postgres.
+	if err := writeState(statePath, loadState{Database: dbName}); err != nil {
+		t.Fatalf("resetting state file to simulate the crash window: %v", err)
+	}
+	completedBefore, err := loadCompletedTables(statePath)
+	if err != nil {
+		t.Fatalf("loadCompletedTables: %v", err)
+	}
+	if completedBefore["steady"] {
+		t.Fatal("test setup bug: expected steady to read back as NOT completed after resetting the state file")
+	}
+
+	if err := executeLoad(cfg, connCfg, true, statePath); err != nil {
+		t.Fatalf("resumed load should have recognized steady as already loaded, not failed: %v", err)
+	}
+
+	conn, err := pgx.ConnectConfig(ctx, connCfg)
+	if err != nil {
+		t.Fatalf("connecting to verify: %v", err)
+	}
+	defer conn.Close(ctx)
+	var count int
+	if err := conn.QueryRow(ctx, `SELECT COUNT(*) FROM "steady"`).Scan(&count); err != nil {
+		t.Fatalf("counting rows: %v", err)
+	}
+	if count != 3 {
+		t.Errorf("expected the original 2 rows plus the sentinel to survive the resume untouched (3 total) — a lower count means the table was dropped and reloaded, silently destroying the sentinel and, in a real crash scenario, real data; got %d", count)
+	}
+}

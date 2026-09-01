@@ -116,3 +116,19 @@ func (p *progressReporter) finishTable(tableName string, rows int64) {
 	}
 	fmt.Println(line)
 }
+
+// skipAlreadyLoadedTable reports a table --resume found already fully
+// loaded in Postgres (a prior run's COPY committed but crashed before the
+// state file recorded it — see the row-count check in executeLoad) —
+// rows never streamed through row() this run, so done is bumped directly
+// to keep the bar's percentage honest instead of quietly undercounting
+// for the rest of the load.
+func (p *progressReporter) skipAlreadyLoadedTable(tableName string, rows int64) {
+	p.done += rows
+	line := fmt.Sprintf("%s: already loaded (%d row(s), found by --resume)", tableName, rows)
+	if p.isTerminal {
+		fmt.Print("\r" + clearLine + line + "\n")
+		return
+	}
+	fmt.Println(line)
+}
