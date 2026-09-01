@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"fmt"
+	"math"
 	"sort"
 	"strconv"
 	"strings"
@@ -117,9 +118,11 @@ func (r TableVerifyResult) Passed() bool {
 //
 // The full comparison uses one of two strategies, chosen by whether table
 // has a primary key (config.ColumnConfig.PrimaryKeySeq on at least one
-// included column):
+// included column) AND every primary-key column is safe to order by —
+// see primaryKeyOrderingIsSafe:
 //
-//   - With a primary key: both sides are read genuinely ORDER BY'd by it —
+//   - With a primary key, and every PK column BINARY-collated in the
+//     SQLite source: both sides are read genuinely ORDER BY'd by it —
 //     sqlitereader.StreamTableOrdered on the SQLite side, `ORDER BY
 //     "pg_pk_col", ...` on the Postgres side — and compared row-by-row by
 //     position (the Nth row of one against the Nth row of the other).
@@ -127,8 +130,25 @@ func (r TableVerifyResult) Passed() bool {
 //     deterministic: TableVerifyResult.Ordered is true, and every
 //     ColumnMismatch.RowIndex is a genuine, meaningful row position.
 //
-//   - Without a primary key: there is no column (or column set) guaranteed
-//     both unique and indexed to order by, and — as this exact package
+//   - Without a primary key, OR with a primary key that includes a text
+//     column declared with a non-BINARY SQLite collation (COLLATE NOCASE
+//     or COLLATE RTRIM — see sqlitereader.ColumnCollations): in the
+//     no-primary-key case, there is no column (or column set) guaranteed
+//     both unique and indexed to order by. In the non-BINARY-PK-collation
+//     case, there is a usable key, but ordering by it isn't safe: this
+//     path's ORDER BY comparison works by forcing the Postgres side to
+//     COLLATE "C" (byte order) specifically to match SQLite's own default
+//     BINARY comparison (see verifyTableOrdered's doc comment) — a
+//     genuinely NOCASE- or RTRIM-collated source column sorts differently
+//     from BINARY on the SQLite side too, so the two sides would walk
+//     rows in different orders despite both being "correctly" ordered by
+//     their own rules, reintroducing the exact false-positive-mismatch
+//     bug class this fix exists to prevent (just triggered from the
+//     SQLite side of the mismatch instead of the Postgres side). Rather
+//     than trying to emulate NOCASE/RTRIM behavior with an equivalent
+//     Postgres collation (no exact equivalent exists), this table simply
+//     degrades to the same order-independent path a table with no primary
+//     key at all already uses — as this exact package
 //     discovered during its own development — a bare, unordered scan of
 //     either side cannot be trusted to line up two logically-identical
 //     tables row-for-row anyway. Confirmed directly: Postgres 18 was
@@ -153,6 +173,7 @@ func (r TableVerifyResult) Passed() bool {
 //     primary-key path — but that cost is only paid for tables that lack a
 //     primary key, and is the accepted price for exhaustive, false-positive-
 //     free verification on tables without one.
+//
 // pgTable must be the identifier CREATE TABLE actually emitted for table
 // (see ddl.PostgresTableNames/issue #44) — not necessarily table itself —
 // since two source tables identical in their first 63 bytes are
@@ -189,9 +210,36 @@ func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table,
 
 	pk := ddl.PrimaryKeyColumns(tc)
 	if len(pk) > 0 {
-		return verifyTableOrdered(ctx, sourceDB, pgConn, table, pgTable, tc, included, pk, result)
+		safe, err := primaryKeyOrderingIsSafe(sourceDB, table, pk)
+		if err != nil {
+			return result, err
+		}
+		if safe {
+			return verifyTableOrdered(ctx, sourceDB, pgConn, table, pgTable, tc, included, pk, result)
+		}
 	}
 	return verifyTableUnordered(ctx, sourceDB, pgConn, table, pgTable, tc, included, result)
+}
+
+// primaryKeyOrderingIsSafe reports whether every column in pk is
+// BINARY-collated in the SQLite source — i.e. whether verifyTableOrdered's
+// strategy of forcing Postgres's ORDER BY to COLLATE "C" to match SQLite's
+// default comparison is actually valid for this table. See VerifyTable's
+// doc comment for the full false-positive scenario this guards against: a
+// primary-key column declared COLLATE NOCASE or COLLATE RTRIM sorts
+// differently from BINARY on the SQLite side too, so forcing byte order on
+// the Postgres side wouldn't make the two sides agree.
+func primaryKeyOrderingIsSafe(sourceDB *sql.DB, table string, pk []string) (bool, error) {
+	collations, err := sqlitereader.ColumnCollations(sourceDB, table)
+	if err != nil {
+		return false, fmt.Errorf("reading column collations for %s: %w", table, err)
+	}
+	for _, col := range pk {
+		if !strings.EqualFold(collations[col], "BINARY") {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // isTextTargetType reports whether targetType (a config.ColumnConfig.
@@ -235,6 +283,14 @@ func verifyTableOrdered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn,
 			// ORDER BY equivalent to SQLite's, so both sides genuinely walk
 			// rows in the same order. Non-text PK column types (integer,
 			// uuid, ...) have no collation concept and are left as-is.
+			//
+			// This is only valid because the SQLite source column is
+			// actually BINARY-collated — VerifyTable's caller
+			// (primaryKeyOrderingIsSafe) already confirmed that for every
+			// PK column before routing here at all, so this function never
+			// runs against a COLLATE NOCASE/RTRIM primary key (that case
+			// degrades to verifyTableUnordered instead — see VerifyTable's
+			// doc comment).
 			orderExpr += ` COLLATE "C"`
 		}
 		quotedPK[i] = orderExpr
@@ -417,22 +473,39 @@ func compareColumnUnordered(expected, actual []any) []ColumnMismatch {
 // numericValue extracts a float64 representation of v when v is an int64 or
 // float64 — the two concrete Go types VerifyTable's transform/scan pipeline
 // ever produces for a numeric column — reporting false for anything else.
-// float64 has exact integer precision only up to 2^53 (~9x10^15), which
-// comfortably covers realistic values this tool deals with (Julian-day
-// numbers, Unix timestamps, row counts), so converting an int64 through
-// float64 loses nothing for any value actually seen in practice.
+//
+// This is deliberately used ONLY for comparing/keying two values of
+// DIFFERENT concrete numeric Go types (one int64, one float64) — the actual
+// SQLite-dynamic-typing shape this logic exists for (e.g. a NUMERIC column
+// stored dynamically as an integer, transformed straight through to a
+// `double precision` target). float64 has exact integer precision only up
+// to 2^53 (~9x10^15); above that, two genuinely different int64 values can
+// round to the identical float64 (e.g. math.MaxInt64 and math.MaxInt64-1
+// both convert to the same float64), so this conversion must never be used
+// to compare two values that are ALREADY the same Go type — see
+// exactNumericEqual/numericSortKey, which valuesMatch and sortKeyFor both
+// check first, before ever reaching this cross-type fallback. This was
+// itself a real regression once (a silent false negative on large
+// bigint/rowid corruption, caught by /code-review on e6bc33e — the same
+// commit that introduced this pre-switch numeric check in the first
+// place), which is why the same-type/cross-type split is enforced
+// structurally here rather than left as an easy-to-forget convention.
 //
 // This is the single shared numeric-comparison primitive both valuesMatch
-// and sortKeyFor build on, specifically so they can't silently drift apart
-// again the way they already have twice: once in the original
-// int64-vs-float64 type-tag bug, and again in 9de206a's partial fix, which
-// made sortKeyFor mirror valuesMatch's own flawed fmt.Sprintf("%v", ...)
-// fallback — a fallback that breaks on large numbers because Go's default
-// float formatting switches to scientific notation above a certain
-// magnitude (fmt.Sprintf("%v", float64(2454348)) == "2.454348e+06") while
-// the int64 side stays plain decimal ("2454348"), so two numerically
-// identical values compared as different strings. Both call sites now
-// route through this same numeric conversion instead of text formatting.
+// and sortKeyFor build on for the cross-type case, specifically so they
+// can't silently drift apart again the way they already have three times:
+// once in the original int64-vs-float64 type-tag bug, again in 9de206a's
+// partial fix, which made sortKeyFor mirror valuesMatch's own flawed
+// fmt.Sprintf("%v", ...) fallback — a fallback that breaks on large numbers
+// because Go's default float formatting switches to scientific notation
+// above a certain magnitude (fmt.Sprintf("%v", float64(2454348)) ==
+// "2.454348e+06") while the int64 side stays plain decimal ("2454348") —
+// and again in e6bc33e's fix for that, which fixed the scientific-notation
+// case but introduced the float64-precision-loss regression this comment
+// now documents. Both call sites route through this same numeric
+// conversion for the cross-type case, and through exactNumericEqual/
+// numericSortKey for the same-type case, instead of duplicating either
+// piece of logic.
 func numericValue(v any) (float64, bool) {
 	switch t := v.(type) {
 	case int64:
@@ -443,12 +516,79 @@ func numericValue(v any) (float64, bool) {
 	return 0, false
 }
 
+// exactNumericEqual reports whether expected and actual are equal, when
+// both are the SAME concrete numeric Go type (int64-vs-int64 or
+// float64-vs-float64) — compared directly, with no float64 round-trip at
+// all, so two large int64 values are never at risk of colliding the way
+// they would through numericValue's conversion. ok is false when expected
+// and actual aren't both int64 or both float64 (including when they're
+// numeric but of DIFFERENT types — that case is numericValue's job, via
+// valuesMatch's caller-side fallback).
+func exactNumericEqual(expected, actual any) (equal, ok bool) {
+	switch e := expected.(type) {
+	case int64:
+		if a, isInt := actual.(int64); isInt {
+			return e == a, true
+		}
+	case float64:
+		if a, isFloat := actual.(float64); isFloat {
+			return e == a, true
+		}
+	}
+	return false, false
+}
+
 // numericKeyText renders n as fixed-point decimal text — never scientific
 // notation — so it's safe to use as part of a sort key (sortKeyFor) where
 // two numerically equal values, converted from whichever concrete numeric
 // type they arrived as, must always render identically.
 func numericKeyText(n float64) string {
 	return strconv.FormatFloat(n, 'f', -1, 64)
+}
+
+// int64AsFloat64Bounds are the inclusive/exclusive float64 bounds within
+// which every whole-number float64 value converts to and from int64
+// losslessly (no truncation, no overflow) — used by numericSortKey to
+// decide whether a float64 can safely be keyed identically to an equal
+// int64. math.MinInt64 (-2^63) is itself exactly representable in float64
+// (a power of two), so the lower bound is inclusive; math.MaxInt64
+// (2^63 - 1) is NOT exactly representable (2^63-1 needs 63 significant
+// bits, float64 only has 53), so the upper bound is expressed as the next
+// power of two, 2^63, and checked exclusively.
+const (
+	minInt64AsFloat64      = -9223372036854775808.0 // math.MinInt64
+	int64UpperBoundAsFloat = 9223372036854775808.0  // 2^63 == math.MaxInt64 + 1, exclusive
+)
+
+// numericSortKey is sortKeyFor's numeric case, split out so its same-type/
+// cross-type split can be tested and reasoned about on its own. ok is
+// false when v isn't int64 or float64.
+//
+//   - int64 keys by its own exact decimal text (strconv.FormatInt) — never
+//     round-tripped through float64, so two distinct large int64 values
+//     (e.g. differing only above 2^53) always produce distinct keys.
+//   - float64 that represents a whole number within int64's exact range
+//     keys IDENTICALLY to that same-valued int64's key — this preserves
+//     e6bc33e/9de206a's cross-type fix (a SQLite NUMERIC column stored
+//     dynamically as an integer, transformed to a `double precision`
+//     target, must still key the same as its int64 source).
+//   - any other float64 (fractional, or outside int64's range) keys by its
+//     own exact fixed-point decimal text (numericKeyText) — it cannot be
+//     the same number as any int64 in the first place, so there's no
+//     cross-type collapse to do, and this also can never collide with a
+//     large int64's decimal-text key (an out-of-range float is always
+//     numerically outside any possible int64 value).
+func numericSortKey(v any) (string, bool) {
+	switch t := v.(type) {
+	case int64:
+		return strconv.FormatInt(t, 10), true
+	case float64:
+		if t == math.Trunc(t) && t >= minInt64AsFloat64 && t < int64UpperBoundAsFloat {
+			return strconv.FormatInt(int64(t), 10), true
+		}
+		return numericKeyText(t), true
+	}
+	return "", false
 }
 
 // sortKeyFor renders v into a string sort key such that two values
@@ -502,8 +642,8 @@ func sortKeyFor(v any) string {
 	case bool:
 		return fmt.Sprintf("\x05bool:%v", t)
 	case int64, float64:
-		n, _ := numericValue(v)
-		return "\x06num:" + numericKeyText(n)
+		key, _ := numericSortKey(v)
+		return "\x06num:" + key
 	case string:
 		return "\x08string:" + t
 	default:
@@ -635,20 +775,37 @@ func (s *pgColumnScanner) value() any {
 // pgtype's internal layout); and plain scalars compare by value once their
 // concrete Go types are confirmed to match.
 //
-// int64 vs float64 (in either direction) is handled before the typed
-// switch, via the shared numericValue helper (see its doc comment), rather
-// than as one of the typed cases below or via the final string-formatting
-// fallback: a SQLite NUMERIC column stored dynamically as an integer,
-// transformed straight through to a `double precision` target, commonly
-// produces exactly this int64-vs-float64 shape, and the two values must
-// compare equal whenever they represent the same number — including large
-// numbers (e.g. Julian-day values like 2454348), where a text-formatting
-// comparison would incorrectly disagree because Go's default float
-// formatting switches to scientific notation above a certain magnitude
-// while int64 formatting never does.
+// Numeric comparison (int64 and/or float64 on either side) is handled
+// before the typed switch, in two tiers — see exactNumericEqual/
+// numericValue's doc comments for the full rationale:
+//
+//  1. Same concrete type on both sides (int64-vs-int64 or
+//     float64-vs-float64): compared directly via exactNumericEqual, with
+//     no float64 round-trip at all. This must never go through
+//     numericValue's float64 conversion — float64 only has exact integer
+//     precision up to 2^53 (~9x10^15), so two distinct int64 values above
+//     that (e.g. math.MaxInt64 and math.MaxInt64-1) can round to the
+//     identical float64 and would otherwise be reported as equal, a
+//     silent false negative in a data-integrity tool (the exact regression
+//     a /code-review pass caught in e6bc33e, the commit that introduced
+//     this pre-switch numeric check in the first place).
+//  2. Different concrete types (one int64, one float64): compared via
+//     numericValue's float64 conversion. A SQLite NUMERIC column stored
+//     dynamically as an integer, transformed straight through to a
+//     `double precision` target, commonly produces exactly this
+//     int64-vs-float64 shape, and the two values must compare equal
+//     whenever they represent the same number — including large numbers
+//     (e.g. Julian-day values like 2454348), where a text-formatting
+//     comparison would incorrectly disagree because Go's default float
+//     formatting switches to scientific notation above a certain
+//     magnitude while int64 formatting never does.
 func valuesMatch(expected, actual any) bool {
 	if expected == nil || actual == nil {
 		return expected == nil && actual == nil
+	}
+
+	if equal, ok := exactNumericEqual(expected, actual); ok {
+		return equal
 	}
 
 	if en, eok := numericValue(expected); eok {
