@@ -61,17 +61,6 @@ func checkPair(t *testing.T, p, q any) {
 	kq := sortKeyFor(q)
 
 	if matchPQ && kp != kq {
-		if knownIssue65Gap(p, q) {
-			// Documented open gap (issue #65): valuesMatch compares an
-			// int64 against a float64 by a lossy float64 round-trip, so it
-			// calls int64 values outside float64's exact range (|n| > 2^53)
-			// "equal" to a nearby float64 — while sortKeyFor keeps the
-			// int64's exact decimal key. The two verify paths then
-			// disagree. Remove this exemption once #65 is fixed; the
-			// f.Add seed with 9007199254740993 / 9007199254740992 is the
-			// reproduction.
-			return
-		}
 		t.Fatalf("valuesMatch(%#v,%#v)=true but sortKeyFor disagrees: %q vs %q\n"+
 			"(equal values must sort to the same key — see sortKeyFor doc comment; "+
 			"a no-PK table would report a false mismatch here while a PK table would not)",
@@ -89,26 +78,6 @@ func checkPair(t *testing.T, p, q any) {
 			"the unordered verify path would treat these as the same row, the ordered path would not",
 			p, q, kp)
 	}
-}
-
-// knownIssue65Gap reports whether p,q are an (int64, float64) pair — in
-// either order — where the int64's magnitude exceeds float64's exact
-// integer range (2^53). That's exactly the region issue #65 covers, where
-// valuesMatch (lossy float64 round-trip) and sortKeyFor (exact int64 key)
-// are known to disagree.
-func knownIssue65Gap(p, q any) bool {
-	const exactFloatIntLimit = 1 << 53
-	pi, pIsInt := p.(int64)
-	qi, qIsInt := q.(int64)
-	_, pIsFloat := p.(float64)
-	_, qIsFloat := q.(float64)
-	if pIsInt && qIsFloat {
-		return pi > exactFloatIntLimit || pi < -exactFloatIntLimit
-	}
-	if qIsInt && pIsFloat {
-		return qi > exactFloatIntLimit || qi < -exactFloatIntLimit
-	}
-	return false
 }
 
 func isFiniteNumeric(v any) bool {
