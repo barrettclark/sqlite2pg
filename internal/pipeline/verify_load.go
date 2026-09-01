@@ -693,13 +693,19 @@ func sortKeyFor(v any) string {
 			parts[i] = fmt.Sprintf("%v:%x", u.Valid, u.Bytes)
 		}
 		return "\x03uuidlist:" + strings.Join(parts, ",")
-	case []byte:
-		return "\x04bytes:" + string(t)
 	case bool:
 		return fmt.Sprintf("\x05bool:%v", t)
 	case int64, float64:
 		key, _ := numericSortKey(v)
 		return "\x06num:" + key
+	case []byte:
+		// Shares the string case's key namespace, not a separate "\x04
+		// bytes:" one: valuesMatch now treats a []byte and an equal-content
+		// string as the same value (issue #83 — a text-target column with a
+		// BLOB row scans back as string, while the SQLite-derived expected
+		// value is still []byte), so their sort keys must match too or the
+		// two sides land at different positions despite comparing equal.
+		return "\x08string:" + string(t)
 	case string:
 		return "\x08string:" + t
 	default:
@@ -1000,6 +1006,17 @@ func valuesMatch(expected, actual any) bool {
 	case []byte:
 		if a, ok := actual.([]byte); ok {
 			return bytes.Equal(e, a)
+		}
+		// A text-shaped target column (text/varchar(N)) scans back as a
+		// plain string (newPgColumnScanner falls back to pgtype.Text for
+		// anything not explicitly bytea/etc.) even when the raw SQLite
+		// value was a BLOB — SQLite's dynamic typing permits that, and
+		// pgx's TextCodec accepts []byte for a text column at COPY time
+		// without complaint. Compare the byte content directly instead of
+		// falling through to the %v fallback, which renders []byte and
+		// string differently and would report a false mismatch (issue #83).
+		if a, ok := actual.(string); ok {
+			return string(e) == a
 		}
 	case bool:
 		if a, ok := actual.(bool); ok {
