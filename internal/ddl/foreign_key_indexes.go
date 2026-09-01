@@ -64,13 +64,19 @@ func GenerateForeignKeyIndexes(cfg *config.MigrationConfig) (statements []string
 			identity = append(identity, pt.table+"\x00"+d+"\x00"+fk.RefTable+"\x00"+strings.Join(fk.RefColumns, "\x00"))
 		}
 	}
-	names := disambiguateNames(display, identity)
 
 	// The identifier CREATE TABLE actually emitted for each table (see
 	// PostgresTableNames/issue #44) — the index's ON clause must name the
 	// same disambiguated relation CREATE TABLE created, not the raw
-	// source table name.
+	// source table name. These are also the names already claimed in the
+	// shared pg_class namespace, so an index name that would collide with
+	// one must be disambiguated away from it (issue #68).
 	pgTableNames := PostgresTableNames(cfg)
+	reserved := make(map[string]bool, len(pgTableNames))
+	for _, n := range pgTableNames {
+		reserved[n] = true
+	}
+	names := disambiguateNamesReserving(display, identity, reserved)
 
 	i := 0
 	for _, pt := range perTable {

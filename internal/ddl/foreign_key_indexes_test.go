@@ -225,3 +225,52 @@ func TestGenerateForeignKeyIndexes_SkipsAnInvalidForeignKey(t *testing.T) {
 		t.Fatalf("expected no index statements for an invalid foreign key, got %v", statements)
 	}
 }
+
+func TestGenerateForeignKeyIndexes_DisambiguatesAgainstTableNames(t *testing.T) {
+	// Issue #68: index names are disambiguated against each other but not
+	// against table names, even though both live in the same schema-scoped
+	// pg_class namespace. A source table literally named
+	// idx_orders_customer_id alongside an orders table with an FK on
+	// customer_id produces CREATE TABLE "idx_orders_customer_id" and
+	// CREATE INDEX "idx_orders_customer_id" — the second fails with
+	// "relation ... already exists".
+	cfg := &config.MigrationConfig{
+		Tables: map[string]config.TableConfig{
+			"customers": {
+				Include:     true,
+				ColumnOrder: []string{"id"},
+				Columns:     map[string]config.ColumnConfig{"id": {TargetType: "integer"}},
+			},
+			"orders": {
+				Include:     true,
+				ColumnOrder: []string{"customer_id"},
+				Columns:     map[string]config.ColumnConfig{"customer_id": {TargetType: "integer"}},
+				ForeignKeys: []config.ForeignKey{
+					{Columns: []string{"customer_id"}, RefTable: "customers", RefColumns: []string{"id"}},
+				},
+			},
+			"idx_orders_customer_id": {
+				Include:     true,
+				ColumnOrder: []string{"x"},
+				Columns:     map[string]config.ColumnConfig{"x": {TargetType: "integer"}},
+			},
+		},
+	}
+
+	statements := GenerateForeignKeyIndexes(cfg)
+	if len(statements) != 1 {
+		t.Fatalf("expected 1 index statement, got %d: %v", len(statements), statements)
+	}
+
+	start := strings.Index(statements[0], `CREATE INDEX "`) + len(`CREATE INDEX "`)
+	end := strings.Index(statements[0][start:], `"`)
+	indexName := statements[0][start : start+end]
+
+	pgTables := PostgresTableNames(cfg)
+	if indexName == pgTables["idx_orders_customer_id"] {
+		t.Errorf("FK index name %q collides with the table of the same name in pg_class; Postgres would reject the CREATE INDEX", indexName)
+	}
+	if !strings.HasPrefix(indexName, "idx_orders_customer_id") {
+		t.Errorf("expected the readable prefix preserved, got %q", indexName)
+	}
+}

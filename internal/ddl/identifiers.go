@@ -112,6 +112,18 @@ func disambiguateIdentifiers(names []string) map[string]string {
 // so the hash suffix still distinguishes them even when their display names
 // are identical.
 func disambiguateNames(displayNames, identities []string) []string {
+	return disambiguateNamesReserving(displayNames, identities, nil)
+}
+
+// disambiguateNamesReserving is disambiguateNames with an additional set of
+// identifiers already claimed by something outside displayNames but in the
+// same Postgres namespace. A CREATE INDEX name and a CREATE TABLE name
+// both live in one schema-scoped pg_class (issue #68), so
+// GenerateForeignKeyIndexes passes every generated table name here as
+// reserved: an index name that would otherwise pass through untouched
+// (its own group is a singleton) still gets the hash suffix when it
+// collides with a table's name. reserved may be nil.
+func disambiguateNamesReserving(displayNames, identities []string, reserved map[string]bool) []string {
 	groups := make(map[string][]int, len(displayNames))
 	for i, name := range displayNames {
 		t := truncateBytes(name, maxIdentifierLen)
@@ -120,7 +132,7 @@ func disambiguateNames(displayNames, identities []string) []string {
 
 	result := make([]string, len(displayNames))
 	for truncated, idxs := range groups {
-		if len(idxs) == 1 {
+		if len(idxs) == 1 && !reserved[truncated] {
 			result[idxs[0]] = truncated
 			continue
 		}
