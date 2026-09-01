@@ -73,3 +73,37 @@ func TestMaxTextLength_CountsCharactersNotBytesForMultibyteText(t *testing.T) {
 		t.Errorf("expected max=5 (character count), got %d", max)
 	}
 }
+
+func TestMaxTextLengths_ComputesEveryColumnInOneScan(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE t (a TEXT, b TEXT, c TEXT);`)
+	db.Exec(`INSERT INTO t (a, b, c) VALUES ('short', 'a much longer value', NULL)`)
+	db.Exec(`INSERT INTO t (a, b, c) VALUES ('bit longer', 'x', NULL)`)
+
+	got, err := MaxTextLengths(db, "t", []string{"a", "b", "c"})
+	if err != nil {
+		t.Fatalf("MaxTextLengths: %v", err)
+	}
+	want := map[string]int{"a": len("bit longer"), "b": len("a much longer value")}
+	if len(got) != len(want) {
+		t.Fatalf("got %+v, want %+v", got, want)
+	}
+	for col, n := range want {
+		if got[col] != n {
+			t.Errorf("column %q: got %d, want %d", col, got[col], n)
+		}
+	}
+	if _, ok := got["c"]; ok {
+		t.Errorf("expected no entry for all-NULL column c, got %d", got["c"])
+	}
+}
+
+func TestMaxTextLengths_EmptyColumnListReturnsEmptyMap(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE t (a TEXT);`)
+	got, err := MaxTextLengths(db, "t", nil)
+	if err != nil {
+		t.Fatalf("MaxTextLengths: %v", err)
+	}
+	if len(got) != 0 {
+		t.Errorf("expected empty map, got %+v", got)
+	}
+}

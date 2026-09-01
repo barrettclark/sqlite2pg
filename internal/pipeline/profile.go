@@ -160,6 +160,21 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 
 		varcharLens := varcharSuggestions(table.Columns)
 
+		// One batched scan for every VARCHAR-suggested column's actual max
+		// length, not one MAX(LENGTH(...)) query per column — a table with
+		// several varying VARCHAR(N) declarations (the "MySQL-origin
+		// export" shape varcharSuggestions specifically targets) would
+		// otherwise partially undermine issue #55's whole point just below
+		// (Copilot PR #96 finding).
+		varcharCols := make([]string, 0, len(varcharLens))
+		for name := range varcharLens {
+			varcharCols = append(varcharCols, name)
+		}
+		varcharMaxLens, err := sqlitereader.MaxTextLengths(db, table.Name, varcharCols)
+		if err != nil {
+			return nil, fmt.Errorf("measuring VARCHAR lengths against the full table for %s: %w", table.Name, err)
+		}
+
 		// Issue #55: phase 1 decides every column from its sample alone
 		// (decideColumnTentative never touches db), collecting a
 		// *pendingColumnDecision for any column that would otherwise
@@ -185,9 +200,7 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 			var extra []profiler.Finding
 			if n, ok := varcharLens[col.Name]; ok {
 				widened := n
-				if maxLen, found, err := sqlitereader.MaxTextLength(db, table.Name, col.Name); err != nil {
-					return nil, fmt.Errorf("measuring VARCHAR length of %s.%s against the full table: %w", table.Name, col.Name, err)
-				} else if found && maxLen > widened {
+				if maxLen, found := varcharMaxLens[col.Name]; found && maxLen > widened {
 					widened = maxLen
 				}
 				extra = append(extra, varcharFinding(n, widened))
