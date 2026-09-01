@@ -68,6 +68,13 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			return n, nil
 		case int64:
 			return v, nil
+		case int:
+			// The rest of the pipeline treats a plain int as an
+			// integer-shaped value alongside int64 (e.g. fallbackTypeFor,
+			// verify_transform's asInt64) — this switch needs the same
+			// coverage or a real int-storage row false-fails as
+			// "unexpected type" (Copilot PR #98 finding).
+			return int64(v), nil
 		case float64:
 			if v != math.Trunc(v) {
 				return nil, fmt.Errorf("strip_commas: %v is not a whole number", v)
@@ -98,6 +105,10 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			}
 			return f, nil
 		case int64:
+			return float64(v), nil
+		case int:
+			// Same coverage gap as strip_commas above (Copilot PR #98
+			// finding).
 			return float64(v), nil
 		case float64:
 			return v, nil
@@ -474,6 +485,13 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel token and not numeric", v)
 		case int64:
 			return v, nil
+		case int:
+			// The rest of the pipeline treats a plain int as an
+			// integer-shaped value alongside int64 (e.g. fallbackTypeFor,
+			// verify_transform's asInt64) — this switch needs the same
+			// coverage or a real int-storage row false-fails as
+			// "unexpected type" (Copilot PR #98 finding).
+			return int64(v), nil
 		case float64:
 			return v, nil
 		default:

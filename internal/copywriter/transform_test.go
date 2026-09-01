@@ -1072,3 +1072,41 @@ func TestTransform_UnixEpochSeconds_AcceptsPlainIntInput(t *testing.T) {
 		t.Errorf("expected unix time 1620000000, got %d", tm.Unix())
 	}
 }
+
+// TestTransform_StripCommas_AcceptsPlainIntInput,
+// TestTransform_StripCommasFloat_AcceptsPlainIntInput, and
+// TestTransform_NullifSentinels_AcceptsPlainIntInput are regression tests
+// for Copilot's PR #98 finding: the rest of the pipeline treats a plain
+// int as an integer-shaped value alongside int64 (fallbackTypeFor,
+// verify_transform's asInt64), but these three transforms' new type
+// switches only had case int64, not case int — a real int-storage row
+// would false-fail as "unexpected type".
+func TestTransform_StripCommas_AcceptsPlainIntInput(t *testing.T) {
+	got, err := Transform("strip_commas", int(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != int64(42) {
+		t.Errorf("expected 42, got %v (%T)", got, got)
+	}
+}
+
+func TestTransform_StripCommasFloat_AcceptsPlainIntInput(t *testing.T) {
+	got, err := Transform("strip_commas_float", int(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != float64(42) {
+		t.Errorf("expected 42.0, got %v (%T)", got, got)
+	}
+}
+
+func TestTransform_NullifSentinels_AcceptsPlainIntInput(t *testing.T) {
+	got, err := Transform("nullif_sentinels", int(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != int64(42) {
+		t.Errorf("expected 42, got %v (%T)", got, got)
+	}
+}
