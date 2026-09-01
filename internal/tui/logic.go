@@ -193,11 +193,15 @@ func columnSampleValues(tv review.TableView, columnName string) []string {
 // for any nullable column.
 //
 // The returned transform is the transform name (copywriter.Transform's
-// vocabulary) that produced this preview, or "" when targetType needs no
-// transform at all — a directly-compatible raw value for a plain numeric,
-// boolean, text, jsonb, or bytea column, which pgx's COPY protocol accepts
-// unconverted. onTypeSelected (issue #41) attaches this transform to the
-// decision it applies: a type the picker only offers BECAUSE some
+// vocabulary) that produced this preview. It's "" only for text/bytea and
+// the plain float target types (real/double precision/numeric), whose raw
+// value is directly compatible with pgx's COPY protocol unconverted;
+// integer/bigint/smallint, boolean, and jsonb each carry a real transform
+// too now (numeric_text_to_integer, int_to_bool, text_to_jsonb — issue
+// #80's audit, finding M1), since a raw int64/string reaching pgx
+// unconverted for those types fails at COPY time despite superficially
+// looking "directly compatible." onTypeSelected (issue #41) attaches this
+// transform to the decision it applies: a type the picker only offers BECAUSE some
 // transform makes it work (date/timestamptz via dateTransformPreview,
 // uuid[] via uuid_list_format) must carry that same transform forward when
 // selected, or the real COPY fails on the untransformed raw value.
@@ -254,12 +258,16 @@ func previewValueForType(value, targetType string) (display, transform string, v
 		// all, so pgx would try to binary-encode the raw int64/string
 		// straight into bool and fail — reachable on the single most
 		// common review action this tool exists for (converting a 0/1
-		// integer column to boolean). int_to_bool only recognizes "0"/"1"
-		// (matching the boolean01 heuristic's own scope, the only real
-		// SQLite storage shape this ever needs to handle — SQLite has no
-		// boolean storage class), narrower than the "true"/"t"/"f" this
-		// used to accept for display purposes only; those were never
-		// actually convertible before either.
+		// integer column to boolean). value here is always a Go string
+		// (this preview only ever has a display string to work with), so
+		// this always hits int_to_bool's string branch, which only
+		// recognizes "0"/"1" literally — narrower than the "true"/"t"/"f"
+		// this preview used to accept for display purposes only; those
+		// were never actually convertible before either. (int_to_bool
+		// itself also accepts numeric int64/int/float64 input via a
+		// separate branch — any nonzero value is true — but that's for
+		// the real raw SQLite value at load time, never reachable from
+		// this string-only preview.)
 		result, err := copywriter.Transform("int_to_bool", value)
 		if err != nil {
 			return value, "", false

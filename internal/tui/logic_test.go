@@ -99,11 +99,13 @@ func TestPreviewValueForType_ValidityForNonNumericTypes(t *testing.T) {
 	}{
 		{"1", "boolean", true},
 		{"0", "boolean", true},
-		// "true"/"t"/"f" are no longer accepted: int_to_bool (the
-		// transform now backing this preview, issue #80's audit finding
-		// M1) only recognizes "0"/"1", matching the boolean01 heuristic's
-		// own scope — the only real SQLite storage shape this needs to
-		// handle, since SQLite has no boolean storage class.
+		// "true"/"t"/"f" are no longer accepted: previewValueForType
+		// always calls copywriter.Transform("int_to_bool", ...) with a Go
+		// string (issue #80's audit finding M1), and int_to_bool's own
+		// string branch only recognizes "0"/"1" literally — the transform
+		// itself also accepts numeric int64/int/float64 input (any
+		// nonzero is true), but that path is never reachable from here,
+		// since this preview only ever has a display string to pass it.
 		{"true", "boolean", false},
 		{"90b141b9-c39f-4a26", "boolean", false},
 		{"2024-01-02", "date", true},
