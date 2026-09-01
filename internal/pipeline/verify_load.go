@@ -654,7 +654,11 @@ func sortKeyFor(v any) string {
 	}
 	switch t := v.(type) {
 	case time.Time:
-		return fmt.Sprintf("\x01time:%d", t.UTC().UnixNano())
+		// Keyed at microsecond resolution to match valuesMatch's time.Time
+		// case — Postgres timestamps can't hold finer than that, so two
+		// times that differ only in sub-µs nanoseconds are "equal" here and
+		// must sort to the same key (issue #63).
+		return fmt.Sprintf("\x01time:%d", t.UTC().Round(time.Microsecond).UnixNano())
 	case pgtype.UUID:
 		return fmt.Sprintf("\x02uuid:%v:%x", t.Valid, t.Bytes)
 	case []pgtype.UUID:
@@ -839,7 +843,13 @@ func valuesMatch(expected, actual any) bool {
 	switch e := expected.(type) {
 	case time.Time:
 		if a, ok := actual.(time.Time); ok {
-			return e.Equal(a)
+			// Postgres timestamp/timestamptz has microsecond resolution and
+			// rounds sub-µs input; a transform like excel_serial_to_timestamptz
+			// (or iso8601_to_timestamptz on RFC3339Nano input) produces a
+			// nanosecond-precise time.Time that verify then recomputes.
+			// Compare both sides at what Postgres can actually store
+			// (issue #63).
+			return e.Round(time.Microsecond).Equal(a.Round(time.Microsecond))
 		}
 	case pgtype.UUID:
 		if a, ok := actual.(pgtype.UUID); ok {
