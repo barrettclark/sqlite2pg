@@ -325,7 +325,7 @@ review on each fix-batch PR.
 | [#72](https://github.com/barrettclark/sqlite2pg/pull/72) | `migrate verify` correctness | #60 #61 #62 #63 #65 #66 #67 | `canonicalJSON` float64→`big.Rat` precision; `dec.More()`→`io.EOF` trailing-content check |
 | [#73](https://github.com/barrettclark/sqlite2pg/pull/73) | profile full-table type-fit for no-transform passthrough | #69 | `fallbackValueFitsTarget` rejects float for integer/bigint; `"NULL"` not `"<nil>"` in rationale |
 | [#74](https://github.com/barrettclark/sqlite2pg/pull/74) | TUI transform derivation across all samples | #64 | `commonTransformForType` returns `ok=false` on an invalid sample, not just disagreement |
-| PR 5 | parser/DDL hygiene | #68 #70 | — |
+| [#75](https://github.com/barrettclark/sqlite2pg/pull/75) | parser/DDL hygiene | #68 #70 | reserved-name check didn't cover the hash-suffixed disambiguation output; brittle manual-SQL-parsing test assertion |
 
 Regression campaigns (`verify-all-fixtures.sh`) run against the PR 1 and
 PR 2 builds: 37 / 35 databases verified clean, **0 `migrate verify`
@@ -334,4 +334,28 @@ changes false-fails a real database. `DisabilityCompByCounty.db`'s
 `FIPS code` went from silently auto-approved (~84 % of runs) to
 deterministically flagged. Issues auto-close where the PR body used
 `Closes #NN`; #60–#67 were closed manually (PR #72's body predated that
-convention).
+convention) — see the `pr-issue-closing-keywords` memory this cycle
+produced.
+
+## Cycle closed (2026-09-01)
+
+All 5 PRs (#71–#75) reviewed, Copilot-addressed, approved, and merged to
+`main`; final SHA `bb8955e`. All 11 findings (#60–#70) are closed. Every
+feature branch (`audit-cycle-2*`, both local and `origin`) has been
+deleted; the worktree at `.claude/worktrees/audit-cycle-2` has been torn
+down. `go test ./...` and `go test -tags integration ./...` green on
+`main` throughout.
+
+Lessons captured to project memory for the next cycle: the phase
+structure and PR-batching convention itself
+(`audit-cycle-workflow`), the `Closes #N` requirement
+(`pr-issue-closing-keywords`), how Copilot's review behaves on this repo
+(`copilot-review-workflow`), the Postgres `PATH` fix
+(`postgres-path-setup`), and how to read `verify-all-fixtures.sh`'s
+results table without mistaking a working review gate for a bug
+(`verify-all-fixtures-script`).
+
+No further action pending on this plan. The next audit cycle's Phase A
+whole-diff review should start from this cycle's own last-audited point,
+`bb8955e`, i.e. review `bb8955e..main` at that time — covering PRs
+#71–#75 landed here plus whatever lands between now and then.
