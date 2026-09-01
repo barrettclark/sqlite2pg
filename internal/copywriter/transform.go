@@ -650,14 +650,18 @@ func excelSerialToTime(serial float64) time.Time {
 		Add(time.Duration(fracSeconds * float64(time.Second)))
 }
 
-// maxPlausibleExcelDays bounds clampDaysToInt: obscenely larger than any
-// real calendar date (±2.7 billion years from the Excel epoch) yet safely
-// within time.Time.AddDate's own working range — confirmed empirically
-// that AddDate itself silently wraps/overflows for a days argument much
-// larger than this (1e15 days flips the resulting year's sign) — and
-// within float64's exact-integer range (2^53), so this bound comparison
-// itself carries no precision loss.
-const maxPlausibleExcelDays = 1e12
+// maxPlausibleExcelDays bounds clampDaysToInt at math.MaxInt32 rather than
+// a larger constant like 1e12: Go only guarantees int is *at least* 32
+// bits, so a bigger untyped constant here would fail to compile on a
+// 32-bit target (Copilot PR #98 finding) — and math.MaxInt32 (±5.8 million
+// years from the Excel epoch) is still obscenely larger than any real
+// calendar date, safely within time.Time.AddDate's own working range
+// (confirmed empirically: ±math.MaxInt32 days lands on a correctly-signed,
+// non-overflowed year; AddDate itself silently wraps/overflows for a days
+// argument far larger than this, e.g. 1e15 flips the resulting year's
+// sign), and within float64's exact-integer range (2^53), so the bound
+// comparison itself carries no precision loss.
+const maxPlausibleExcelDays = math.MaxInt32
 
 // clampDaysToInt converts days (already an integer-valued float64, per
 // excelSerialToTime's math.Trunc) to an int for AddDate, clamping to
