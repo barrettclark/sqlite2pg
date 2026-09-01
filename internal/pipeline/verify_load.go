@@ -403,6 +403,7 @@ func verifyTableUnordered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Con
 	}
 
 	actual := make(map[string][]any, len(included))
+	pgRowCount := 0
 	for pgRows.Next() {
 		if err := pgRows.Scan(scanDests...); err != nil {
 			return result, fmt.Errorf("scanning postgres row of %s: %w", pgTable, err)
@@ -410,9 +411,20 @@ func verifyTableUnordered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Con
 		for i, name := range included {
 			actual[name] = append(actual[name], scanners[i].value())
 		}
+		pgRowCount++
 	}
 	if err := pgRows.Err(); err != nil {
 		return result, fmt.Errorf("reading Postgres table %s: %w", pgTable, err)
+	}
+
+	// VerifyTable already compared COUNT(*) on both sides, but this SELECT
+	// runs in a separate statement — a concurrent writer can change the
+	// Postgres row count in between. Surface that as an error (matching
+	// verifyTableOrdered's "ran out of rows ... concurrent write during
+	// verify?") rather than silently comparing a truncated multiset.
+	if pgRowCount != result.SourceRowCount {
+		return result, fmt.Errorf("table %s: %d source row(s) but %d in Postgres (concurrent write during verify?)",
+			pgTable, result.SourceRowCount, pgRowCount)
 	}
 
 	for _, name := range included {
@@ -457,8 +469,15 @@ func compareColumnUnordered(expected, actual []any) []ColumnMismatch {
 	sortedExpected := keyed(expected)
 	sortedActual := keyed(actual)
 
+	// Normally these are the same length — VerifyTable compares COUNT(*)
+	// on both sides before getting here. They can still differ if a
+	// concurrent writer changed the Postgres table between that COUNT and
+	// the SELECT that filled `actual`; walk only the overlap so a shrunk
+	// `actual` can't panic with index-out-of-range (issue #67).
+	// verifyTableUnordered turns the length discrepancy itself into a
+	// reported error, the same way verifyTableOrdered does.
 	var mismatches []ColumnMismatch
-	for i := range sortedExpected {
+	for i := 0; i < min(len(sortedExpected), len(sortedActual)); i++ {
 		if sortedExpected[i].key != sortedActual[i].key {
 			mismatches = append(mismatches, ColumnMismatch{
 				RowIndex: i, // position in the sorted comparison, not a source row — see ColumnMismatch's doc comment
