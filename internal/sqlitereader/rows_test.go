@@ -286,6 +286,71 @@ func TestStreamTableOrdered_HandlesColumnAndTableNamesWithEmbeddedDoubleQuote(t 
 	}
 }
 
+// TestStreamTable_DistinguishesZeroLengthBlobFromNull is a regression test
+// for issue #56: sqlite3_column_blob() returns a NULL pointer for a
+// zero-length BLOB even when the column is genuinely non-NULL (confirmed
+// directly against modernc.org/sqlite in isolation before writing this
+// test — the driver returns a nil []byte for both a true NULL and a
+// zero-length non-NULL BLOB when scanning straight into []byte, but
+// preserves the distinction when scanned into `any`: a true NULL comes
+// back as an untyped nil interface, while a zero-length BLOB comes back as
+// a non-nil interface wrapping a nil []byte). Without a fix, both a
+// genuinely NULL blob and a genuine zero-length blob come back
+// indistinguishable from this package's callers.
+func TestStreamTable_DistinguishesZeroLengthBlobFromNull(t *testing.T) {
+	db := openTestDB(t, `CREATE TABLE blobs (id INTEGER PRIMARY KEY, b BLOB);`)
+	if _, err := db.Exec(`INSERT INTO blobs (id, b) VALUES (1, X'00010203')`); err != nil {
+		t.Fatalf("insert non-empty: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO blobs (id, b) VALUES (2, X'')`); err != nil {
+		t.Fatalf("insert zero-length: %v", err)
+	}
+	if _, err := db.Exec(`INSERT INTO blobs (id, b) VALUES (3, NULL)`); err != nil {
+		t.Fatalf("insert null: %v", err)
+	}
+
+	var rows [][]profiler.Value
+	err := StreamTableOrdered(db, "blobs", []string{"id", "b"}, []string{"id"}, func(row []profiler.Value) error {
+		rows = append(rows, row)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("StreamTableOrdered: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("expected 3 rows, got %d", len(rows))
+	}
+
+	// Row 1: non-empty blob.
+	b1, ok := rows[0][1].([]byte)
+	if !ok {
+		t.Fatalf("row 1: expected []byte, got %T", rows[0][1])
+	}
+	if string(b1) != "\x00\x01\x02\x03" {
+		t.Errorf("row 1: expected 4-byte blob, got %v", b1)
+	}
+
+	// Row 2: genuine zero-length, non-NULL blob. Must NOT be NULL, and
+	// must scan as a non-nil, zero-length []byte.
+	if rows[1][1] == nil {
+		t.Fatalf("row 2: zero-length non-NULL blob came back as NULL (interface nil) — issue #56")
+	}
+	b2, ok := rows[1][1].([]byte)
+	if !ok {
+		t.Fatalf("row 2: expected []byte, got %T", rows[1][1])
+	}
+	if b2 == nil {
+		t.Errorf("row 2: expected non-nil zero-length []byte, got nil []byte — issue #56")
+	}
+	if len(b2) != 0 {
+		t.Errorf("row 2: expected zero-length blob, got %d bytes", len(b2))
+	}
+
+	// Row 3: genuine NULL. Must remain NULL.
+	if rows[2][1] != nil {
+		t.Errorf("row 3: expected NULL, got %#v", rows[2][1])
+	}
+}
 func TestSampleColumn_HandlesColumnAndTableNamesWithEmbeddedDoubleQuote(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE "stats ""weird""" (id INTEGER PRIMARY KEY, "Total ""Disability"" Recipients" INTEGER);`)
 	if _, err := db.Exec(`INSERT INTO "stats ""weird""" ("Total ""Disability"" Recipients") VALUES (42)`); err != nil {

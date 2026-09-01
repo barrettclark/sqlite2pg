@@ -33,7 +33,7 @@ func SampleColumn(db *sql.DB, table, column string, limit int) ([]profiler.Value
 		if err := rows.Scan(&v); err != nil {
 			return nil, err
 		}
-		samples = append(samples, v)
+		samples = append(samples, normalizeBlobValue(v))
 	}
 	return samples, rows.Err()
 }
@@ -64,7 +64,7 @@ func SampleNonNullColumn(db *sql.DB, table, column string, limit int) ([]profile
 		if err := rows.Scan(&v); err != nil {
 			return nil, err
 		}
-		samples = append(samples, v)
+		samples = append(samples, normalizeBlobValue(v))
 	}
 	return samples, rows.Err()
 }
@@ -105,6 +105,7 @@ func SampleRows(db *sql.DB, table string, columns []string, limit int) ([][]prof
 		if err := rows.Scan(ptrs...); err != nil {
 			return nil, err
 		}
+		normalizeBlobValues(dest)
 		row := make([]profiler.Value, len(dest))
 		copy(row, dest)
 		result = append(result, row)
@@ -153,6 +154,40 @@ func StreamTableOrdered(db *sql.DB, table string, columns []string, orderByColum
 	return streamQuery(db, table, query, len(columns), fn)
 }
 
+// normalizeBlobValue fixes issue #56: modernc.org/sqlite (mirroring
+// SQLite's own C API — sqlite3_column_blob() returns a NULL pointer for a
+// zero-length BLOB even though the column is genuinely non-NULL) returns a
+// nil []byte for a zero-length BLOB, identically to how it represents a
+// column that's actually NULL. Scanned into `any`, the two cases ARE still
+// distinguishable at the interface level: a genuine SQL NULL comes back as
+// an untyped nil interface (v == nil), while a genuine zero-length BLOB
+// comes back as a non-nil interface wrapping a nil []byte (v != nil, but
+// v.([]byte) == nil) — confirmed directly against the driver, independent
+// of this project's code, before writing this fix. That distinction is
+// real but fragile: anything downstream that checks the byte slice itself
+// for nil-ness (as pgx's bytea COPY encoding does) collapses the two cases
+// back together and silently writes NULL for a real zero-length value.
+// Normalizing every nil []byte we already know is non-NULL (because the
+// interface itself wasn't nil) to a non-nil, zero-length []byte{} here —
+// right at the boundary where the distinction is still available — means
+// every caller downstream sees an ordinary, unambiguous empty slice
+// instead of having to remember to make the fragile interface-nil check
+// itself.
+func normalizeBlobValue(v any) any {
+	if b, ok := v.([]byte); ok && b == nil {
+		return []byte{}
+	}
+	return v
+}
+
+// normalizeBlobValues applies normalizeBlobValue in place to every element
+// of dest — see normalizeBlobValue for why this matters.
+func normalizeBlobValues(dest []any) {
+	for i, v := range dest {
+		dest[i] = normalizeBlobValue(v)
+	}
+}
+
 // quoteIdentList quotes and comma-joins names, e.g. for a SELECT column
 // list or an ORDER BY clause.
 func quoteIdentList(names []string) string {
@@ -185,6 +220,7 @@ func streamQuery(db *sql.DB, table, query string, numCols int, fn func(row []pro
 		if err := rows.Scan(ptrs...); err != nil {
 			return err
 		}
+		normalizeBlobValues(dest)
 		row := make([]profiler.Value, len(dest))
 		copy(row, dest)
 		if err := fn(row); err != nil {
