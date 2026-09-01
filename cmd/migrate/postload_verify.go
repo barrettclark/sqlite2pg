@@ -53,7 +53,7 @@ func resolveVerifyMode(verify, noverify bool) (verifyMode, error) {
 
 // determineVerify decides whether post-load verification should actually
 // run, given mode. For verifyAlways/verifyNever this is immediate and never
-// touches in — only verifyPrompt reads a line from in (a plain stdin
+// touches stdin — only verifyPrompt reads a line from in (a plain stdin
 // prompt, not another TUI dialog, since this decision point is reached
 // after `run`'s review TUI has already exited back to plain terminal
 // output). Only an explicit "y"/"yes" (case-insensitive, surrounding
