@@ -924,3 +924,39 @@ func TestTransform_ExcelSerialToTimestamptz_ExtremeSerialDoesNotOverflowAddDate(
 		t.Errorf("expected a large NEGATIVE year for a huge negative serial (no sign-flip overflow), got %v", tm)
 	}
 }
+
+// TestTransform_UnixEpochSeconds_RejectsNaNAndOutOfRangeValues is a
+// regression test for Copilot's PR #98 finding: converting NaN or an
+// out-of-int64-range float64 to int64 is implementation-dependent per the
+// Go spec, not an error — it could silently produce a bogus timestamp.
+func TestTransform_UnixEpochSeconds_RejectsNaNAndOutOfRangeValues(t *testing.T) {
+	if _, err := Transform("unix_epoch_seconds", math.NaN()); err == nil {
+		t.Error("expected an error for NaN")
+	}
+	if _, err := Transform("unix_epoch_seconds", math.Inf(1)); err == nil {
+		t.Error("expected an error for +Inf")
+	}
+	if _, err := Transform("unix_epoch_seconds", 1e300); err == nil {
+		t.Error("expected an error for a value wildly outside int64's range")
+	}
+}
+
+// TestTransform_UnixEpochSeconds_NanosecondCarryNormalizesCorrectly
+// confirms the rare case where rounding the sub-second fraction lands
+// exactly on 1e9 nanoseconds doesn't lose the carried second —
+// time.Unix's nsec parameter is documented to normalize this correctly.
+func TestTransform_UnixEpochSeconds_NanosecondCarryNormalizesCorrectly(t *testing.T) {
+	// A value whose fractional part rounds to exactly 1.0 second at
+	// float64 precision.
+	got, err := Transform("unix_epoch_seconds", float64(99.9999999999999))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Unix() != 100 {
+		t.Errorf("expected the rounding carry to land on unix time 100, got %d", tm.Unix())
+	}
+}

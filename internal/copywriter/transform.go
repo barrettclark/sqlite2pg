@@ -119,6 +119,17 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			return nil, fmt.Errorf("unix_epoch_seconds: unexpected type %T", raw)
 		}
 		sec := math.Floor(f)
+		// int64(sec) is implementation-dependent per the Go spec for NaN,
+		// ±Inf, or any value outside int64's range (Copilot PR #98
+		// finding, same class as strip_commas' overflow above) — check
+		// explicitly rather than relying on it. -2^63/2^63 are both
+		// exactly representable in float64, so this bound comparison
+		// itself carries no precision loss. (time.Unix's own nsec
+		// parameter is documented to normalize a carry past 1e9 from the
+		// rounding just below, so that part needs no extra guard.)
+		if math.IsNaN(sec) || sec < -9223372036854775808.0 || sec >= 9223372036854775808.0 {
+			return nil, fmt.Errorf("unix_epoch_seconds: %v is out of range", f)
+		}
 		nanos := int64(math.Round((f - sec) * float64(time.Second)))
 		return time.Unix(int64(sec), nanos).UTC(), nil
 
