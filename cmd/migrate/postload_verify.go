@@ -9,6 +9,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"golang.org/x/term"
@@ -71,16 +72,22 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) bool {
 		return false
 	}
 
-	// A CI/automation environment often leaves stdin connected to an open
-	// pipe that's never written to and never closed — reading from it
-	// below would block forever. When in is a real *os.File and it's not
-	// attached to a terminal (the same term.IsTerminal check progress.go
-	// already uses for stdout), skip the prompt entirely and default to
-	// false (no verify), the same answer a bare Enter at an interactive
-	// prompt would produce. When in is NOT an *os.File (e.g. a
-	// bytes.Reader/strings.Reader test double), this check doesn't apply
-	// and the read-based behavior below proceeds unchanged.
+	// stdin is not an interactive terminal. It might carry a scripted
+	// answer (`echo y | migrate load ...`) or it might be an open pipe a
+	// CI runner never writes to and never closes — a plain blocking read
+	// on the latter hangs forever. Distinguish them with a short-deadline
+	// read: a scripted answer is already waiting and returns at once; a
+	// silent pipe hits the deadline and we fall back to "no" — but say so,
+	// so a pipeline that meant to answer this prompt isn't left wondering
+	// why verification stopped running (issue #66). When in is NOT an
+	// *os.File (e.g. a strings.Reader test double), none of this applies
+	// and the plain read below runs unchanged.
 	if f, ok := in.(*os.File); ok && !term.IsTerminal(int(f.Fd())) {
+		if answer, gotAnswer := readAnswerWithDeadline(f, 250*time.Millisecond); gotAnswer {
+			answer = strings.ToLower(strings.TrimSpace(answer))
+			return answer == "y" || answer == "yes"
+		}
+		fmt.Fprintln(out, "stdin is not a terminal and no answer was provided — skipping verification (pass --verify to run it, or --noverify to silence this)")
 		return false
 	}
 
@@ -88,6 +95,36 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) bool {
 	line, _ := bufio.NewReader(in).ReadString('\n')
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes"
+}
+
+// readAnswerWithDeadline reads the first line from r, giving up after d if
+// nothing arrives. determineVerify calls term.IsTerminal(f.Fd()) just
+// above, and File.Fd() puts the descriptor back into blocking mode and
+// detaches it from the runtime poller — so SetReadDeadline would silently
+// no-op here. Instead the read runs on its own goroutine and we race it
+// against a timer: a scripted answer (`echo y | migrate load ...`) or a
+// closed empty pipe returns at once; a CI runner's open, unwritten stdin
+// leaves that goroutine parked on Read until the process exits, which is
+// harmless (it's a one-shot, not a loop, and nothing else reads stdin
+// after this point).
+func readAnswerWithDeadline(r io.Reader, d time.Duration) (string, bool) {
+	type result struct {
+		line string
+		ok   bool
+	}
+	ch := make(chan result, 1)
+	go func() {
+		line, _ := bufio.NewReader(r).ReadString('\n')
+		line = strings.TrimRight(line, "\r\n")
+		ch <- result{line, line != ""}
+	}()
+
+	select {
+	case res := <-ch:
+		return res.line, res.ok
+	case <-time.After(d):
+		return "", false
+	}
 }
 
 // runPostLoadVerify is the inline verification path for `run --verify`/

@@ -150,27 +150,37 @@ func runRun(args []string) error {
 	// Verification runs against cfg/connCfg — already fully resolved
 	// in-memory — deliberately BEFORE cleanupConfigAfterLoad below, so it
 	// works correctly regardless of whether --keep-config was passed (see
-	// runPostLoadVerify's doc comment). Cleanup itself always runs
-	// afterward exactly as it did before these flags existed; a
-	// verification failure is reported but does not change what cleanup
-	// does.
+	// runPostLoadVerify's doc comment).
 	verifyErr := runPostLoadVerify(context.Background(), cfg, connCfg, verifyMode, os.Stdin, os.Stdout)
 	return runRunFinish(verifyErr, configPath, *keepConfig)
 }
 
-// runRunFinish is the tail of runRun's success path, extracted so it can be
-// exercised directly by tests that need to force a genuine cleanup failure
-// (e.g. an unremovable config path) alongside a genuine verification
-// failure. A post-load verification mismatch is a real data-integrity
-// finding — the load already succeeded and the bad/mismatched data is
-// already sitting in Postgres — so it must never be silently replaced by a
-// subsequent, usually far less important, cleanup error (e.g. "permission
-// denied" removing the generated config). errors.Join combines both when
-// both occur; when only one occurs (the common case) it is returned
-// unchanged, and when neither occurs the result is nil.
+// runRunFinish is the tail of runRun's success path (the load itself
+// already succeeded). It decides what becomes of the generated config and
+// state file based on whether post-load verification passed:
+//
+//   - Verification passed: cleanupConfigAfterLoad removes the generated
+//     config and its state file unless --keep-config was passed, exactly
+//     as `run` has always done on success.
+//
+//   - Verification FAILED (issue #62): the load succeeded but the data in
+//     Postgres doesn't match the source — a real data-integrity finding.
+//     The config records every type decision, transform and confidence
+//     that produced the suspect data, and the state file records which
+//     timestamped Postgres database it landed in and lets `migrate verify`
+//     be re-run for the full report. Keep both, for the same reason
+//     cleanupConfigAfterLoad keeps them after a load error, and tell the
+//     user where they are. The verify error is returned unchanged; since
+//     cleanup no longer runs on this path, there is no cleanup error that
+//     could mask it (the Copilot PR #59 concern), structurally.
 func runRunFinish(verifyErr error, configPath string, keepConfig bool) error {
-	cleanupErr := cleanupConfigAfterLoad(nil, configPath, keepConfig)
-	return errors.Join(verifyErr, cleanupErr)
+	if verifyErr != nil {
+		fmt.Fprintf(os.Stderr,
+			"keeping %s and %s.state.json so you can inspect the decisions and re-run `migrate verify`\n",
+			configPath, configPath)
+		return verifyErr
+	}
+	return cleanupConfigAfterLoad(nil, configPath, keepConfig)
 }
 
 // cleanupConfigAfterLoad decides what becomes of a `run`-generated config
@@ -346,6 +356,12 @@ func runLoad(args []string) error {
 	verifyMode, err := resolveVerifyMode(*verifyFlag, *noverifyFlag)
 	if err != nil {
 		return err
+	}
+	if *dryRun && (*verifyFlag || *noverifyFlag) {
+		// --dry-run never loads anything, so there is nothing for
+		// --verify/--noverify to act on; silently ignoring the flag (as
+		// this used to) hides the mistake (issue #66).
+		return errors.New("--dry-run cannot be combined with --verify or --noverify (a dry run never loads data, so there is nothing to verify)")
 	}
 	if fs.NArg() != 1 {
 		return errors.New("usage: migrate load [--pg url] [--dry-run] [--force] [--resume] [--threshold F] [--verify|--noverify] <config.migration.yaml>")

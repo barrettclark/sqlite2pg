@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"database/sql"
+	"encoding/json"
 	"fmt"
+	"io"
 	"math"
+	"math/big"
 	"sort"
 	"strconv"
 	"strings"
@@ -210,7 +213,7 @@ func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table,
 
 	pk := ddl.PrimaryKeyColumns(tc)
 	if len(pk) > 0 {
-		safe, err := primaryKeyOrderingIsSafe(sourceDB, table, pk)
+		safe, err := primaryKeyOrderingIsSafe(sourceDB, table, pk, tc)
 		if err != nil {
 			return result, err
 		}
@@ -221,15 +224,38 @@ func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table,
 	return verifyTableUnordered(ctx, sourceDB, pgConn, table, pgTable, tc, included, result)
 }
 
-// primaryKeyOrderingIsSafe reports whether every column in pk is
-// BINARY-collated in the SQLite source — i.e. whether verifyTableOrdered's
-// strategy of forcing Postgres's ORDER BY to COLLATE "C" to match SQLite's
-// default comparison is actually valid for this table. See VerifyTable's
-// doc comment for the full false-positive scenario this guards against: a
-// primary-key column declared COLLATE NOCASE or COLLATE RTRIM sorts
-// differently from BINARY on the SQLite side too, so forcing byte order on
-// the Postgres side wouldn't make the two sides agree.
-func primaryKeyOrderingIsSafe(sourceDB *sql.DB, table string, pk []string) (bool, error) {
+// primaryKeyOrderingIsSafe reports whether verifyTableOrdered's strategy —
+// walk both sides in ORDER BY <primary key> and compare row by position —
+// is actually valid for this table. It is only valid when the Postgres
+// side orders by the SAME values SQLite ordered by, which requires two
+// things of every PK column:
+//
+//   - BINARY collation in the SQLite source, so forcing Postgres's ORDER
+//     BY to COLLATE "C" (byte order) genuinely matches SQLite's default
+//     comparison. A column declared COLLATE NOCASE or RTRIM sorts
+//     differently on the SQLite side too, so byte order on the Postgres
+//     side wouldn't line the two up.
+//
+//   - No transform (issue #60). A transform changes the value between the
+//     two sides — a TEXT primary key of digit strings mapped to bigint via
+//     numeric_text_to_integer orders as '1','10','11','2',... in SQLite
+//     but 1,2,...,10,11 in Postgres; a TEXT UUID primary key mapped to the
+//     uuid type via uuid_format orders 36 ASCII bytes in SQLite and 16 raw
+//     bytes in Postgres. verifyTableOrdered would then compare genuinely
+//     different rows by position and mass-false-fail. A no-transform
+//     decision, by contrast, is only ever an order-preserving passthrough
+//     (text->text, integer->bigint, real->double precision), so those stay
+//     on the exact PK-ordered path.
+//
+// Any PK column failing either test drops the whole table to
+// verifyTableUnordered, the order-independent comparison.
+func primaryKeyOrderingIsSafe(sourceDB *sql.DB, table string, pk []string, tc config.TableConfig) (bool, error) {
+	for _, col := range pk {
+		if tc.Columns[col].Transform != "" {
+			return false, nil
+		}
+	}
+
 	collations, err := sqlitereader.ColumnCollations(sourceDB, table)
 	if err != nil {
 		return false, fmt.Errorf("reading column collations for %s: %w", table, err)
@@ -325,6 +351,7 @@ func verifyTableOrdered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn,
 			if err != nil {
 				return fmt.Errorf("re-applying transform for %s.%s at row %d: %w", table, name, rowIndex, err)
 			}
+			expected = expectedForCompare(tc.Columns[name].TargetType, expected)
 			actual := scanners[i].value()
 			if !valuesMatch(expected, actual) {
 				cr := result.ColumnResults[name]
@@ -373,7 +400,7 @@ func verifyTableUnordered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Con
 			if err != nil {
 				return fmt.Errorf("re-applying transform for %s.%s: %w", table, name, err)
 			}
-			expected[name] = append(expected[name], v)
+			expected[name] = append(expected[name], expectedForCompare(tc.Columns[name].TargetType, v))
 		}
 		return nil
 	})
@@ -403,6 +430,7 @@ func verifyTableUnordered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Con
 	}
 
 	actual := make(map[string][]any, len(included))
+	pgRowCount := 0
 	for pgRows.Next() {
 		if err := pgRows.Scan(scanDests...); err != nil {
 			return result, fmt.Errorf("scanning postgres row of %s: %w", pgTable, err)
@@ -410,9 +438,20 @@ func verifyTableUnordered(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Con
 		for i, name := range included {
 			actual[name] = append(actual[name], scanners[i].value())
 		}
+		pgRowCount++
 	}
 	if err := pgRows.Err(); err != nil {
 		return result, fmt.Errorf("reading Postgres table %s: %w", pgTable, err)
+	}
+
+	// VerifyTable already compared COUNT(*) on both sides, but this SELECT
+	// runs in a separate statement — a concurrent writer can change the
+	// Postgres row count in between. Surface that as an error (matching
+	// verifyTableOrdered's "ran out of rows ... concurrent write during
+	// verify?") rather than silently comparing a truncated multiset.
+	if pgRowCount != result.SourceRowCount {
+		return result, fmt.Errorf("table %s: %d source row(s) but %d in Postgres (concurrent write during verify?)",
+			pgTable, result.SourceRowCount, pgRowCount)
 	}
 
 	for _, name := range included {
@@ -457,8 +496,15 @@ func compareColumnUnordered(expected, actual []any) []ColumnMismatch {
 	sortedExpected := keyed(expected)
 	sortedActual := keyed(actual)
 
+	// Normally these are the same length — VerifyTable compares COUNT(*)
+	// on both sides before getting here. They can still differ if a
+	// concurrent writer changed the Postgres table between that COUNT and
+	// the SELECT that filled `actual`; walk only the overlap so a shrunk
+	// `actual` can't panic with index-out-of-range (issue #67).
+	// verifyTableUnordered turns the length discrepancy itself into a
+	// reported error, the same way verifyTableOrdered does.
 	var mismatches []ColumnMismatch
-	for i := range sortedExpected {
+	for i := 0; i < min(len(sortedExpected), len(sortedActual)); i++ {
 		if sortedExpected[i].key != sortedActual[i].key {
 			mismatches = append(mismatches, ColumnMismatch{
 				RowIndex: i, // position in the sorted comparison, not a source row — see ColumnMismatch's doc comment
@@ -470,60 +516,63 @@ func compareColumnUnordered(expected, actual []any) []ColumnMismatch {
 	return mismatches
 }
 
-// numericValue extracts a float64 representation of v when v is an int64 or
-// float64 — the two concrete Go types VerifyTable's transform/scan pipeline
-// ever produces for a numeric column — reporting false for anything else.
+// crossTypeNumericEqual reports whether a and b are numerically equal when
+// they are a MIX of int64 and float64 — the SQLite-dynamic-typing shape
+// this logic exists for (e.g. a NUMERIC column stored dynamically as an
+// integer, transformed straight through to a `double precision` target,
+// then scanned back from Postgres as float64). The same-type cases
+// (int64/int64, float64/float64) are exactNumericEqual's job and are
+// checked first by both callers.
 //
-// This is deliberately used ONLY for comparing/keying two values of
-// DIFFERENT concrete numeric Go types (one int64, one float64) — the actual
-// SQLite-dynamic-typing shape this logic exists for (e.g. a NUMERIC column
-// stored dynamically as an integer, transformed straight through to a
-// `double precision` target). float64 has exact integer precision only up
-// to 2^53 (~9x10^15); above that, two genuinely different int64 values can
-// round to the identical float64 (e.g. math.MaxInt64 and math.MaxInt64-1
-// both convert to the same float64), so this conversion must never be used
-// to compare two values that are ALREADY the same Go type — see
-// exactNumericEqual/numericSortKey, which valuesMatch and sortKeyFor both
-// check first, before ever reaching this cross-type fallback. This was
-// itself a real regression once (a silent false negative on large
-// bigint/rowid corruption, caught by /code-review on e6bc33e — the same
-// commit that introduced this pre-switch numeric check in the first
-// place), which is why the same-type/cross-type split is enforced
-// structurally here rather than left as an easy-to-forget convention.
+// An int64 is equal to a float64 only when the int64 is EXACTLY
+// representable in float64 (int64EqualsFloat64). float64 has exact integer
+// precision only up to 2^53 (~9x10^15); a larger int64 compared against
+// its rounded float64 is a value the load genuinely changed — the
+// `double precision` column stored the rounded number, not the original —
+// and verify must report that, not hide it behind a lossy conversion
+// (issue #65). Below 2^53 every int64 is exact, so the common
+// Julian-day / epoch / small-integer cross-type case still compares equal.
 //
-// This is the single shared numeric-comparison primitive both valuesMatch
-// and sortKeyFor build on for the cross-type case, specifically so they
-// can't silently drift apart again the way they already have three times:
-// once in the original int64-vs-float64 type-tag bug, again in 9de206a's
-// partial fix, which made sortKeyFor mirror valuesMatch's own flawed
-// fmt.Sprintf("%v", ...) fallback — a fallback that breaks on large numbers
-// because Go's default float formatting switches to scientific notation
-// above a certain magnitude (fmt.Sprintf("%v", float64(2454348)) ==
-// "2.454348e+06") while the int64 side stays plain decimal ("2454348") —
-// and again in e6bc33e's fix for that, which fixed the scientific-notation
-// case but introduced the float64-precision-loss regression this comment
-// now documents. Both call sites route through this same numeric
-// conversion for the cross-type case, and through exactNumericEqual/
-// numericSortKey for the same-type case, instead of duplicating either
-// piece of logic.
-func numericValue(v any) (float64, bool) {
-	switch t := v.(type) {
+// This is deliberately kept in lockstep with numericSortKey's own
+// int64/float64 keying rule (same 2^53 / int64-range test), which is what
+// keeps sortKeyFor's "two values valuesMatch considers equal always
+// produce the same key" invariant true — the invariant that has broken
+// three times before in this exact spot (the original int64-vs-float64
+// type-tag bug, 9de206a's fmt.Sprintf("%v") scientific-notation fallback,
+// and e6bc33e's float64-precision regression).
+func crossTypeNumericEqual(a, b any) (equal, ok bool) {
+	switch av := a.(type) {
 	case int64:
-		return float64(t), true
+		if bv, isFloat := b.(float64); isFloat {
+			return int64EqualsFloat64(av, bv), true
+		}
 	case float64:
-		return t, true
+		if bv, isInt := b.(int64); isInt {
+			return int64EqualsFloat64(bv, av), true
+		}
 	}
-	return 0, false
+	return false, false
+}
+
+// int64EqualsFloat64 reports whether n and f denote the same number with
+// no precision lost either way: f must be whole, must fall within the
+// range where float64 can hold an int64 value at all (the same bounds
+// numericSortKey uses), and must convert back to n exactly.
+func int64EqualsFloat64(n int64, f float64) bool {
+	if f != math.Trunc(f) || f < minInt64AsFloat64 || f >= int64UpperBoundAsFloat {
+		return false
+	}
+	return int64(f) == n && float64(n) == f
 }
 
 // exactNumericEqual reports whether expected and actual are equal, when
 // both are the SAME concrete numeric Go type (int64-vs-int64 or
 // float64-vs-float64) — compared directly, with no float64 round-trip at
 // all, so two large int64 values are never at risk of colliding the way
-// they would through numericValue's conversion. ok is false when expected
+// they would through a float64 conversion. ok is false when expected
 // and actual aren't both int64 or both float64 (including when they're
-// numeric but of DIFFERENT types — that case is numericValue's job, via
-// valuesMatch's caller-side fallback).
+// numeric but of DIFFERENT types — that case is crossTypeNumericEqual's
+// job, via valuesMatch's caller-side fallback).
 func exactNumericEqual(expected, actual any) (equal, ok bool) {
 	switch e := expected.(type) {
 	case int64:
@@ -610,14 +659,18 @@ func numericSortKey(v any) (string, bool) {
 // int64 on one side against a float64 on the other (e.g. a SQLite NUMERIC
 // column stored dynamically as an integer, transformed straight through to
 // a `double precision` target) as equal whenever they represent the same
-// number (see numericValue/valuesMatch). Tagging by concrete type here, as
-// this used to, gave int64(100) and float64(100) different key prefixes and
-// so different sorted positions — a false-positive mismatch despite
-// valuesMatch itself considering them equal. Both cases now key off
-// numericValue's shared float64 conversion, rendered via numericKeyText
-// (fixed-point decimal, never scientific notation — see its doc comment
-// for why: a naive fmt.Sprintf("%v", ...) text key, tried here once
-// already in 9de206a, broke on large numbers for exactly this reason).
+// number (see crossTypeNumericEqual/valuesMatch). Tagging by concrete type
+// here, as this used to, gave int64(100) and float64(100) different key
+// prefixes and so different sorted positions — a false-positive mismatch
+// despite valuesMatch itself considering them equal. numericSortKey now
+// keys an int64 by its exact decimal text and a float64 by numericKeyText
+// (fixed-point decimal, never scientific notation), and a float64 that is
+// a whole number inside int64's exact range by that same integer text — so
+// an int64 and an equal, exactly-representable float64 land on the same
+// key, matching exactly the pairs crossTypeNumericEqual calls equal. An
+// int64 past 2^53 keeps its own exact key and so sorts apart from its
+// rounded float64, which is correct: those are different numbers and
+// crossTypeNumericEqual no longer conflates them (issue #65).
 // This keeps sortKeyFor's invariant intact: it still separates genuinely
 // different numeric values (int64(100) vs int64(200), or float64(100) vs
 // float64(100.5)) exactly as before, since each distinct value still
@@ -628,7 +681,11 @@ func sortKeyFor(v any) string {
 	}
 	switch t := v.(type) {
 	case time.Time:
-		return fmt.Sprintf("\x01time:%d", t.UTC().UnixNano())
+		// Keyed at microsecond resolution to match valuesMatch's time.Time
+		// case — Postgres timestamps can't hold finer than that, so two
+		// times that differ only in sub-µs nanoseconds are "equal" here and
+		// must sort to the same key (issue #63).
+		return fmt.Sprintf("\x01time:%d", t.UTC().Round(time.Microsecond).UnixNano())
 	case pgtype.UUID:
 		return fmt.Sprintf("\x02uuid:%v:%x", t.Valid, t.Bytes)
 	case []pgtype.UUID:
@@ -757,10 +814,114 @@ func (s *pgColumnScanner) value() any {
 		if !d.Valid {
 			return nil
 		}
+		if s.targetType == "jsonb" {
+			// Postgres canonicalizes jsonb on storage (sorted keys,
+			// normalized whitespace/numbers) while the SQLite side, via
+			// validate-only text_to_jsonb, keeps the row's original
+			// spelling. Route both through the same Go encoder so the
+			// comparison is semantic, not string-for-string (issue #61).
+			return canonicalJSON(d.String)
+		}
 		return d.String
 	default:
 		return nil
 	}
+}
+
+// canonicalJSON reduces s to one deterministic form — object keys sorted,
+// whitespace removed, every number rendered as its exact rational value
+// (big.Rat) — or returns s unchanged if it isn't valid JSON. Both sides of
+// a jsonb column comparison pass through this (see the *pgtype.Text case
+// in pgColumnScanner.value and expectedForCompare, issue #61), so the
+// comparison is semantic: 1e3 == 1000, 123.0 == 123, key order doesn't
+// matter — while two distinct integers stay distinct even above float64's
+// 2^53 exact-integer range (Copilot PR #72), since numbers are decoded via
+// json.Decoder.UseNumber and never routed through float64.
+func canonicalJSON(s string) string {
+	dec := json.NewDecoder(strings.NewReader(s))
+	dec.UseNumber()
+	var v any
+	if err := dec.Decode(&v); err != nil {
+		return s
+	}
+	// json.Unmarshal rejects trailing content after a top-level value
+	// ("1 2", "{}x"); mirror that so canonicalJSON only ever transforms a
+	// genuine single JSON document and passes anything else through
+	// unchanged. After a complete value the decoder's next Token is
+	// io.EOF (whitespace aside) iff nothing else follows.
+	if _, err := dec.Token(); err != io.EOF {
+		return s
+	}
+	var b strings.Builder
+	writeCanonicalJSON(&b, v)
+	return b.String()
+}
+
+// writeCanonicalJSON serializes v (a tree of map[string]any / []any /
+// json.Number / string / bool / nil, as produced by a UseNumber decoder)
+// into b in canonicalJSON's deterministic form. It is only ever a sort/
+// comparison key, never re-parsed as JSON, so numbers are written as
+// big.Rat.RatString ("1000", "3/2") — exact and format-independent — with
+// a leading marker so a numeric token can't be confused with a string.
+func writeCanonicalJSON(b *strings.Builder, v any) {
+	switch t := v.(type) {
+	case map[string]any:
+		keys := make([]string, 0, len(t))
+		for k := range t {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		b.WriteByte('{')
+		for i, k := range keys {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			b.WriteString(strconv.Quote(k))
+			b.WriteByte(':')
+			writeCanonicalJSON(b, t[k])
+		}
+		b.WriteByte('}')
+	case []any:
+		b.WriteByte('[')
+		for i, e := range t {
+			if i > 0 {
+				b.WriteByte(',')
+			}
+			writeCanonicalJSON(b, e)
+		}
+		b.WriteByte(']')
+	case json.Number:
+		if r, ok := new(big.Rat).SetString(string(t)); ok {
+			b.WriteString("#" + r.RatString())
+		} else {
+			b.WriteString("#" + string(t))
+		}
+	case string:
+		b.WriteString(strconv.Quote(t))
+	case bool:
+		if t {
+			b.WriteString("true")
+		} else {
+			b.WriteString("false")
+		}
+	case nil:
+		b.WriteString("null")
+	default:
+		fmt.Fprintf(b, "%v", t)
+	}
+}
+
+// expectedForCompare normalizes copywriter.Transform's output for a column
+// so it can be compared against what pgColumnScanner.value read back. Today
+// this only matters for jsonb (see canonicalJSON); every other target type
+// is already directly comparable.
+func expectedForCompare(targetType string, v any) any {
+	if targetType == "jsonb" {
+		if s, ok := v.(string); ok {
+			return canonicalJSON(s)
+		}
+	}
+	return v
 }
 
 // valuesMatch reports whether expected (copywriter.Transform's output) and
@@ -777,12 +938,11 @@ func (s *pgColumnScanner) value() any {
 //
 // Numeric comparison (int64 and/or float64 on either side) is handled
 // before the typed switch, in two tiers — see exactNumericEqual/
-// numericValue's doc comments for the full rationale:
+// crossTypeNumericEqual's doc comments for the full rationale:
 //
 //  1. Same concrete type on both sides (int64-vs-int64 or
 //     float64-vs-float64): compared directly via exactNumericEqual, with
-//     no float64 round-trip at all. This must never go through
-//     numericValue's float64 conversion — float64 only has exact integer
+//     no float64 round-trip at all — float64 only has exact integer
 //     precision up to 2^53 (~9x10^15), so two distinct int64 values above
 //     that (e.g. math.MaxInt64 and math.MaxInt64-1) can round to the
 //     identical float64 and would otherwise be reported as equal, a
@@ -790,15 +950,14 @@ func (s *pgColumnScanner) value() any {
 //     a /code-review pass caught in e6bc33e, the commit that introduced
 //     this pre-switch numeric check in the first place).
 //  2. Different concrete types (one int64, one float64): compared via
-//     numericValue's float64 conversion. A SQLite NUMERIC column stored
-//     dynamically as an integer, transformed straight through to a
-//     `double precision` target, commonly produces exactly this
-//     int64-vs-float64 shape, and the two values must compare equal
-//     whenever they represent the same number — including large numbers
-//     (e.g. Julian-day values like 2454348), where a text-formatting
-//     comparison would incorrectly disagree because Go's default float
-//     formatting switches to scientific notation above a certain
-//     magnitude while int64 formatting never does.
+//     crossTypeNumericEqual, which treats them as equal only when the
+//     int64 is exactly representable in float64. A SQLite NUMERIC column
+//     stored dynamically as an integer, transformed straight through to a
+//     `double precision` target, produces this int64-vs-float64 shape;
+//     when the number fits float64's exact range (Julian-day values,
+//     epochs, ordinary integers) the two compare equal, but an int64 past
+//     2^53 versus its rounded float64 is a genuine precision loss the load
+//     introduced and is reported as a mismatch (issue #65).
 func valuesMatch(expected, actual any) bool {
 	if expected == nil || actual == nil {
 		return expected == nil && actual == nil
@@ -808,16 +967,20 @@ func valuesMatch(expected, actual any) bool {
 		return equal
 	}
 
-	if en, eok := numericValue(expected); eok {
-		if an, aok := numericValue(actual); aok {
-			return en == an
-		}
+	if equal, ok := crossTypeNumericEqual(expected, actual); ok {
+		return equal
 	}
 
 	switch e := expected.(type) {
 	case time.Time:
 		if a, ok := actual.(time.Time); ok {
-			return e.Equal(a)
+			// Postgres timestamp/timestamptz has microsecond resolution and
+			// rounds sub-µs input; a transform like excel_serial_to_timestamptz
+			// (or iso8601_to_timestamptz on RFC3339Nano input) produces a
+			// nanosecond-precise time.Time that verify then recomputes.
+			// Compare both sides at what Postgres can actually store
+			// (issue #63).
+			return e.Round(time.Microsecond).Equal(a.Round(time.Microsecond))
 		}
 	case pgtype.UUID:
 		if a, ok := actual.(pgtype.UUID); ok {
@@ -856,6 +1019,7 @@ func valuesMatch(expected, actual any) bool {
 	// representations here is a deliberate last resort, not the primary
 	// comparison strategy: every type VerifyTable's own transform/scan
 	// pipeline actually produces is covered by an explicit case above (or,
-	// for numeric types, the numericValue check above the switch).
+	// for numeric types, the exactNumericEqual / crossTypeNumericEqual
+	// checks above the switch).
 	return fmt.Sprintf("%v", expected) == fmt.Sprintf("%v", actual)
 }
