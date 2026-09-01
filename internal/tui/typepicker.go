@@ -141,6 +141,11 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 	m.buildGrid(m.selectedTable)
 	m.grid.Select(0, selectedColumn)
 	m.gridSelectionChanged(0, selectedColumn)
+	// Keeps the table list's needs-review/auto-approved counts and title
+	// in sync with the decision just applied (issue #93's audit, finding
+	// L7) — without this, they showed whatever they were when the TUI
+	// started, for the rest of the session.
+	m.buildTableList()
 	m.closePicker()
 }
 

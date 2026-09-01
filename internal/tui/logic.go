@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -80,7 +81,23 @@ func timeFromTransform(transform string, raw any) (time.Time, bool) {
 // running the wrong one would hand onTypeSelected a transform that
 // doesn't match the type the human actually picked.
 func dateTransformPreview(value, targetType string) (time.Time, string, bool) {
-	if n, err := strconv.ParseInt(value, 10, 64); err == nil && targetType == "timestamptz" {
+	// Parsed via ParseFloat, not ParseInt, even though every epoch bound
+	// below is a whole number: review.formatSampleValue renders a
+	// float64 (a REAL-affinity epoch column, entirely plausible — e.g.
+	// bikes.last_reported stored as REAL) through %v, which switches to
+	// scientific notation for anything this large
+	// (fmt.Sprintf("%v", float64(1712345678)) == "1.712345678e+09").
+	// strconv.ParseInt doesn't understand that form at all and would
+	// reject it outright, silently skipping every epoch check below for
+	// exactly the large-magnitude values they exist to catch (issue #92's
+	// audit, finding L6). ParseFloat parses both plain-integer and
+	// scientific-notation text; f == math.Trunc(f) keeps this from
+	// treating a genuinely fractional value as an epoch integer, the same
+	// thing ParseInt's own strictness did. Every epoch bound here is far
+	// below float64's 2^53 exact-integer range, so int64(f) loses no
+	// precision.
+	if f, err := strconv.ParseFloat(value, 64); err == nil && targetType == "timestamptz" && f == math.Trunc(f) {
+		n := int64(f)
 		switch {
 		case n >= epochSecondsMin && n <= epochSecondsMax:
 			if tm, ok := timeFromTransform("unix_epoch_seconds", n); ok {
@@ -176,11 +193,15 @@ func columnSampleValues(tv review.TableView, columnName string) []string {
 // for any nullable column.
 //
 // The returned transform is the transform name (copywriter.Transform's
-// vocabulary) that produced this preview, or "" when targetType needs no
-// transform at all — a directly-compatible raw value for a plain numeric,
-// boolean, text, jsonb, or bytea column, which pgx's COPY protocol accepts
-// unconverted. onTypeSelected (issue #41) attaches this transform to the
-// decision it applies: a type the picker only offers BECAUSE some
+// vocabulary) that produced this preview. It's "" only for text/bytea and
+// the plain float target types (real/double precision/numeric), whose raw
+// value is directly compatible with pgx's COPY protocol unconverted;
+// integer/bigint/smallint, boolean, and jsonb each carry a real transform
+// too now (numeric_text_to_integer, int_to_bool, text_to_jsonb — issue
+// #80's audit, finding M1), since a raw int64/string reaching pgx
+// unconverted for those types fails at COPY time despite superficially
+// looking "directly compatible." onTypeSelected (issue #41) attaches this
+// transform to the decision it applies: a type the picker only offers BECAUSE some
 // transform makes it work (date/timestamptz via dateTransformPreview,
 // uuid[] via uuid_list_format) must carry that same transform forward when
 // selected, or the real COPY fails on the untransformed raw value.
@@ -190,11 +211,28 @@ func previewValueForType(value, targetType string) (display, transform string, v
 	}
 	switch targetType {
 	case "integer", "bigint", "smallint":
-		f, err := strconv.ParseFloat(value, 64)
+		// Routed through the real numeric_text_to_integer transform
+		// (issue #80's audit, finding M1/M2) rather than
+		// strconv.ParseFloat + int64(f): that used to silently corrupt
+		// any value beyond float64's ~15-17 significant digits (the same
+		// bug numeric_text_to_integer itself was fixed for, issue #15),
+		// and it accepted a genuinely fractional value like "3.7" as
+		// "valid, previews as 3" — a truncation the real load never
+		// performs, since with no transform attached the raw value would
+		// go to pgx unconverted. Any type this validates for must always
+		// carry the transform that actually makes it work, or a human
+		// selecting it here breaks the real COPY.
+		result, err := copywriter.Transform("numeric_text_to_integer", value)
 		if err != nil {
 			return value, "", false
 		}
-		n := int64(f)
+		if result == nil {
+			// numeric_text_to_integer treats "" as "no value on file"
+			// (matching the numeric_text heuristic's own leniency), same
+			// as a NULL sample.
+			return "NULL", "numeric_text_to_integer", true
+		}
+		n := result.(int64)
 		if !copywriter.FitsRange(n, targetType) {
 			// e.g. 70000 parses fine as a number but is outside
 			// smallint's (int2) range — offering smallint here would
@@ -202,7 +240,7 @@ func previewValueForType(value, targetType string) (display, transform string, v
 			// with "value out of range for type smallint" (issue #27).
 			return value, "", false
 		}
-		return strconv.FormatInt(n, 10), "", true
+		return strconv.FormatInt(n, 10), "numeric_text_to_integer", true
 	case "real", "double precision", "numeric":
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil {
@@ -214,11 +252,27 @@ func previewValueForType(value, targetType string) (display, transform string, v
 		}
 		return formatted, "", true
 	case "boolean":
-		switch strings.ToLower(value) {
-		case "0", "1", "true", "false", "t", "f":
-			return value, "", true
+		// Routed through the real int_to_bool transform (issue #80's
+		// audit, finding M1): picking boolean on a column whose current
+		// target isn't already boolean used to attach no transform at
+		// all, so pgx would try to binary-encode the raw int64/string
+		// straight into bool and fail — reachable on the single most
+		// common review action this tool exists for (converting a 0/1
+		// integer column to boolean). value here is always a Go string
+		// (this preview only ever has a display string to work with), so
+		// this always hits int_to_bool's string branch, which only
+		// recognizes "0"/"1" literally — narrower than the "true"/"t"/"f"
+		// this preview used to accept for display purposes only; those
+		// were never actually convertible before either. (int_to_bool
+		// itself also accepts numeric int64/int/float64 input via a
+		// separate branch — any nonzero value is true — but that's for
+		// the real raw SQLite value at load time, never reachable from
+		// this string-only preview.)
+		result, err := copywriter.Transform("int_to_bool", value)
+		if err != nil {
+			return value, "", false
 		}
-		return value, "", false
+		return strconv.FormatBool(result.(bool)), "int_to_bool", true
 	case "date", "timestamptz":
 		tm, usedTransform, ok := dateTransformPreview(value, targetType)
 		if !ok {
@@ -259,12 +313,24 @@ func previewValueForType(value, targetType string) (display, transform string, v
 		// the raw NUL-joined string never satisfies pgx's array codec on
 		// its own, the same reason uuid_format is always required above.
 		return value, "uuid_list_format", true
+	case "jsonb":
+		// Previously fell into the default: arm below, so any string —
+		// including plain prose — validated as jsonb with no check at
+		// all; COPY would then fail with "invalid input syntax for type
+		// json" (issue #80's audit, finding M1). text_to_jsonb's own
+		// json.Valid check is the real validation the load path runs, so
+		// route the preview through it and attach it as the transform —
+		// unlike the numeric/boolean cases above, text_to_jsonb doesn't
+		// reshape the value pgx receives, but the validation still needs
+		// to happen at COPY time, exactly like it does for a
+		// heuristic-suggested jsonb column (issue #22).
+		if _, err := copywriter.Transform("text_to_jsonb", value); err != nil {
+			return value, "", false
+		}
+		return value, "text_to_jsonb", true
 	default:
-		// text, jsonb, bytea: any string is valid, displayed as-is, and
-		// passed through unconverted — jsonb's own transform
-		// (text_to_jsonb) only adds upfront validation, it doesn't
-		// reshape the value pgx receives, so no transform is needed here
-		// either.
+		// text, bytea: any string is valid, displayed as-is, and passed
+		// through unconverted.
 		return value, "", true
 	}
 }
