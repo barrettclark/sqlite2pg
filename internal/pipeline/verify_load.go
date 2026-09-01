@@ -210,7 +210,7 @@ func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table,
 
 	pk := ddl.PrimaryKeyColumns(tc)
 	if len(pk) > 0 {
-		safe, err := primaryKeyOrderingIsSafe(sourceDB, table, pk)
+		safe, err := primaryKeyOrderingIsSafe(sourceDB, table, pk, tc)
 		if err != nil {
 			return result, err
 		}
@@ -221,15 +221,38 @@ func VerifyTable(ctx context.Context, sourceDB *sql.DB, pgConn *pgx.Conn, table,
 	return verifyTableUnordered(ctx, sourceDB, pgConn, table, pgTable, tc, included, result)
 }
 
-// primaryKeyOrderingIsSafe reports whether every column in pk is
-// BINARY-collated in the SQLite source — i.e. whether verifyTableOrdered's
-// strategy of forcing Postgres's ORDER BY to COLLATE "C" to match SQLite's
-// default comparison is actually valid for this table. See VerifyTable's
-// doc comment for the full false-positive scenario this guards against: a
-// primary-key column declared COLLATE NOCASE or COLLATE RTRIM sorts
-// differently from BINARY on the SQLite side too, so forcing byte order on
-// the Postgres side wouldn't make the two sides agree.
-func primaryKeyOrderingIsSafe(sourceDB *sql.DB, table string, pk []string) (bool, error) {
+// primaryKeyOrderingIsSafe reports whether verifyTableOrdered's strategy —
+// walk both sides in ORDER BY <primary key> and compare row by position —
+// is actually valid for this table. It is only valid when the Postgres
+// side orders by the SAME values SQLite ordered by, which requires two
+// things of every PK column:
+//
+//   - BINARY collation in the SQLite source, so forcing Postgres's ORDER
+//     BY to COLLATE "C" (byte order) genuinely matches SQLite's default
+//     comparison. A column declared COLLATE NOCASE or RTRIM sorts
+//     differently on the SQLite side too, so byte order on the Postgres
+//     side wouldn't line the two up.
+//
+//   - No transform (issue #60). A transform changes the value between the
+//     two sides — a TEXT primary key of digit strings mapped to bigint via
+//     numeric_text_to_integer orders as '1','10','11','2',... in SQLite
+//     but 1,2,...,10,11 in Postgres; a TEXT UUID primary key mapped to the
+//     uuid type via uuid_format orders 36 ASCII bytes in SQLite and 16 raw
+//     bytes in Postgres. verifyTableOrdered would then compare genuinely
+//     different rows by position and mass-false-fail. A no-transform
+//     decision, by contrast, is only ever an order-preserving passthrough
+//     (text->text, integer->bigint, real->double precision), so those stay
+//     on the exact PK-ordered path.
+//
+// Any PK column failing either test drops the whole table to
+// verifyTableUnordered, the order-independent comparison.
+func primaryKeyOrderingIsSafe(sourceDB *sql.DB, table string, pk []string, tc config.TableConfig) (bool, error) {
+	for _, col := range pk {
+		if tc.Columns[col].Transform != "" {
+			return false, nil
+		}
+	}
+
 	collations, err := sqlitereader.ColumnCollations(sourceDB, table)
 	if err != nil {
 		return false, fmt.Errorf("reading column collations for %s: %w", table, err)
