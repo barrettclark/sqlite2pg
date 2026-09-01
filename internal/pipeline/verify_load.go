@@ -270,14 +270,17 @@ func primaryKeyOrderingIsSafe(sourceDB *sql.DB, table string, pk []string, tc co
 
 // isTextTargetType reports whether targetType (a config.ColumnConfig.
 // TargetType value) is a Postgres type that supports COLLATE — i.e.
-// text-shaped. Deliberately narrow: "text" (from review.TypeOptions) and
-// "varchar(N)" (the form varcharFinding actually emits — see profile.go —
-// bare "varchar" never occurs). jsonb, though it also falls back to
+// text-shaped. Deliberately narrow: "text" (from review.TypeOptions),
+// "varchar(N)" (the form varcharFinding actually emits — see profile.go),
+// and bare "varchar" — not itself reachable through review.TypeOptions or
+// varcharFinding today, but a valid, collatable Postgres type a
+// hand-edited config (or a config carried over from before varcharFinding
+// existed) could still set. jsonb, though it also falls back to
 // pgtype.Text for scanning purposes (see newPgColumnScanner), is not a
 // collatable type in Postgres and applying COLLATE to a jsonb column
 // errors, so it must not match here.
 func isTextTargetType(targetType string) bool {
-	if targetType == "text" {
+	if targetType == "text" || targetType == "varchar" {
 		return true
 	}
 	return strings.HasPrefix(targetType, "varchar(")

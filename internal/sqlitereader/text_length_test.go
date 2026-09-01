@@ -31,6 +31,30 @@ func TestMaxTextLength_NotOKWhenEveryValueIsNull(t *testing.T) {
 	}
 }
 
+func TestMaxTextLength_CountsCharactersNotBytesForABlobRow(t *testing.T) {
+	// A BLOB row in a column otherwise holding TEXT (SQLite's dynamic
+	// typing permits this — the same shape issue #83 found) must still be
+	// measured in characters, matching what Postgres's varchar(N) would
+	// actually enforce, not in raw bytes (Copilot PR #96 finding). Without
+	// CAST(... AS TEXT), LENGTH() on this BLOB returns 3 (its byte count);
+	// with it, 1 (its single-character content) — the value the test
+	// checks for.
+	db := openTestDB(t, `CREATE TABLE t (v);`)
+	// x'e282ac' is the 3-byte UTF-8 encoding of '€' — 1 character.
+	db.Exec(`INSERT INTO t (v) VALUES (x'e282ac')`)
+
+	max, ok, err := MaxTextLength(db, "t", "v")
+	if err != nil {
+		t.Fatalf("MaxTextLength: %v", err)
+	}
+	if !ok {
+		t.Fatal("expected ok=true")
+	}
+	if max != 1 {
+		t.Errorf("expected max=1 (character count of the BLOB row, not its 3-byte length), got %d", max)
+	}
+}
+
 func TestMaxTextLength_CountsCharactersNotBytesForMultibyteText(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE t (name TEXT);`)
 	// 5 multi-byte characters — Postgres's varchar(N) counts characters,
