@@ -97,18 +97,32 @@ func centered(p tview.Primitive, width, height int) tview.Primitive {
 // all, or some transform actually converts the column's sample data into
 // it (dateTransformPreview for date/timestamptz, uuid_format/
 // uuid_list_format for uuid/uuid[] — issues #27, #12). Re-deriving that
-// same transform here via previewValueForType (issue #41) means selecting
-// one of those offered types attaches the transform that made it valid,
-// instead of discarding it and leaving a raw value the real COPY can't
-// write into the new column type.
+// same transform here (issue #41) means selecting one of those offered
+// types attaches the transform that made it valid, instead of discarding
+// it and leaving a raw value the real COPY can't write into the new
+// column type.
+//
+// The transform is derived across EVERY non-NULL sample, not just the
+// first (issue #64): a date/timestamptz column whose rows legitimately
+// need different transforms (some ISO 8601, some YYYYMMDD) can't be
+// expressed by a single ColumnConfig.Transform, so the pick is refused
+// rather than persisting one row's transform and breaking the COPY on all
+// the others.
 func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortcut rune) {
 	tv := findTable(m.summary, m.selectedTable)
 	col := columnByName(tv, m.pickerColumn)
 	transform := ""
 	if typeName == col.TargetType {
 		transform = col.Transform
-	} else if sample := firstNonNullValue(columnSampleValues(tv, m.pickerColumn)); sample != "" {
-		_, transform, _ = previewValueForType(sample, typeName)
+	} else {
+		t, ok := commonTransformForType(columnSampleValues(tv, m.pickerColumn), typeName)
+		if !ok {
+			m.closePicker()
+			m.showError(fmt.Sprintf("%s: sample rows need different %s transforms (e.g. ISO 8601 and YYYYMMDD dates); a single transform can't cover them — leave the column as %s or split it",
+				m.pickerColumn, typeName, col.TargetType))
+			return
+		}
+		transform = t
 	}
 
 	err := m.st.ApplyDecision(m.selectedTable, m.pickerColumn, review.DecisionRequest{

@@ -282,6 +282,50 @@ func firstNonNullValue(values []string) string {
 	return ""
 }
 
+// commonTransformForType derives the transform previewValueForType would
+// attach for typeName across EVERY non-NULL sample, returning it only if
+// they all agree (issue #64).
+//
+// validTypesForColumn offers date/timestamptz whenever every sample
+// converts to it — but different rows can need different transforms
+// ("2021-06-01" via iso8601_to_date, "20210704" via yyyymmdd_to_date;
+// "1712345678" via unix_epoch_seconds, "40000" via
+// excel_serial_to_timestamptz). config.ColumnConfig.Transform is a single
+// value, so onTypeSelected can't honour a per-row choice; deriving it from
+// one sample (the old firstNonNullValue behaviour) attached a transform
+// that then failed the real COPY on every row of the other format.
+//
+// ok is false when the non-NULL samples disagree — the caller should
+// refuse the type rather than persist a config guaranteed to break the
+// load. When ok is true, transform is the shared one (or "" when no
+// non-NULL sample needs a transform, e.g. text, or the column is all
+// NULL). Non-date types are unaffected: previewValueForType returns a
+// fixed transform per type ("" for text/integer, uuid_format for uuid),
+// so those always agree.
+func commonTransformForType(values []string, typeName string) (transform string, ok bool) {
+	seen := false
+	for _, v := range values {
+		if v == "NULL" || v == "" {
+			continue
+		}
+		_, t, valid := previewValueForType(v, typeName)
+		if !valid {
+			// The picker only offers a type when every sample validates;
+			// if one doesn't here, skip it rather than block on a state
+			// that shouldn't arise.
+			continue
+		}
+		if !seen {
+			transform, seen = t, true
+			continue
+		}
+		if t != transform {
+			return "", false
+		}
+	}
+	return transform, true
+}
+
 // typeShortcuts maps every review.TypeOptions entry to a distinct
 // mnemonic rune for the type picker's single-key selection — pressing the
 // rune jumps straight to that type without arrowing through the list
