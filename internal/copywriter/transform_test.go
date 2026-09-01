@@ -691,3 +691,33 @@ func TestTransform_ExcelSerialToTimestamptz_OutOfRangeSerialDoesNotOverflow(t *t
 		t.Errorf("expected a wildly out-of-range year (no Duration overflow/wraparound), got %v", tm)
 	}
 }
+
+// TestTransform_NullifSentinels_CommaFormattedDecimal is issue #85's
+// (audit finding M6) regression: SentinelNull, the heuristic that assigns
+// this transform, suggests "double precision" whenever a sampled value has
+// a decimal component (comma-formatted or plain) — a real row like
+// "1,234.56" is expected input here, but used to fail ParseInt and fall
+// through to a raw string pgx can't binary-encode into float8.
+func TestTransform_NullifSentinels_CommaFormattedDecimal(t *testing.T) {
+	got, err := Transform("nullif_sentinels", "1,234.56")
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	f, ok := got.(float64)
+	if !ok {
+		t.Fatalf("expected float64, got %T (%v)", got, got)
+	}
+	if f != 1234.56 {
+		t.Errorf("expected 1234.56, got %v", f)
+	}
+}
+
+// TestTransform_NullifSentinels_RejectsGenuinelyUnparseableValues confirms
+// the fix doesn't just widen the pass-through: a value that's neither a
+// recognized sentinel token nor numeric in any form must still be an
+// error, not a silent string pass-through into a numeric column.
+func TestTransform_NullifSentinels_RejectsGenuinelyUnparseableValues(t *testing.T) {
+	if _, err := Transform("nullif_sentinels", "not-a-number"); err == nil {
+		t.Error("expected an error for a value that's neither a sentinel token nor numeric")
+	}
+}

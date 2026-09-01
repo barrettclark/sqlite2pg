@@ -343,17 +343,29 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return list, nil
 
 	case "nullif_sentinels":
-		if s, ok := raw.(string); ok {
-			if sentinelTokens[strings.ToLower(s)] {
-				return nil, nil
-			}
-			cleaned := strings.ReplaceAll(s, ",", "")
-			if n, err := strconv.ParseInt(cleaned, 10, 64); err == nil {
-				return n, nil
-			}
+		s, ok := raw.(string)
+		if !ok {
 			return raw, nil
 		}
-		return raw, nil
+		if sentinelTokens[strings.ToLower(s)] {
+			return nil, nil
+		}
+		cleaned := strings.ReplaceAll(s, ",", "")
+		if n, err := strconv.ParseInt(cleaned, 10, 64); err == nil {
+			return n, nil
+		}
+		// SentinelNull (the paired heuristic) suggests "double precision"
+		// whenever a sampled value has a decimal component
+		// (commaNumberPattern/plainNumberPattern with a "."), so a value
+		// like "1,234.56" is a real, expected input here — ParseInt alone
+		// rejects it, and `return raw, nil` used to hand the resulting Go
+		// string straight to pgx's float8 codec, which can't binary-encode
+		// it (issue #85's audit, finding M6). Try float64 before falling
+		// back.
+		if f, err := strconv.ParseFloat(cleaned, 64); err == nil {
+			return f, nil
+		}
+		return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel token and not numeric", s)
 
 	case "nullif_empty":
 		// No heuristic currently assigns this transform (issue #22
