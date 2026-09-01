@@ -8,7 +8,13 @@ import (
 )
 
 // buildTableList (re)builds m.tableList from m.summary: one row per table,
-// showing its needs-review/auto-approved counts.
+// showing its needs-review/auto-approved counts. Called again after a
+// decision changes m.summary (issue #93's audit, finding L7) — onTypeSelected
+// used to only rebuild the grid, leaving this list's per-table
+// needs-review/auto-approved counts and title stale for the rest of the
+// session. Preserves the current selection across a rebuild (rather than
+// resetting to the top item) since m.summary.Tables' order is stable
+// between calls.
 func (m *model) buildTableList() {
 	list := m.tableList
 	if list == nil {
@@ -18,7 +24,13 @@ func (m *model) buildTableList() {
 		list.SetInputCapture(m.tableListKeyCapture)
 		list.SetSelectedFunc(m.onTableSelected)
 	} else {
+		current := list.GetCurrentItem()
 		list.Clear()
+		defer func() {
+			if current < list.GetItemCount() {
+				list.SetCurrentItem(current)
+			}
+		}()
 	}
 	for _, t := range m.summary.Tables {
 		needs, auto := 0, 0

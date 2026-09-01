@@ -156,6 +156,90 @@ func TestOnTypeSelected_AppliesTheDecisionAndRefreshesTheGrid(t *testing.T) {
 	}
 }
 
+// TestOnTypeSelected_RebuildsTheTableListPreservingSelection is issue
+// #93's (audit finding L7) fix: onTypeSelected now calls buildTableList
+// after refreshing m.summary, syncing the table list with whatever the
+// decision changed. In today's data model that's a no-op for the actual
+// displayed counts — ApplyDecision deliberately never touches
+// col.NeedsReview or col.Confidence (issue #53: NeedsReview is a
+// permanently-stable profiler verdict, not a to-do flag a decision
+// clears), so the needs-review/auto-approved numbers buildTableList
+// computes from those fields can't actually go stale under the current
+// design. The rebuild is still correct defensively (keeps the list in
+// sync with m.summary generally, not just today's specific fields), and
+// what IS concretely testable is that it doesn't reset the user's
+// position in the list back to the top.
+func TestOnTypeSelected_RebuildsTheTableListPreservingSelection(t *testing.T) {
+	// A second table, listed alphabetically after "bikes" (buildTableList
+	// iterates m.summary.Tables in order — see review_model.go), so
+	// selecting it and applying a decision on the FIRST table's column
+	// (is_installed, in "bikes") genuinely exercises whether the rebuild
+	// preserves the human's position in the list rather than resetting to
+	// the top — a single-table fixture can't tell "preserved" apart from
+	// "reset to the only possible position" the way this one can.
+	path := filepath.Join(t.TempDir(), "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
+		Tables: map[string]config.TableConfig{
+			"bikes": {
+				ColumnOrder: []string{"bike_id", "is_installed"},
+				Columns: map[string]config.ColumnConfig{
+					"bike_id":      {TargetType: "integer", Confidence: 0.99, Source: "heuristic:default_passthrough"},
+					"is_installed": {TargetType: "boolean", Transform: "int_to_bool", Confidence: 0.55, Source: "heuristic:boolean01"},
+				},
+			},
+			"trips": {
+				ColumnOrder: []string{"trip_id"},
+				Columns: map[string]config.ColumnConfig{
+					"trip_id": {TargetType: "integer", Confidence: 0.99, Source: "heuristic:default_passthrough"},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	st, err := review.NewState(path, 0.9)
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: st.Summary()}
+	m.status = tview.NewTextView()
+	m.buildTableList()
+	m.pages.AddPage("tablelist", m.tableList, true, true)
+
+	tripsIndex := -1
+	for i := 0; i < m.tableList.GetItemCount(); i++ {
+		name, _ := m.tableList.GetItemText(i)
+		if name == "trips" {
+			tripsIndex = i
+		}
+	}
+	if tripsIndex == -1 {
+		t.Fatal("expected trips to be in the table list")
+	}
+	m.tableList.SetCurrentItem(tripsIndex)
+
+	m.onTableSelected(0, "bikes", "", 0)
+	m.openTypePicker("is_installed")
+	idx := -1
+	for i := 0; i < m.picker.GetItemCount(); i++ {
+		text, _ := m.picker.GetItemText(i)
+		if text == "integer" {
+			idx = i
+		}
+	}
+	if idx == -1 {
+		t.Fatal("expected \"integer\" to be a valid option for is_installed (0/1 values)")
+	}
+	m.onTypeSelected(idx, "integer", "", 0)
+
+	if got := m.tableList.GetCurrentItem(); got != tripsIndex {
+		t.Errorf("expected the table list's selection (trips, index %d) to survive the rebuild, got index %d", tripsIndex, got)
+	}
+}
+
 // TestOnTypeSelected_ReselectingTheSameTypePreservesTheTransform guards
 // against issue #18: a human re-confirming the picker's own current
 // selection (the natural "yes, that's correct" gesture) must not clear a
