@@ -231,18 +231,25 @@ length/uniqueness/order-independence (4.3M execs — the #21/#43/#44
 truncation-collision path held), `quoteIdent` round-trip (2.5M execs, #26
 stays closed).
 
-### Phase D — performance regression check — in progress (2026-09-01)
+### Phase D — performance regression check — complete (2026-09-01)
 
-First run's timing capture was broken (`/usr/bin/time -p` writes to
-stderr; the harness swallowed it) — the runs executed but produced no
-numbers. Re-running with fixed instrumentation:
 `profile` at `aa1f44b` (pre-#57/#58/#59, pre-`migrate verify`, pre the
 `311fb25` batching fix) vs `main` tip, 3 runs each; `load` + `verify` at
-`main` only (subcommands don't exist at `aa1f44b`), 2 runs each; on
-`employee.db` (228 MB) and `beets_library.db` (1.4 GB). Expectation:
-`main` profile ≤ `aa1f44b` on the wide/clean databases, confirming
-`311fb25` fixed issue #55's O(columns×rows) regression. Results:
+`main` only, 2 runs each; on `employee.db` (228 MB) and `beets_library.db`
+(1.4 GB). Full write-up:
 `docs/superpowers/plans/audit-cycle2-performance-results.md`.
+
+**No regression — a large improvement.** `profile` medians:
+`employee.db` 4.91s → 4.26s (−13%); `beets_library.db` **152s → 35s
+(≈4.3× faster)** — issue #55's O(columns×rows) regression is gone and
+`main` is now well below even the pre-regression ~145s baseline, exactly
+as `311fb25`'s one-scan-per-table batching predicted. `migrate verify` at
+scale is cheap: `employee.db` 3.9M rows verified in <5s (load ~12s).
+`beets_library.db` load/verify not cleanly measured — the perf harness's
+blanket mark-reviewed crashes COPY on a correctly-flagged non-UUID value
+(same rubber-stamp pattern as Phase B; a measurement gap, not a finding).
+No new issue. First harness run had a broken timing capture
+(`/usr/bin/time -p` → stderr); re-run clean.
 
 ### Phase E — triage and fix — plan of action (2026-09-01)
 
