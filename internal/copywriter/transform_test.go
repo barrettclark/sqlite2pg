@@ -1,6 +1,7 @@
 package copywriter
 
 import (
+	"math"
 	"testing"
 	"time"
 
@@ -858,5 +859,68 @@ func TestTransform_UnixEpochSeconds_PreservesSubSecondFraction(t *testing.T) {
 func TestTransform_StripCommas_RejectsOutOfInt64RangeFloat64(t *testing.T) {
 	if _, err := Transform("strip_commas", float64(1e20)); err == nil {
 		t.Error("expected an error for a float64 outside int64's range")
+	}
+}
+
+// TestTransform_NullifSentinels_HandlesAlreadyNumericInput_RejectsBlob is a
+// regression test for Copilot's PR #98 finding: SentinelNull skips a
+// sample value it doesn't recognize with continue rather than
+// disqualifying the column, so a rare non-string, non-numeric value (e.g.
+// a BLOB) can reach here with nullif_sentinels assigned. Already-numeric
+// input must pass through correctly; a genuinely unexpected type must
+// error, not pass through unexamined.
+func TestTransform_NullifSentinels_HandlesAlreadyNumericInput_RejectsBlob(t *testing.T) {
+	got, err := Transform("nullif_sentinels", int64(42))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != int64(42) {
+		t.Errorf("expected 42, got %v", got)
+	}
+
+	got, err = Transform("nullif_sentinels", float64(42.5))
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	if got != float64(42.5) {
+		t.Errorf("expected 42.5, got %v", got)
+	}
+
+	if _, err := Transform("nullif_sentinels", []byte("blob")); err == nil {
+		t.Error("expected an error for a []byte value, not a silent pass-through")
+	}
+}
+
+// TestTransform_ExcelSerialToTimestamptz_ExtremeSerialDoesNotOverflowAddDate
+// is a regression test for Copilot's PR #98 finding: excelSerialToTime's
+// int(days) conversion is implementation-dependent per the Go spec for a
+// float64 outside int's range, and even a well-defined but sufficiently
+// extreme days value overflows time.Time.AddDate's own internal
+// arithmetic (confirmed empirically: 1e15 days flips the resulting year's
+// sign). A serial value large enough to trigger either must still produce
+// a deterministic, sane-signed (if wildly implausible) result.
+func TestTransform_ExcelSerialToTimestamptz_ExtremeSerialDoesNotOverflowAddDate(t *testing.T) {
+	got, err := Transform("excel_serial_to_timestamptz", math.MaxFloat64)
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() <= 0 {
+		t.Errorf("expected a large POSITIVE year for a huge positive serial (no sign-flip overflow), got %v", tm)
+	}
+
+	got, err = Transform("excel_serial_to_timestamptz", -math.MaxFloat64)
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok = got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() >= 0 {
+		t.Errorf("expected a large NEGATIVE year for a huge negative serial (no sign-flip overflow), got %v", tm)
 	}
 }

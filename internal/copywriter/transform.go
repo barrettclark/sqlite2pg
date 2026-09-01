@@ -412,29 +412,43 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return list, nil
 
 	case "nullif_sentinels":
-		s, ok := raw.(string)
-		if !ok {
-			return raw, nil
+		// SentinelNull.Evaluate (the paired heuristic) skips a sample
+		// value it doesn't recognize (not int64/float64/string) with
+		// `continue` rather than disqualifying the column, so a rare
+		// non-string, non-numeric value (e.g. a BLOB — SQLite's dynamic
+		// typing permits it) can still reach here with this transform
+		// assigned. A raw.(string)-only check let such a value pass
+		// through unexamined (Copilot PR #98 finding, same class as
+		// issue #86/M7): full-table verification wouldn't flag it, and
+		// COPY would only fail once pgx tried and failed to encode it.
+		switch v := raw.(type) {
+		case string:
+			if sentinelTokens[strings.ToLower(v)] {
+				return nil, nil
+			}
+			cleaned := strings.ReplaceAll(v, ",", "")
+			if n, err := strconv.ParseInt(cleaned, 10, 64); err == nil {
+				return n, nil
+			}
+			// SentinelNull suggests "double precision" whenever a sampled
+			// value has a decimal component (commaNumberPattern/
+			// plainNumberPattern with a "."), so a value like "1,234.56"
+			// is a real, expected input here — ParseInt alone rejects it,
+			// and `return raw, nil` used to hand the resulting Go string
+			// straight to pgx's float8 codec, which can't binary-encode
+			// it (issue #85's audit, finding M6). Try float64 before
+			// falling back.
+			if f, err := strconv.ParseFloat(cleaned, 64); err == nil {
+				return f, nil
+			}
+			return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel token and not numeric", v)
+		case int64:
+			return v, nil
+		case float64:
+			return v, nil
+		default:
+			return nil, fmt.Errorf("nullif_sentinels: unexpected type %T", raw)
 		}
-		if sentinelTokens[strings.ToLower(s)] {
-			return nil, nil
-		}
-		cleaned := strings.ReplaceAll(s, ",", "")
-		if n, err := strconv.ParseInt(cleaned, 10, 64); err == nil {
-			return n, nil
-		}
-		// SentinelNull (the paired heuristic) suggests "double precision"
-		// whenever a sampled value has a decimal component
-		// (commaNumberPattern/plainNumberPattern with a "."), so a value
-		// like "1,234.56" is a real, expected input here — ParseInt alone
-		// rejects it, and `return raw, nil` used to hand the resulting Go
-		// string straight to pgx's float8 codec, which can't binary-encode
-		// it (issue #85's audit, finding M6). Try float64 before falling
-		// back.
-		if f, err := strconv.ParseFloat(cleaned, 64); err == nil {
-			return f, nil
-		}
-		return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel token and not numeric", s)
 
 	case "nullif_empty":
 		// No heuristic currently assigns this transform (issue #22
@@ -576,8 +590,38 @@ func excelSerialToTime(serial float64) time.Time {
 	days := math.Trunc(serial)
 	fracSeconds := (serial - days) * 24 * 60 * 60
 	return excelEpoch.
-		AddDate(0, 0, int(days)).
+		AddDate(0, 0, clampDaysToInt(days)).
 		Add(time.Duration(fracSeconds * float64(time.Second)))
+}
+
+// maxPlausibleExcelDays bounds clampDaysToInt: obscenely larger than any
+// real calendar date (±2.7 billion years from the Excel epoch) yet safely
+// within time.Time.AddDate's own working range — confirmed empirically
+// that AddDate itself silently wraps/overflows for a days argument much
+// larger than this (1e15 days flips the resulting year's sign) — and
+// within float64's exact-integer range (2^53), so this bound comparison
+// itself carries no precision loss.
+const maxPlausibleExcelDays = 1e12
+
+// clampDaysToInt converts days (already an integer-valued float64, per
+// excelSerialToTime's math.Trunc) to an int for AddDate, clamping to
+// ±maxPlausibleExcelDays instead of relying on Go's implementation-
+// dependent behavior for a float64 conversion outside int's range (or,
+// past AddDate's own safe range, wrapping to a plausible-looking wrong
+// date — the same silent-corruption class this function's AddDate switch
+// was already fixed to avoid). NaN clamps to 0 (the epoch itself) since it
+// has no defined sign to clamp toward.
+func clampDaysToInt(days float64) int {
+	switch {
+	case math.IsNaN(days):
+		return 0
+	case days <= -maxPlausibleExcelDays:
+		return -maxPlausibleExcelDays
+	case days >= maxPlausibleExcelDays:
+		return maxPlausibleExcelDays
+	default:
+		return int(days)
+	}
 }
 
 // julianDayToDate converts an astronomical Julian Day Number to a Gregorian
