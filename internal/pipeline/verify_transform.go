@@ -20,6 +20,15 @@ type columnVerifySpec struct {
 	Transform  string
 	TargetType string
 	RejectNull bool
+
+	// CheckFallbackFit asks for a full-table scan even though Transform is
+	// empty (issue #69): a default_passthrough decision to a concrete
+	// non-text type has no transform, but a rare row whose storage class
+	// can't be stored as TargetType — one the 500-row sample missed —
+	// still crashes COPY. When set, every row's raw value is checked with
+	// fallbackValueFitsTarget (and fitsTargetType's range check), the
+	// full-table form of fallbackSampleMismatch.
+	CheckFallbackFit bool
 }
 
 // verifyResult is one column's outcome from
@@ -53,17 +62,17 @@ var errAllColumnsResolved = errors.New("full-table verification: every requested
 // violation or the scan completes. The scan itself only stops early once
 // every requested column has resolved.
 //
-// A spec whose Transform is empty needs no scan at all (nothing to
-// verify) and resolves to OK immediately without being included in the
-// shared query — matching verifyTransformAgainstFullTable's own
-// short-circuit for an empty transform.
+// A spec whose Transform is empty resolves to OK immediately without
+// being included in the shared query — unless it sets CheckFallbackFit
+// (issue #69), which asks for a full-table storage-class check of the raw
+// values even with no transform to run.
 func verifyTransformsAgainstFullTable(db *sql.DB, table string, specs []columnVerifySpec) (map[string]verifyResult, error) {
 	results := make(map[string]verifyResult, len(specs))
 
 	active := make([]columnVerifySpec, 0, len(specs))
 	columns := make([]string, 0, len(specs))
 	for _, s := range specs {
-		if s.Transform == "" {
+		if s.Transform == "" && !s.CheckFallbackFit {
 			results[s.Column] = verifyResult{OK: true}
 			continue
 		}
@@ -81,18 +90,32 @@ func verifyTransformsAgainstFullTable(db *sql.DB, table string, specs []columnVe
 				continue
 			}
 			raw := row[i]
-			val, err := copywriter.Transform(s.Transform, raw)
 			bad := false
-			switch {
-			case err != nil:
-				bad = true
-			case s.RejectNull && val == nil:
-				bad = true
-			case !fitsTargetType(val, s.TargetType):
-				bad = true
+			if s.Transform == "" {
+				// issue #69: no transform — check the raw value's storage
+				// class fits the target directly, plus the int4/int8 range
+				// check every integer-shaped value gets.
+				switch {
+				case s.RejectNull && raw == nil:
+					bad = true
+				case !fallbackValueFitsTarget(raw, s.TargetType):
+					bad = true
+				case !fitsTargetType(raw, s.TargetType):
+					bad = true
+				}
+			} else {
+				val, err := copywriter.Transform(s.Transform, raw)
+				switch {
+				case err != nil:
+					bad = true
+				case s.RejectNull && val == nil:
+					bad = true
+				case !fitsTargetType(val, s.TargetType):
+					bad = true
+				}
 			}
 			if bad {
-				results[s.Column] = verifyResult{OK: false, BadValue: fmt.Sprintf("%v", raw)}
+				results[s.Column] = verifyResult{OK: false, BadValue: badValueString(raw)}
 				remaining--
 			}
 		}
@@ -186,6 +209,16 @@ func fitsTargetType(val any, targetType string) bool {
 		return true
 	}
 	return copywriter.FitsRange(n, targetType)
+}
+
+// badValueString renders the offending raw value for a verifyResult /
+// needs-review rationale. A raw SQL NULL is spelled "NULL" rather than
+// Go's "<nil>" (Copilot PR #73) — this is the case a RejectNull spec hits.
+func badValueString(raw profiler.Value) string {
+	if raw == nil {
+		return "NULL"
+	}
+	return fmt.Sprintf("%v", raw)
 }
 
 func asInt64(v any) (int64, bool) {

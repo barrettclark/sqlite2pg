@@ -407,31 +407,74 @@ func varcharFinding(n int) profiler.Finding {
 // the one target fallbackTypeFor ever picks that can hold any Go value's
 // string representation, so nothing sampled can disqualify it.
 func fallbackSampleMismatch(target string, samples []profiler.Value) (bad profiler.Value, found bool) {
-	if target == "text" {
+	if !fallbackTargetNeedsStorageCheck(target) {
 		return nil, false
 	}
 	for _, v := range samples {
 		if v == nil {
 			continue
 		}
-		switch target {
-		case "integer", "bigint", "double precision":
-			switch v.(type) {
-			case int64, int, float64, float32:
-			default:
-				return v, true
-			}
-		case "timestamptz":
-			if _, ok := v.(time.Time); !ok {
-				return v, true
-			}
-		case "bytea":
-			if _, ok := v.([]byte); !ok {
-				return v, true
-			}
+		if !fallbackValueFitsTarget(v, target) {
+			return v, true
 		}
 	}
 	return nil, false
+}
+
+// fallbackTargetNeedsStorageCheck reports whether target is one of the
+// concrete Postgres types fallbackTypeFor can pick where a wrong-storage-
+// class value would fail at COPY time — i.e. everything except "text",
+// which can hold any value's string form. Used to gate both the
+// sample-level check (fallbackSampleMismatch) and the full-table one
+// (issue #69).
+func fallbackTargetNeedsStorageCheck(target string) bool {
+	switch target {
+	case "integer", "bigint", "double precision", "timestamptz", "bytea":
+		return true
+	default:
+		return false
+	}
+}
+
+// fallbackValueFitsTarget reports whether v's Go runtime storage class can
+// be stored as target — the per-value core shared by fallbackSampleMismatch
+// (against the 500-row sample) and verifyTransformsAgainstFullTable's
+// no-transform path (against every row, issue #69). A nil (SQL NULL) fits
+// anything; a target this check has no opinion on returns true.
+func fallbackValueFitsTarget(v profiler.Value, target string) bool {
+	if v == nil {
+		return true
+	}
+	switch target {
+	case "integer", "bigint":
+		// Only integer-shaped Go values. A no-transform passthrough hands
+		// the raw value straight to pgx, so a REAL-storage row scanned as
+		// float64 would fail to encode into int4/int8 exactly like a
+		// string would — and a column with any REAL row is mixed-storage,
+		// for which double precision is the right target anyway
+		// (Copilot PR #73).
+		switch v.(type) {
+		case int64, int:
+			return true
+		default:
+			return false
+		}
+	case "double precision":
+		switch v.(type) {
+		case int64, int, float64, float32:
+			return true
+		default:
+			return false
+		}
+	case "timestamptz":
+		_, ok := v.(time.Time)
+		return ok
+	case "bytea":
+		_, ok := v.([]byte)
+		return ok
+	default:
+		return true
+	}
 }
 
 func fallbackTypeFromDeclared(declared string) string {

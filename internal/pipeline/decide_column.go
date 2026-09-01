@@ -36,6 +36,15 @@ type pendingColumnDecision struct {
 	needsReview bool
 	reason      string
 
+	// fallbackClean / fallbackTarget are set instead of best for the
+	// zero-findings default_passthrough path (issue #69): there is no
+	// winning heuristic, just a type affinity guess whose sample looked
+	// clean. fallbackClean is the config to keep verbatim if the
+	// full-table check confirms it; finalizeColumnDecision demotes a copy
+	// of it if the check finds a value fallbackTarget can't hold.
+	fallbackClean  *config.ColumnConfig
+	fallbackTarget string
+
 	// verifySpec is what phase 2 needs to check this column against the
 	// full table — its Column field is also the key results are looked
 	// up by once verifyTransformsAgainstFullTable returns.
@@ -64,36 +73,59 @@ func decideColumnTentative(table string, col sqlitereader.ColumnInfo, samples []
 
 	if len(findings) == 0 {
 		target := fallbackTypeFor(col.DeclaredType, samples)
-		confidence := 0.99
-		rationale := "no heuristic had an opinion; passed through via SQLite type affinity"
-		var uc *resolver.UnresolvedCase
+		clean := config.ColumnConfig{
+			DeclaredType:  col.DeclaredType,
+			TargetType:    target,
+			Confidence:    0.99,
+			Source:        "heuristic:default_passthrough",
+			Rationale:     "no heuristic had an opinion; passed through via SQLite type affinity",
+			Reviewed:      false,
+			NeedsReview:   false,
+			PrimaryKeySeq: col.PrimaryKeySeq,
+			NotNull:       col.NotNull,
+		}
+
 		if bad, found := fallbackSampleMismatch(target, samples); found {
 			// Issue #16: SQLite's dynamic typing let this declared/sample
 			// type majority be wrong for at least one row in hand already
 			// — don't carry that false confidence to `load`, which would
 			// crash encoding bad into target's binary format.
-			confidence = fullTableViolationConfidence
-			rationale = fmt.Sprintf("no heuristic had an opinion; declared type and sample majority suggested %s, but the sample itself contains a value that can't be stored as %s: %#v (SQLite's dynamic typing allows this even though the column is declared %s)", target, target, bad, col.DeclaredType)
-			uc = &resolver.UnresolvedCase{
+			clean.Confidence = fullTableViolationConfidence
+			clean.NeedsReview = true
+			clean.Rationale = fmt.Sprintf("no heuristic had an opinion; declared type and sample majority suggested %s, but the sample itself contains a value that can't be stored as %s: %#v (SQLite's dynamic typing allows this even though the column is declared %s)", target, target, bad, col.DeclaredType)
+			return clean, &resolver.UnresolvedCase{
 				Table:        table,
 				Column:       col.Name,
 				DeclaredType: col.DeclaredType,
 				Samples:      samples,
 				Findings:     findings,
-				Reason:       rationale,
+				Reason:       clean.Rationale,
+			}, nil
+		}
+
+		// Issue #69: the sample looked clean, but for a concrete non-text
+		// target a rare row whose storage class can't be stored there —
+		// one the 500-row sample missed — still crashes COPY. Defer to a
+		// full-table storage-class check (batched with every other pending
+		// column in this table by ProfileDatabase).
+		if fallbackTargetNeedsStorageCheck(target) {
+			return config.ColumnConfig{}, nil, &pendingColumnDecision{
+				table:          table,
+				col:            col,
+				samples:        samples,
+				findings:       findings,
+				fallbackClean:  &clean,
+				fallbackTarget: target,
+				verifySpec: columnVerifySpec{
+					Column:           col.Name,
+					TargetType:       target,
+					CheckFallbackFit: true,
+					RejectNull:       col.PrimaryKeySeq > 0 || col.NotNull,
+				},
 			}
 		}
-		return config.ColumnConfig{
-			DeclaredType:  col.DeclaredType,
-			TargetType:    target,
-			Confidence:    confidence,
-			Source:        "heuristic:default_passthrough",
-			Rationale:     rationale,
-			Reviewed:      false,
-			NeedsReview:   uc != nil,
-			PrimaryKeySeq: col.PrimaryKeySeq,
-			NotNull:       col.NotNull,
-		}, uc, nil
+
+		return clean, nil, nil
 	}
 
 	best, needsReview := resolver.Decide(findings, threshold)
@@ -147,6 +179,29 @@ func decideColumnTentative(table string, col sqlitereader.ColumnInfo, samples []
 // UnresolvedCase produced — the same way any other below-threshold finding
 // is surfaced.
 func finalizeColumnDecision(p *pendingColumnDecision, vr verifyResult) (config.ColumnConfig, *resolver.UnresolvedCase) {
+	// Zero-findings default_passthrough path (issue #69): no winning
+	// heuristic, just fallbackClean. Keep it verbatim if the full-table
+	// check confirmed it; demote a copy and raise an UnresolvedCase if it
+	// found a value fallbackTarget can't hold.
+	if p.fallbackClean != nil {
+		cc := *p.fallbackClean
+		if vr.OK {
+			return cc, nil
+		}
+		cc.Confidence = fullTableViolationConfidence
+		cc.NeedsReview = true
+		cc.Rationale = fmt.Sprintf("%s — but a full-table check found a value that can't be stored as %s: %q", cc.Rationale, p.fallbackTarget, vr.BadValue)
+		return cc, &resolver.UnresolvedCase{
+			Table:        p.table,
+			Column:       p.col.Name,
+			DeclaredType: p.col.DeclaredType,
+			Samples:      p.samples,
+			Findings:     p.findings,
+			Reason: fmt.Sprintf("no heuristic had an opinion and the sample looked like %s, but a full-table check found a value that can't be stored as %s: %q",
+				p.fallbackTarget, p.fallbackTarget, vr.BadValue),
+		}
+	}
+
 	best := p.best
 	needsReview := p.needsReview
 	reason := p.reason
