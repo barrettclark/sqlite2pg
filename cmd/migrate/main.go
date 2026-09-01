@@ -619,7 +619,14 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 					progress.skipAlreadyLoadedTable(tableName, sourceRowCounts[tableName])
 					continue
 				}
-				if _, err := conn.Exec(ctx, "DROP TABLE "+qualifiedPgTable); err != nil {
+				// IF EXISTS even though existence was just confirmed
+				// above: makes this resilient to a race between the
+				// to_regclass probe and this statement (e.g. a second
+				// concurrent --resume against the same database), and
+				// matches the "best-effort cleanup then recreate" intent
+				// (Copilot PR #99 finding) better than a bare DROP that
+				// would itself error on a table that's already gone.
+				if _, err := conn.Exec(ctx, "DROP TABLE IF EXISTS "+qualifiedPgTable); err != nil {
 					return fmt.Errorf("dropping empty partially-created %s (Postgres table %q) before recreating it: %w", tableName, pgTable, err)
 				}
 			}
