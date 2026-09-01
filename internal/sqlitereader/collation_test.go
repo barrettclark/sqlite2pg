@@ -75,3 +75,41 @@ func TestColumnCollations_HandlesQuotedColumnNames(t *testing.T) {
 		t.Errorf(`ColumnCollations()["normal"] = %q, want "BINARY"`, got["normal"])
 	}
 }
+
+// TestLeadingIdentifier_RejectsAnEmptyQuotedIdentifier covers issue #70:
+// an empty quoted identifier ("", ``, []) is not a valid leading
+// identifier — leadingIdentifier used to return ok=true with an empty
+// name, letting parseColumnCollations emit a ""-keyed entry from
+// malformed CREATE TABLE text.
+func TestLeadingIdentifier_RejectsAnEmptyQuotedIdentifier(t *testing.T) {
+	for _, s := range []string{`""COLLATE 0`, "``rest", `[]rest`, `""`, "``", `[]`} {
+		if name, _, ok := leadingIdentifier(s); ok {
+			t.Errorf("leadingIdentifier(%q) = (%q, _, true), want ok=false for an empty quoted identifier", s, name)
+		}
+	}
+}
+
+// TestLeadingIdentifier_StillAcceptsNonEmptyQuotedIdentifiers is the guard:
+// a normal quoted name must still parse.
+func TestLeadingIdentifier_StillAcceptsNonEmptyQuotedIdentifiers(t *testing.T) {
+	cases := map[string]string{
+		`"a b" TEXT`: "a b",
+		"`x` INT":    "x",
+		`[y] REAL`:   "y",
+	}
+	for s, want := range cases {
+		if name, _, ok := leadingIdentifier(s); !ok || name != want {
+			t.Errorf("leadingIdentifier(%q) = (%q, _, %v), want (%q, _, true)", s, name, ok, want)
+		}
+	}
+}
+
+// TestParseColumnCollations_NoEmptyKeyFromMalformedInput is the
+// end-of-issue-#70 check on the corpus repro: parseColumnCollations must
+// not produce a ""-keyed entry.
+func TestParseColumnCollations_NoEmptyKeyFromMalformedInput(t *testing.T) {
+	got := parseColumnCollations(`(""COLLATE 0`)
+	if _, hasEmpty := got[""]; hasEmpty {
+		t.Errorf("parseColumnCollations produced a \"\"-keyed entry: %+v", got)
+	}
+}

@@ -4,6 +4,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"sort"
+	"strconv"
 
 	"github.com/jackc/pgx/v5"
 
@@ -112,6 +113,18 @@ func disambiguateIdentifiers(names []string) map[string]string {
 // so the hash suffix still distinguishes them even when their display names
 // are identical.
 func disambiguateNames(displayNames, identities []string) []string {
+	return disambiguateNamesReserving(displayNames, identities, nil)
+}
+
+// disambiguateNamesReserving is disambiguateNames with an additional set of
+// identifiers already claimed by something outside displayNames but in the
+// same Postgres namespace. A CREATE INDEX name and a CREATE TABLE name
+// both live in one schema-scoped pg_class (issue #68), so
+// GenerateForeignKeyIndexes passes every generated table name here as
+// reserved: an index name that would otherwise pass through untouched
+// (its own group is a singleton) still gets the hash suffix when it
+// collides with a table's name. reserved may be nil.
+func disambiguateNamesReserving(displayNames, identities []string, reserved map[string]bool) []string {
 	groups := make(map[string][]int, len(displayNames))
 	for i, name := range displayNames {
 		t := truncateBytes(name, maxIdentifierLen)
@@ -120,12 +133,12 @@ func disambiguateNames(displayNames, identities []string) []string {
 
 	result := make([]string, len(displayNames))
 	for truncated, idxs := range groups {
-		if len(idxs) == 1 {
+		if len(idxs) == 1 && !reserved[truncated] {
 			result[idxs[0]] = truncated
 			continue
 		}
 		for _, i := range idxs {
-			result[i] = disambiguateOne(displayNames[i], identities[i])
+			result[i] = disambiguateOne(displayNames[i], identities[i], reserved)
 		}
 	}
 	return result
@@ -135,11 +148,27 @@ func disambiguateNames(displayNames, identities []string) []string {
 // hash suffix of identity — the value that actually distinguishes this
 // entry from the others it collided with (usually identity == display, but
 // see disambiguateNames).
-func disambiguateOne(display, identity string) string {
-	sum := sha1.Sum([]byte(identity))
-	suffix := "_" + hex.EncodeToString(sum[:])[:identifierHashLen]
-	base := truncateBytes(display, maxIdentifierLen-len(suffix))
-	return base + suffix
+//
+// reserved (may be nil) is a set of names already claimed elsewhere in the
+// same Postgres namespace (issue #68): if the salt-0 suffix produces a
+// name that's in it, the identity is re-hashed with an incrementing salt
+// until the result is free. This stays a pure function of (display,
+// identity, reserved) — the salt sequence is deterministic and doesn't
+// depend on any other entry — so disambiguateNames' cross-run stability
+// and order-independence are unaffected.
+func disambiguateOne(display, identity string, reserved map[string]bool) string {
+	for salt := 0; ; salt++ {
+		src := identity
+		if salt > 0 {
+			src = identity + "\x00salt\x00" + strconv.Itoa(salt)
+		}
+		sum := sha1.Sum([]byte(src))
+		suffix := "_" + hex.EncodeToString(sum[:])[:identifierHashLen]
+		candidate := truncateBytes(display, maxIdentifierLen-len(suffix)) + suffix
+		if !reserved[candidate] {
+			return candidate
+		}
+	}
 }
 
 // quoteIdent double-quotes name as a SQL identifier, doubling any embedded

@@ -312,3 +312,26 @@ empty-name `continue` back to `t.Fatalf`.
 **Process:** each PR is its own branch off latest `main` (off PR 0's
 branch until it merges), Copilot review before merge, findings treated
 with the same verify-against-the-code rigor as any review comment.
+
+### Phase E — execution — complete (2026-09-01)
+
+All 11 findings (#60–#70) fixed across 5 PRs, TDD per issue (failing test
+→ minimal fix → real-Postgres integration test → one commit), Copilot
+review on each fix-batch PR.
+
+| PR | scope | issues | Copilot findings addressed |
+|---|---|---|---|
+| [#71](https://github.com/barrettclark/sqlite2pg/pull/71) | scaffolding (docs, `verify-all-fixtures.sh`, 4 fuzz files) | — | (couldn't run) |
+| [#72](https://github.com/barrettclark/sqlite2pg/pull/72) | `migrate verify` correctness | #60 #61 #62 #63 #65 #66 #67 | `canonicalJSON` float64→`big.Rat` precision; `dec.More()`→`io.EOF` trailing-content check |
+| [#73](https://github.com/barrettclark/sqlite2pg/pull/73) | profile full-table type-fit for no-transform passthrough | #69 | `fallbackValueFitsTarget` rejects float for integer/bigint; `"NULL"` not `"<nil>"` in rationale |
+| [#74](https://github.com/barrettclark/sqlite2pg/pull/74) | TUI transform derivation across all samples | #64 | `commonTransformForType` returns `ok=false` on an invalid sample, not just disagreement |
+| PR 5 | parser/DDL hygiene | #68 #70 | — |
+
+Regression campaigns (`verify-all-fixtures.sh`) run against the PR 1 and
+PR 2 builds: 37 / 35 databases verified clean, **0 `migrate verify`
+failures** either time — none of the comparison-engine or profiler
+changes false-fails a real database. `DisabilityCompByCounty.db`'s
+`FIPS code` went from silently auto-approved (~84 % of runs) to
+deterministically flagged. Issues auto-close where the PR body used
+`Closes #NN`; #60–#67 were closed manually (PR #72's body predated that
+convention).

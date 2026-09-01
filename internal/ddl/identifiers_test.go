@@ -1,11 +1,48 @@
 package ddl
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"strings"
 	"testing"
 
 	"sqlite2pg/internal/config"
 )
+
+// TestDisambiguateNamesReserving_HashSuffixAlsoAvoidsReserved covers the
+// Copilot PR #75 follow-up: reserving a name must keep the DISAMBIGUATED
+// (hash-suffixed) output out of the reserved set too, not just gate the
+// singleton pass-through. Here both the raw truncated name and the salt-0
+// hash output are reserved, so the function must re-salt to a third value.
+func TestDisambiguateNamesReserving_HashSuffixAlsoAvoidsReserved(t *testing.T) {
+	display := "idx_x"
+	identity := "fk-identity-a"
+
+	sum := sha1.Sum([]byte(identity))
+	saltZero := display + "_" + hex.EncodeToString(sum[:])[:identifierHashLen]
+
+	reserved := map[string]bool{
+		display:  true, // forces the disambiguation branch for the singleton
+		saltZero: true, // and the first hash output is claimed too
+	}
+
+	got := disambiguateNamesReserving([]string{display}, []string{identity}, reserved)
+	if len(got) != 1 {
+		t.Fatalf("expected 1 name, got %d", len(got))
+	}
+	if reserved[got[0]] {
+		t.Errorf("disambiguateNamesReserving returned %q, which is in the reserved set", got[0])
+	}
+	if len(got[0]) > maxIdentifierLen {
+		t.Errorf("output %q is %d bytes, over the %d limit", got[0], len(got[0]), maxIdentifierLen)
+	}
+
+	// Deterministic: same inputs -> same output.
+	again := disambiguateNamesReserving([]string{display}, []string{identity}, reserved)
+	if again[0] != got[0] {
+		t.Errorf("not deterministic: %q vs %q", got[0], again[0])
+	}
+}
 
 // TestPostgresTableNames_DisambiguatesTablesCollidingAfter63ByteTruncation
 // reproduces issue #44's exact failure scenario: two source tables whose

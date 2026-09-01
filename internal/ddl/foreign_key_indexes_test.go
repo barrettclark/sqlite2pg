@@ -225,3 +225,51 @@ func TestGenerateForeignKeyIndexes_SkipsAnInvalidForeignKey(t *testing.T) {
 		t.Fatalf("expected no index statements for an invalid foreign key, got %v", statements)
 	}
 }
+
+func TestGenerateForeignKeyIndexes_DisambiguatesAgainstTableNames(t *testing.T) {
+	// Issue #68: index names are disambiguated against each other but not
+	// against table names, even though both live in the same schema-scoped
+	// pg_class namespace. A source table literally named
+	// idx_orders_customer_id alongside an orders table with an FK on
+	// customer_id produces CREATE TABLE "idx_orders_customer_id" and
+	// CREATE INDEX "idx_orders_customer_id" — the second fails with
+	// "relation ... already exists".
+	cfg := &config.MigrationConfig{
+		Tables: map[string]config.TableConfig{
+			"customers": {
+				Include:     true,
+				ColumnOrder: []string{"id"},
+				Columns:     map[string]config.ColumnConfig{"id": {TargetType: "integer"}},
+			},
+			"orders": {
+				Include:     true,
+				ColumnOrder: []string{"customer_id"},
+				Columns:     map[string]config.ColumnConfig{"customer_id": {TargetType: "integer"}},
+				ForeignKeys: []config.ForeignKey{
+					{Columns: []string{"customer_id"}, RefTable: "customers", RefColumns: []string{"id"}},
+				},
+			},
+			"idx_orders_customer_id": {
+				Include:     true,
+				ColumnOrder: []string{"x"},
+				Columns:     map[string]config.ColumnConfig{"x": {TargetType: "integer"}},
+			},
+		},
+	}
+
+	statements := GenerateForeignKeyIndexes(cfg)
+	if len(statements) != 1 {
+		t.Fatalf("expected 1 index statement, got %d: %v", len(statements), statements)
+	}
+	stmt := statements[0]
+
+	pgTables := PostgresTableNames(cfg)
+	collidingStart := "CREATE INDEX " + quoteIdent(pgTables["idx_orders_customer_id"]) + " "
+	if strings.HasPrefix(stmt, collidingStart) {
+		t.Errorf("FK index is named the same as the table in pg_class; Postgres would reject it:\n%s", stmt)
+	}
+	// Still disambiguated from the readable prefix, not renamed wholesale.
+	if !strings.HasPrefix(stmt, `CREATE INDEX "idx_orders_customer_id_`) {
+		t.Errorf("expected the index disambiguated as idx_orders_customer_id_<hash>, got:\n%s", stmt)
+	}
+}
