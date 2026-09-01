@@ -186,13 +186,18 @@ func leadingIdentifier(s string) (name, rest string, ok bool) {
 	case '"', '`', '\'':
 		q := s[0]
 		end := strings.IndexByte(s[1:], q)
-		if end < 0 {
+		// end < 0: no closing quote. end == 0: closing quote immediately,
+		// i.e. an empty quoted identifier ("", ``, '') — not a valid name
+		// (issue #70). Both mean "not an identifier here".
+		if end <= 0 {
 			return "", "", false
 		}
 		return s[1 : 1+end], s[1+end+1:], true
 	case '[':
 		end := strings.IndexByte(s, ']')
-		if end < 0 {
+		// end < 0: no closing bracket. end == 1: "[]" — empty. Neither is
+		// a valid name (issue #70).
+		if end <= 1 {
 			return "", "", false
 		}
 		return s[1:end], s[end+1:], true

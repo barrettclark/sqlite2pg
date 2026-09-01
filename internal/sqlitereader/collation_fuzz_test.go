@@ -28,15 +28,10 @@ func FuzzParseColumnCollations(f *testing.F) {
 
 		for name, coll := range got {
 			if name == "" {
-				// Known-harmless parser artifact: leadingIdentifier
-				// returns ok=true with an empty name for an empty quoted
-				// identifier (`""`, ``, `[]`), so malformed CREATE TABLE
-				// text can yield a `""` key here. ColumnCollations
-				// discards it (it only consults this map for names
-				// readColumns already confirmed are real columns), so it
-				// never reaches verify. Tracked as its own issue; tighten
-				// this to t.Fatalf once leadingIdentifier rejects empties.
-				continue
+				// leadingIdentifier now rejects an empty quoted identifier
+				// (`""`, ``, `[]`), so parseColumnCollations must never
+				// key an entry by the empty string (issue #70).
+				t.Fatalf("parseColumnCollations returned an empty column name (collation %q) for input %q", coll, createSQL)
 			}
 			if coll == "" {
 				t.Fatalf("parseColumnCollations returned an empty collation for column %q, input %q", name, createSQL)
