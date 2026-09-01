@@ -156,7 +156,46 @@ two-features-one-artifact shape as issue #52).
 
 Fixes deferred to Phase E.
 
-### Phase B — *pending*
+### Phase B — full load-test campaign via `migrate verify` — complete (2026-09-01)
+
+New checked-in script: **`scripts/verify-all-fixtures.sh`** —
+`profile -> mark every column reviewed -> load -> verify -> dropdb`,
+looped over a DB list, `migrate verify` as the correctness check, emits a
+per-database results table. Configurable via `PG_URL`, `MORE_DATA_DIR`,
+`BEETS_DB`, `PROFILE_ONLY_OVER_MB`, etc.; exits non-zero if any loaded DB
+fails to verify.
+
+Ran against the full 43-file local set (17 `testdata/fixtures/` + 25
+`../more data/` + `beets_library.db`). Full table + analysis:
+`docs/superpowers/plans/audit-cycle2-campaign-results.md`.
+
+**Result: 35 verified clean with 0 `migrate verify` mismatches anywhere**
+(incl. `employee.db` 3.9M rows in 12s, `rt5i.db` 1.17M rows in 4s);
+`beets_library.db` profile-only (1.4GB, over the load/verify size gate);
+7 non-passing loads.
+
+Of the 7 non-passing: **1 genuine bug** —
+[#69](https://github.com/barrettclark/sqlite2pg/issues/69):
+`default_passthrough` to a numeric type with no transform gets no
+full-table type-fit check, so a sample-missed out-of-domain value
+(`DisabilityCompByCounty.db`'s `FIPS code`, 1 `"Unknown"` row in 3148)
+auto-approves at 0.99 and crashes `migrate load` at COPY,
+non-deterministically (depends on the `ORDER BY RANDOM()` sample). Same
+root as the closed #22 but for the no-transform case #22's fix didn't
+cover. 5 non-passing are the review gate working exactly right (the script
+force-accepted a correctly-flagged `needs_review` column: `atomic_database.db`,
+`sample-type-mismatch.sqlite`, `type-mismatch.db`, `demo01.db`,
+`sqliterepo.db`). 1 (`ssb-small.db`) is the previously-documented
+source-data FK violation.
+
+No regressions found. Phase A's #60/#61 (verify false-FAIL on transformed
+PK / jsonb) did not fire — no table in the corpus has the triggering
+column shape; they need a purpose-built fixture (Phase C/E).
+
+Stray zero-byte `../more data/DisabilityCompByCounty.db` appeared ~1 min
+after the campaign finished — not campaign-created, checked-in fixture
+intact, all originals untouched; flagged in the campaign-results doc.
+
 ### Phase C — *pending*
 ### Phase D — *pending*
 ### Phase E — *pending*
