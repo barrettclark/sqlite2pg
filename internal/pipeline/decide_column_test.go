@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"testing"
+	"time"
 
 	"sqlite2pg/internal/profiler"
 	"sqlite2pg/internal/sqlitereader"
@@ -623,5 +624,39 @@ func TestDecideColumn_HeuristicWinnerWithNoTransformStillGetsFullTableCheck(t *t
 	}
 	if unresolved == nil || !cc.NeedsReview {
 		t.Fatalf("expected the full-table REAL row to be caught even though the winning finding had no transform, got needsReview=%v unresolved=%+v", cc.NeedsReview, unresolved)
+	}
+}
+
+// TestDecideColumn_DateTimeColumnAllMidnightSampleFlagsNonMidnightFullTableRow
+// is issue #79's (audit finding H3) end-to-end proof: modernc.org/sqlite
+// scans a DATETIME-declared column's value straight into time.Time, not
+// string, so a full-table scan of such a column streams time.Time values
+// into copywriter.Transform. Before the fix, iso8601_to_date's
+// non-midnight guard only ran for string input, so every time.Time row
+// passed through unchecked and this column's full-table verification was
+// a silent no-op even though the table has a genuine non-midnight row the
+// sample missed.
+func TestDecideColumn_DateTimeColumnAllMidnightSampleFlagsNonMidnightFullTableRow(t *testing.T) {
+	db, _ := openTestDB(t, `CREATE TABLE t (born DATETIME);`)
+	db.Exec(`INSERT INTO t (born) VALUES (?), (?), (?)`,
+		"1953-09-02 00:00:00", "1996-01-02 00:00:00", "1996-01-04 14:37:00")
+
+	col := sqlitereader.ColumnInfo{Name: "born", DeclaredType: "DATETIME"}
+	// The sample deliberately omits the non-midnight row, the same way a
+	// real random sample can miss a rare exception (issue #13's shape).
+	sample := []any{
+		time.Date(1953, time.September, 2, 0, 0, 0, 0, time.UTC),
+		time.Date(1996, time.January, 2, 0, 0, 0, 0, time.UTC),
+	}
+
+	cc, unresolved, err := decideColumn(db, "t", col, sample, 0.9)
+	if err != nil {
+		t.Fatalf("decideColumn: %v", err)
+	}
+	if cc.TargetType != "date" || cc.Transform != "iso8601_to_date" {
+		t.Fatalf("expected the sample to resolve to date/iso8601_to_date, got TargetType=%q Transform=%q", cc.TargetType, cc.Transform)
+	}
+	if unresolved == nil || !cc.NeedsReview {
+		t.Fatalf("expected the full-table non-midnight row to be caught, got needsReview=%v unresolved=%+v", cc.NeedsReview, unresolved)
 	}
 }

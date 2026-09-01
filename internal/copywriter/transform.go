@@ -107,10 +107,6 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		return nil, fmt.Errorf("iso8601_to_timestamptz: cannot parse %q", s)
 
 	case "iso8601_to_date":
-		s, ok := raw.(string)
-		if !ok {
-			return raw, nil
-		}
 		// Shares profiler.ParseTimestamp with the iso8601_timestamp
 		// heuristic that assigns this transform when every *sampled*
 		// value's time-of-day is midnight (issue #14) — same reasoning as
@@ -129,13 +125,34 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// function against every row, and this error is what lets it
 		// catch the case and route the column to review instead of
 		// silently discarding real data at load.
-		if tm, ok := profiler.ParseTimestamp(s); ok {
+		//
+		// The heuristic that assigns this transform (iso8601_timestamp)
+		// fires on both a string sample AND a time.Time sample — the
+		// modernc.org/sqlite driver scans a DATE/DATETIME/TIMESTAMP-
+		// declared column straight into time.Time rather than a string
+		// (see internal/pipeline/profile.go), so streamed rows for such a
+		// column arrive here as time.Time, not string. A raw.(string)-only
+		// check used to let every such row bypass the non-midnight guard
+		// entirely (issue #84's audit, finding H3) — the same
+		// "type-switch fall-through" shape as M6/M7 below.
+		switch v := raw.(type) {
+		case string:
+			tm, ok := profiler.ParseTimestamp(v)
+			if !ok {
+				return nil, fmt.Errorf("iso8601_to_date: cannot parse %q", v)
+			}
 			if tm.Hour() != 0 || tm.Minute() != 0 || tm.Second() != 0 || tm.Nanosecond() != 0 {
-				return nil, fmt.Errorf("iso8601_to_date: %q has a non-midnight time-of-day component", s)
+				return nil, fmt.Errorf("iso8601_to_date: %q has a non-midnight time-of-day component", v)
 			}
 			return time.Date(tm.Year(), tm.Month(), tm.Day(), 0, 0, 0, 0, time.UTC), nil
+		case time.Time:
+			if v.Hour() != 0 || v.Minute() != 0 || v.Second() != 0 || v.Nanosecond() != 0 {
+				return nil, fmt.Errorf("iso8601_to_date: %s has a non-midnight time-of-day component", v.Format(time.RFC3339Nano))
+			}
+			return time.Date(v.Year(), v.Month(), v.Day(), 0, 0, 0, 0, time.UTC), nil
+		default:
+			return nil, fmt.Errorf("iso8601_to_date: unexpected type %T", raw)
 		}
-		return nil, fmt.Errorf("iso8601_to_date: cannot parse %q", s)
 
 	case "int_to_bool":
 		// Also accepts a "0"/"1" string (not routed through toInt64,

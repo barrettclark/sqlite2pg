@@ -634,3 +634,31 @@ func TestTransform_NullValuesPassThroughUnchangedRegardlessOfTransform(t *testin
 		t.Errorf("expected nil to pass through, got %v", got)
 	}
 }
+
+// TestTransform_ISO8601ToDate_TimeTimeInput_MidnightPasses is issue #79's
+// (audit finding H3) regression: modernc.org/sqlite scans a
+// DATE/DATETIME/TIMESTAMP-declared column's value straight into time.Time,
+// not string, so a streamed row for such a column reaches this transform
+// as time.Time. The non-midnight guard must apply to that shape too, not
+// just string input.
+func TestTransform_ISO8601ToDate_TimeTimeInput_MidnightPasses(t *testing.T) {
+	in := time.Date(1953, time.September, 2, 0, 0, 0, 0, time.UTC)
+	got, err := Transform("iso8601_to_date", in)
+	if err != nil {
+		t.Fatalf("Transform: %v", err)
+	}
+	tm, ok := got.(time.Time)
+	if !ok {
+		t.Fatalf("expected time.Time, got %T", got)
+	}
+	if tm.Year() != 1953 || tm.Month() != time.September || tm.Day() != 2 {
+		t.Errorf("expected 1953-09-02, got %v", tm)
+	}
+}
+
+func TestTransform_ISO8601ToDate_TimeTimeInput_RejectsNonMidnightValues(t *testing.T) {
+	in := time.Date(1996, time.January, 4, 14, 37, 0, 0, time.UTC)
+	if _, err := Transform("iso8601_to_date", in); err == nil {
+		t.Error("expected an error for a non-midnight time.Time, not a silent truncation")
+	}
+}
