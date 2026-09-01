@@ -231,5 +231,77 @@ length/uniqueness/order-independence (4.3M execs — the #21/#43/#44
 truncation-collision path held), `quoteIdent` round-trip (2.5M execs, #26
 stays closed).
 
-### Phase D — *pending*
-### Phase E — *pending*
+### Phase D — performance regression check — in progress (2026-09-01)
+
+First run's timing capture was broken (`/usr/bin/time -p` writes to
+stderr; the harness swallowed it) — the runs executed but produced no
+numbers. Re-running with fixed instrumentation:
+`profile` at `aa1f44b` (pre-#57/#58/#59, pre-`migrate verify`, pre the
+`311fb25` batching fix) vs `main` tip, 3 runs each; `load` + `verify` at
+`main` only (subcommands don't exist at `aa1f44b`), 2 runs each; on
+`employee.db` (228 MB) and `beets_library.db` (1.4 GB). Expectation:
+`main` profile ≤ `aa1f44b` on the wide/clean databases, confirming
+`311fb25` fixed issue #55's O(columns×rows) regression. Results:
+`docs/superpowers/plans/audit-cycle2-performance-results.md`.
+
+### Phase E — triage and fix — plan of action (2026-09-01)
+
+All 11 findings are filed (#60–#70). Fixing in four PRs, verify-first per
+Barrett's call; scaffolding lands first as its own PR so each fix PR's
+diff is purely the fix.
+
+**PR 0 — cycle scaffolding (merge first).** The Phase A–D deliverables:
+findings docs, `scripts/verify-all-fixtures.sh`, the four fuzz-test files
+(commits `7feeb61`, `2678d35`, `ecda811`, + Phase D results). No
+production-code change. Merging first puts the campaign script and fuzz
+harness on `main` so PRs 1–4 can use the script to validate and can
+tighten the `knownIssue65Gap` / empty-name fuzz exemptions in place.
+
+**PR 1 — `migrate verify` correctness** (3 High + 3 Medium + 1 Low).
+One PR because #60/#63/#65/#67 all touch the same comparison functions in
+`verify_load.go` — splitting them across sessions is exactly the
+"same two functions, three fixes, three regressions" pattern this cycle
+exists to stop. Commit order (TDD each: failing test → minimal fix → real
+Postgres re-verify → one commit):
+1. **#65** — `compareColumnUnordered` confirms a key mismatch via
+   `valuesMatch` before recording it; decide on purpose whether an
+   `|int64| > 2^53` value vs its rounded float is a match. Remove the
+   `knownIssue65Gap` exemption from `verify_load_fuzz_test.go` in this commit.
+2. **#67** — `compareColumnUnordered` `min(len(expected), len(actual))`
+   bounds guard + distinct "row count changed during verify" error.
+3. **#63** — truncate `time.Time` to microseconds in `valuesMatch`'s
+   time case and `sortKeyFor`'s time key.
+4. **#60** — `primaryKeyOrderingIsSafe` returns false when any PK column
+   carries a `Transform` or a non-order-isomorphic `TargetType`; add a
+   TEXT-PK-→-`integer` fixture.
+5. **#61** — explicit `jsonb` case in `pgColumnScanner` comparing
+   canonicalized JSON on both sides; add a geojson fixture.
+6. **#62** — pass `verifyErr` into `cleanupConfigAfterLoad` (or a derived
+   `keep bool`) so a verification failure preserves the config + `.state.json`
+   and prints their retained paths.
+7. **#66** — `determineVerify` does a short-deadline read on a piped
+   stdin before giving up, or at minimum prints why it's skipping; make
+   `--dry-run` + `--verify` a usage error.
+Then Copilot review on the PR before merge.
+
+**PR 2 — profile-time type-fit gap** (#69, the "remaining High").
+Separate subsystem (`decide_column.go` / `verify_transform.go`), separate
+fix shape: full-table type-fit scan for a no-transform `default_passthrough`
+to a concrete numeric type, demote to `needs_review` on a non-conforming
+value (naming it, like the sampled mixed-type path already does). Validate
+by re-running `scripts/verify-all-fixtures.sh` (the 35 clean DBs must stay
+clean) plus a profile perf spot-check (it adds a scan — same concern as #55).
+
+**PR 3 — remaining Medium** (#64). TUI: `onTypeSelected` derives the
+transform across every sample value, attaching one only when all non-NULL
+samples resolve to the same transform. Self-contained in `internal/tui/`.
+
+**PR 4 — Low parser/DDL hygiene** (#68, #70). #68: feed `PostgresTableNames`
+output into `GenerateForeignKeyIndexes`'s `disambiguateNames` as
+already-claimed names. #70: `leadingIdentifier` returns `ok=false` for an
+empty quoted identifier; tighten the Phase C collation fuzz test's
+empty-name `continue` back to `t.Fatalf`.
+
+**Process:** each PR is its own branch off latest `main` (off PR 0's
+branch until it merges), Copilot review before merge, findings treated
+with the same verify-against-the-code rigor as any review comment.
