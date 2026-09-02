@@ -89,7 +89,7 @@ var collateClauseRe = regexp.MustCompile(`(?i)\bCOLLATE\s+(?:"([^"]+)"|` + "`([^
 func parseColumnCollations(createSQL string) map[string]string {
 	result := map[string]string{}
 
-	open := strings.IndexByte(createSQL, '(')
+	open := columnListOpenParen(createSQL)
 	if open < 0 {
 		return result
 	}
@@ -114,6 +114,42 @@ func parseColumnCollations(createSQL string) map[string]string {
 		}
 	}
 	return result
+}
+
+// createTablePreambleRe matches CREATE TABLE's keyword preamble — CREATE
+// [VIRTUAL] TABLE [IF NOT EXISTS] — up to and including "IF NOT EXISTS"
+// when present, everything before the table name itself. VIRTUAL is
+// included because ColumnCollations' own sqlite_master query (`type =
+// 'table'`) matches virtual tables too — SQLite gives them type='table'
+// there, not a separate type — so a CREATE VIRTUAL TABLE statement can
+// reach columnListOpenParen just as a plain one can, and without matching
+// its preamble the paren-in-table-name bug this whole helper exists to
+// avoid reproduces identically for it (Copilot PR #101 finding).
+var createTablePreambleRe = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`)
+
+// columnListOpenParen returns the index of the '(' that opens the
+// column-definition list — the first '(' AFTER the table name, not simply
+// the first '(' anywhere in createSQL. A table literally named e.g.
+// "foo(bar)" makes the naive "first '(' in the string" search match the
+// one inside the quoted table name instead, parsing the column-definition
+// body from the wrong offset and silently leaving every column at its
+// BINARY collation default (issue #91's audit, finding L5). Skips the
+// CREATE TABLE keyword preamble, then the table name itself — quoted with
+// any of SQLite's four identifier-quoting styles or bare, same as
+// leadingIdentifier already handles for a column name — before searching
+// for '(' from there. Returns -1 if no '(' follows the table name.
+func columnListOpenParen(createSQL string) int {
+	rest := createSQL
+	if loc := createTablePreambleRe.FindStringIndex(createSQL); loc != nil {
+		rest = createSQL[loc[1]:]
+	}
+	if _, afterName, ok := leadingIdentifier(strings.TrimLeft(rest, " \t\n\r")); ok {
+		rest = afterName
+	}
+	if idx := strings.IndexByte(rest, '('); idx >= 0 {
+		return len(createSQL) - len(rest) + idx
+	}
+	return -1
 }
 
 // matchingParen returns the index of the ')' matching the '(' at open, or

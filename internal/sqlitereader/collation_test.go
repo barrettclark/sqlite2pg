@@ -1,6 +1,9 @@
 package sqlitereader
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestColumnCollations_DetectsExplicitNonBinaryCollation reproduces the
 // missing piece behind the ORDER BY collation-mismatch regression
@@ -111,5 +114,50 @@ func TestParseColumnCollations_NoEmptyKeyFromMalformedInput(t *testing.T) {
 	got := parseColumnCollations(`(""COLLATE 0`)
 	if _, hasEmpty := got[""]; hasEmpty {
 		t.Errorf("parseColumnCollations produced a \"\"-keyed entry: %+v", got)
+	}
+}
+
+// TestColumnCollations_TableNameContainingAParenDoesNotConfuseTheParser is
+// issue #91's (audit finding L5) regression: parseColumnCollations used to
+// find the column-definition list's opening '(' by searching for the
+// first '(' anywhere in the CREATE TABLE text — but a table literally
+// named with one (a valid, if unusual, quoted identifier) makes that
+// search match the '(' inside the quoted table name instead, parsing the
+// column-definition body from the wrong offset and silently leaving every
+// column at its BINARY default.
+func TestColumnCollations_TableNameContainingAParenDoesNotConfuseTheParser(t *testing.T) {
+	db := openTestDB(t, `
+		CREATE TABLE "foo(bar)" (
+			name TEXT COLLATE NOCASE,
+			bio TEXT
+		);
+	`)
+
+	got, err := ColumnCollations(db, "foo(bar)")
+	if err != nil {
+		t.Fatalf("ColumnCollations: %v", err)
+	}
+	if got["name"] != "NOCASE" {
+		t.Errorf("ColumnCollations()[\"name\"] = %q, want \"NOCASE\"", got["name"])
+	}
+	if got["bio"] != "BINARY" {
+		t.Errorf("ColumnCollations()[\"bio\"] = %q, want \"BINARY\"", got["bio"])
+	}
+}
+
+// TestColumnListOpenParen_HandlesVirtualTableWithParenInName is a
+// regression test for Copilot's PR #101 review finding: ColumnCollations'
+// own sqlite_master query (type = 'table') matches virtual tables too —
+// SQLite gives them type='table' there, not a separate type — so a CREATE
+// VIRTUAL TABLE statement can reach columnListOpenParen just as a plain
+// one can. Without matching that preamble shape, the paren-in-table-name
+// bug this helper exists to avoid (issue #91) reproduces identically for
+// a virtual table literally named with one.
+func TestColumnListOpenParen_HandlesVirtualTableWithParenInName(t *testing.T) {
+	sql := `CREATE VIRTUAL TABLE "foo(bar)" USING fts5(name, bio)`
+	want := strings.Index(sql, "USING fts5(") + len("USING fts5")
+	got := columnListOpenParen(sql)
+	if got != want {
+		t.Errorf("columnListOpenParen(%q) = %d, want %d (the '(' after USING fts5, not the one inside the quoted table name)", sql, got, want)
 	}
 }

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -186,6 +187,100 @@ func TestDetermineVerify_NonTerminalPipeSaysWhyItSkipped(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "--verify") {
 		t.Errorf("expected the skip message to mention --verify, got %q", out.String())
+	}
+}
+
+// zeroByteErrReader is an io.Reader whose Read always fails immediately
+// with a non-EOF, non-nil error and zero bytes — the same "nothing ever
+// arrived" shape as an immediate EOF, but via a different error value, to
+// confirm readAnswerWithDeadline's gotAnswer doesn't special-case
+// io.EOF specifically (Copilot PR #101 finding).
+type zeroByteErrReader struct{}
+
+func (zeroByteErrReader) Read([]byte) (int, error) {
+	return 0, errors.New("simulated read error")
+}
+
+// TestReadAnswerWithDeadline_NonEOFZeroByteErrorStillReportsNoAnswer is a
+// regression test for Copilot's PR #101 review finding: an earlier
+// version of the fix for issue #94 special-cased err == io.EOF to decide
+// gotAnswer, so a non-EOF read error that also returned zero bytes still
+// reported gotAnswer=true — contradicting the "true whenever any bytes
+// actually arrived" intent the code's own comment stated.
+func TestReadAnswerWithDeadline_NonEOFZeroByteErrorStillReportsNoAnswer(t *testing.T) {
+	_, gotAnswer := readAnswerWithDeadline(zeroByteErrReader{}, 2*time.Second)
+	if gotAnswer {
+		t.Error("expected a non-EOF, zero-byte read error to report gotAnswer=false, same as an immediate EOF")
+	}
+}
+
+// TestDetermineVerify_NonTerminalPipeImmediateEOFStillSaysNoAnswer is a
+// regression test for Copilot's PR #101 review finding: the fix for
+// issue #94 (below) correctly stopped conflating "a real blank line
+// arrived" with "no answer arrived," but over-corrected by also treating
+// an immediate, empty EOF (stdin redirected from /dev/null, or a pipe
+// closed before anything was ever written to it) as a received answer —
+// suppressing the "no answer was provided" diagnostic even though zero
+// bytes were actually read.
+func TestDetermineVerify_NonTerminalPipeImmediateEOFStillSaysNoAnswer(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	w.Close() // closed immediately, nothing ever written: the /dev/null shape
+
+	var out strings.Builder
+	done := make(chan bool, 1)
+	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+
+	select {
+	case got := <-done:
+		if got {
+			t.Error("expected determineVerify to default to false for an immediately-closed empty pipe")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("determineVerify blocked on an immediately-closed empty pipe")
+	}
+	if !strings.Contains(out.String(), "no answer was provided") {
+		t.Errorf("expected the \"no answer was provided\" message for a genuine empty EOF, got %q", out.String())
+	}
+}
+
+// TestDetermineVerify_NonTerminalPipeDistinguishesEmptyAnswerFromNoAnswer
+// is issue #94's (audit finding L8) regression: a scripted bare newline
+// (`printf '\n' | migrate load ...`) is a real, explicit answer the user
+// (or script) provided — just an empty one — not the same thing as a
+// silent, unwritten pipe that never answers at all. Both used to report
+// gotAnswer=false and print the same "no answer was provided" message;
+// the final skip-verification behavior is unaffected either way (an empty
+// answer already means "no"), but the message must reflect what actually
+// happened.
+func TestDetermineVerify_NonTerminalPipeDistinguishesEmptyAnswerFromNoAnswer(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	if _, err := w.WriteString("\n"); err != nil {
+		t.Fatalf("writing scripted blank answer: %v", err)
+	}
+	w.Close()
+
+	var out strings.Builder
+	done := make(chan bool, 1)
+	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+
+	select {
+	case got := <-done:
+		if got {
+			t.Error("expected an empty answer to still default to false (skip verification)")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("determineVerify blocked on a scripted blank answer")
+	}
+	if strings.Contains(out.String(), "no answer was provided") {
+		t.Errorf("expected no \"no answer was provided\" message for an explicit (if blank) scripted answer, got %q", out.String())
 	}
 }
 

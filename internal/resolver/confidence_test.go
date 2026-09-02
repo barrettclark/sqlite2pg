@@ -191,3 +191,39 @@ func TestDecide_PicksHighestConfidenceAsThePrimaryDecision(t *testing.T) {
 		t.Errorf("expected the highest-confidence finding (integer) to win, got %q", decision.SuggestedType)
 	}
 }
+
+// TestDecide_CloseGapButIdenticalDecisionDoesNotForceReview is issue #87's
+// (audit finding L1) regression: the disagreement gate used to compare
+// only confidences, never checking whether the two findings actually
+// disagree about what to do with the column. Two findings within
+// disagreementMargin that agree on both SuggestedType AND TransformExpr
+// have nothing for a human to arbitrate — applying either one produces
+// the identical decision.
+func TestDecide_CloseGapButIdenticalDecisionDoesNotForceReview(t *testing.T) {
+	findings := []profiler.Finding{
+		{Heuristic: "heuristic_a", SuggestedType: "timestamptz", TransformExpr: "unix_epoch_seconds", Confidence: 0.90},
+		{Heuristic: "heuristic_b", SuggestedType: "timestamptz", TransformExpr: "unix_epoch_seconds", Confidence: 0.89},
+	}
+	decision, needsReview := Decide(findings, 0.5)
+	if needsReview {
+		t.Fatal("expected two findings that agree on SuggestedType and TransformExpr to auto-approve despite a close confidence gap")
+	}
+	if decision.SuggestedType != "timestamptz" || decision.TransformExpr != "unix_epoch_seconds" {
+		t.Errorf("expected the agreed-upon decision, got %+v", decision)
+	}
+}
+
+// TestDecide_CloseGapAndDifferentTransformStillForcesReview guards the fix
+// above against becoming too permissive: agreeing on SuggestedType but NOT
+// TransformExpr is still a genuine disagreement (the transform is part of
+// what a human would need to arbitrate) and must still force review.
+func TestDecide_CloseGapAndDifferentTransformStillForcesReview(t *testing.T) {
+	findings := []profiler.Finding{
+		{Heuristic: "heuristic_a", SuggestedType: "date", TransformExpr: "iso8601_to_date", Confidence: 0.90},
+		{Heuristic: "heuristic_b", SuggestedType: "date", TransformExpr: "yyyymmdd_to_date", Confidence: 0.89},
+	}
+	_, needsReview := Decide(findings, 0.5)
+	if !needsReview {
+		t.Fatal("expected findings that agree on SuggestedType but disagree on TransformExpr to still need review")
+	}
+}

@@ -115,8 +115,23 @@ func readAnswerWithDeadline(r io.Reader, d time.Duration) (string, bool) {
 	ch := make(chan result, 1)
 	go func() {
 		line, _ := bufio.NewReader(r).ReadString('\n')
-		line = strings.TrimRight(line, "\r\n")
-		ch <- result{line, line != ""}
+		// gotAnswer is true whenever any bytes actually arrived — checked
+		// on the raw, untrimmed line (a real blank line reads as "\n",
+		// length 1, before TrimRight below reduces it to "") — and false
+		// only when zero bytes were ever read at all: an immediate EOF
+		// (stdin redirected from /dev/null, or a closed-before-writing
+		// pipe) or any other zero-byte read error. Basing this purely on
+		// byte count, not on the specific error value, is what actually
+		// matches "any bytes arrived" — an earlier version of this fix
+		// special-cased err == io.EOF specifically, which left a
+		// non-EOF zero-byte read error still reporting gotAnswer=true,
+		// contradicting that same intent (Copilot PR #101 finding). And
+		// before that: the original fix for issue #94's audit (finding
+		// L8) used "which select case fired" alone, which correctly
+		// separated "no answer before the deadline" from "a real blank
+		// line," but didn't yet distinguish a real blank line from a
+		// genuine zero-byte EOF at all.
+		ch <- result{strings.TrimRight(line, "\r\n"), line != ""}
 	}()
 
 	select {

@@ -79,13 +79,14 @@ func Decide(findings []profiler.Finding, threshold float64) (profiler.Finding, b
 	}
 
 	best := findings[0]
-	secondBest := -1.0
+	var secondBest profiler.Finding
+	haveSecondBest := false
 	for _, f := range findings[1:] {
 		if f.Confidence > best.Confidence {
-			secondBest = best.Confidence
+			secondBest, haveSecondBest = best, true
 			best = f
-		} else if f.Confidence > secondBest {
-			secondBest = f.Confidence
+		} else if !haveSecondBest || f.Confidence > secondBest.Confidence {
+			secondBest, haveSecondBest = f, true
 		}
 	}
 
@@ -95,9 +96,22 @@ func Decide(findings []profiler.Finding, threshold float64) (profiler.Finding, b
 	// Compare on integer hundredths rather than raw float64 subtraction:
 	// see disagreementMargin's doc comment for why binary floating point
 	// makes decimal confidence subtraction representation-dependent.
-	if secondBest >= 0 {
-		gap := confidenceHundredths(best.Confidence) - confidenceHundredths(secondBest)
-		if gap <= confidenceHundredths(disagreementMargin) {
+	if haveSecondBest {
+		gap := confidenceHundredths(best.Confidence) - confidenceHundredths(secondBest.Confidence)
+		// A close gap alone isn't a real disagreement (issue #87's audit,
+		// finding L1): the whole point of forcing review is that picking
+		// one finding over the other isn't clearly justified, but if both
+		// findings actually agree on what to DO with the column
+		// (SuggestedType and TransformExpr identical), there's nothing
+		// for a human to arbitrate — they'd apply the exact same decision
+		// either way. No currently-registered heuristic pair produces
+		// this today (checked directly against every Confidence literal
+		// in internal/profiler/heuristics — see the ladder comment
+		// above), but resolver.Decide shouldn't force needless review the
+		// moment two heuristics ever do converge on the same answer from
+		// different evidence.
+		if gap <= confidenceHundredths(disagreementMargin) &&
+			(best.SuggestedType != secondBest.SuggestedType || best.TransformExpr != secondBest.TransformExpr) {
 			return best, true
 		}
 	}
