@@ -116,10 +116,16 @@ func parseColumnCollations(createSQL string) map[string]string {
 	return result
 }
 
-// createTablePreambleRe matches CREATE TABLE's keyword preamble, up to and
-// including "IF NOT EXISTS" when present — everything before the table
-// name itself.
-var createTablePreambleRe = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`)
+// createTablePreambleRe matches CREATE TABLE's keyword preamble — CREATE
+// [VIRTUAL] TABLE [IF NOT EXISTS] — up to and including "IF NOT EXISTS"
+// when present, everything before the table name itself. VIRTUAL is
+// included because ColumnCollations' own sqlite_master query (`type =
+// 'table'`) matches virtual tables too — SQLite gives them type='table'
+// there, not a separate type — so a CREATE VIRTUAL TABLE statement can
+// reach columnListOpenParen just as a plain one can, and without matching
+// its preamble the paren-in-table-name bug this whole helper exists to
+// avoid reproduces identically for it (Copilot PR #101 finding).
+var createTablePreambleRe = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`)
 
 // columnListOpenParen returns the index of the '(' that opens the
 // column-definition list — the first '(' AFTER the table name, not simply
