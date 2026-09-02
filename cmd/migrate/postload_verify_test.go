@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"strings"
 	"testing"
@@ -186,6 +187,30 @@ func TestDetermineVerify_NonTerminalPipeSaysWhyItSkipped(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "--verify") {
 		t.Errorf("expected the skip message to mention --verify, got %q", out.String())
+	}
+}
+
+// zeroByteErrReader is an io.Reader whose Read always fails immediately
+// with a non-EOF, non-nil error and zero bytes — the same "nothing ever
+// arrived" shape as an immediate EOF, but via a different error value, to
+// confirm readAnswerWithDeadline's gotAnswer doesn't special-case
+// io.EOF specifically (Copilot PR #101 finding).
+type zeroByteErrReader struct{}
+
+func (zeroByteErrReader) Read([]byte) (int, error) {
+	return 0, errors.New("simulated read error")
+}
+
+// TestReadAnswerWithDeadline_NonEOFZeroByteErrorStillReportsNoAnswer is a
+// regression test for Copilot's PR #101 review finding: an earlier
+// version of the fix for issue #94 special-cased err == io.EOF to decide
+// gotAnswer, so a non-EOF read error that also returned zero bytes still
+// reported gotAnswer=true — contradicting the "true whenever any bytes
+// actually arrived" intent the code's own comment stated.
+func TestReadAnswerWithDeadline_NonEOFZeroByteErrorStillReportsNoAnswer(t *testing.T) {
+	_, gotAnswer := readAnswerWithDeadline(zeroByteErrReader{}, 2*time.Second)
+	if gotAnswer {
+		t.Error("expected a non-EOF, zero-byte read error to report gotAnswer=false, same as an immediate EOF")
 	}
 }
 
