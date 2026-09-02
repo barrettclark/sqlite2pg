@@ -189,6 +189,39 @@ func TestDetermineVerify_NonTerminalPipeSaysWhyItSkipped(t *testing.T) {
 	}
 }
 
+// TestDetermineVerify_NonTerminalPipeImmediateEOFStillSaysNoAnswer is a
+// regression test for Copilot's PR #101 review finding: the fix for
+// issue #94 (below) correctly stopped conflating "a real blank line
+// arrived" with "no answer arrived," but over-corrected by also treating
+// an immediate, empty EOF (stdin redirected from /dev/null, or a pipe
+// closed before anything was ever written to it) as a received answer —
+// suppressing the "no answer was provided" diagnostic even though zero
+// bytes were actually read.
+func TestDetermineVerify_NonTerminalPipeImmediateEOFStillSaysNoAnswer(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatalf("os.Pipe: %v", err)
+	}
+	defer r.Close()
+	w.Close() // closed immediately, nothing ever written: the /dev/null shape
+
+	var out strings.Builder
+	done := make(chan bool, 1)
+	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+
+	select {
+	case got := <-done:
+		if got {
+			t.Error("expected determineVerify to default to false for an immediately-closed empty pipe")
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("determineVerify blocked on an immediately-closed empty pipe")
+	}
+	if !strings.Contains(out.String(), "no answer was provided") {
+		t.Errorf("expected the \"no answer was provided\" message for a genuine empty EOF, got %q", out.String())
+	}
+}
+
 // TestDetermineVerify_NonTerminalPipeDistinguishesEmptyAnswerFromNoAnswer
 // is issue #94's (audit finding L8) regression: a scripted bare newline
 // (`printf '\n' | migrate load ...`) is a real, explicit answer the user

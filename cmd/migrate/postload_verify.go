@@ -108,28 +108,33 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) bool {
 // harmless (it's a one-shot, not a loop, and nothing else reads stdin
 // after this point).
 func readAnswerWithDeadline(r io.Reader, d time.Duration) (string, bool) {
-	ch := make(chan string, 1)
+	type result struct {
+		line string
+		ok   bool
+	}
+	ch := make(chan result, 1)
 	go func() {
-		line, _ := bufio.NewReader(r).ReadString('\n')
-		ch <- strings.TrimRight(line, "\r\n")
+		line, err := bufio.NewReader(r).ReadString('\n')
+		// gotAnswer is true whenever any bytes actually arrived — a real
+		// blank line ("\n", e.g. a scripted `printf '\n' | migrate load
+		// ...`) or content read right up to EOF with no trailing newline
+		// — but false for an immediate, empty EOF (err == io.EOF with
+		// zero bytes ever read: stdin redirected from /dev/null, or a
+		// closed-before-writing pipe). That specific shape is genuinely
+		// "no answer arrived," not a blank one (Copilot PR #101 finding
+		// on the original fix for issue #94's audit, finding L8): the
+		// prior version of this fix used "which select case fired" alone
+		// to decide gotAnswer, which correctly separated "no answer
+		// before the deadline" from "a real blank line," but then
+		// over-corrected by also treating an immediate empty EOF as a
+		// received answer — suppressing the "no answer was provided"
+		// diagnostic even though no bytes were read at all.
+		ch <- result{strings.TrimRight(line, "\r\n"), !(err == io.EOF && line == "")}
 	}()
 
 	select {
-	case line := <-ch:
-		// Whether a real answer arrived is entirely determined by which
-		// select case fired — the read completing (this one) versus the
-		// deadline elapsing (below) — not by what the line's content
-		// happened to be. The old `line != ""` check conflated "no answer
-		// arrived before the deadline" with "an answer arrived and it was
-		// a bare empty line" (e.g. a scripted `printf '\n' | migrate load
-		// ...`): both reported gotAnswer=false and the same "stdin is not
-		// a terminal and no answer was provided" message, even though the
-		// second case genuinely did receive the user's (blank) input
-		// (issue #94's audit, finding L8). determineVerify's final
-		// behavior is unaffected either way (an empty answer already
-		// means "no" via the y/yes check below) — only the diagnostic
-		// message was misleading.
-		return line, true
+	case res := <-ch:
+		return res.line, res.ok
 	case <-time.After(d):
 		return "", false
 	}
