@@ -43,3 +43,21 @@ release:
   github:
     owner: barrettclark
     name: sqlite2pg
+
+brews:
+  - name: sqlite2pg
+    repository:
+      owner: barrettclark
+      name: homebrew-tap
+      branch: main
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    homepage: "https://github.com/barrettclark/sqlite2pg"
+    description: "A pgloader replacement for migrating SQLite databases into PostgreSQL"
+    license: "MIT"
+    install: |
+      bin.install "migrate"
+    test: |
+      # migrate has no --help; a bare invocation exits 1 with a usage
+      # message, which is the closest thing to a smoke test it offers.
+      assert_match "usage: migrate", shell_output("#{bin}/migrate 2>&1", 1)
