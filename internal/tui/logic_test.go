@@ -53,7 +53,7 @@ func TestPreviewValueForType_CoercesNumericValuesRatherThanJustFlagging(t *testi
 		{"NULL", "integer", "NULL", true},
 	}
 	for _, c := range cases {
-		display, _, valid := previewValueForType(c.value, c.targetType)
+		display, _, valid := previewValueForType(c.value, c.targetType, "")
 		if display != c.wantDisplay || valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, %q) = (%q, %v), want (%q, %v)",
 				c.value, c.targetType, display, valid, c.wantDisplay, c.wantValid)
@@ -70,7 +70,7 @@ func TestPreviewValueForType_CoercesNumericValuesRatherThanJustFlagging(t *testi
 func TestPreviewValueForType_RejectsFractionalValuesForIntegerTypes(t *testing.T) {
 	cases := []string{"integer", "bigint", "smallint"}
 	for _, targetType := range cases {
-		if _, _, valid := previewValueForType("3.7", targetType); valid {
+		if _, _, valid := previewValueForType("3.7", targetType, ""); valid {
 			t.Errorf("previewValueForType(%q, %q): expected invalid, not a silent truncation", "3.7", targetType)
 		}
 	}
@@ -83,7 +83,7 @@ func TestPreviewValueForType_RejectsFractionalValuesForIntegerTypes(t *testing.T
 // same bug numeric_text_to_integer itself was fixed for (issue #15), just
 // never mirrored in the TUI.
 func TestPreviewValueForType_IntegerPreservesExactPrecisionBeyondFloat64(t *testing.T) {
-	display, _, valid := previewValueForType("2124037125711300644", "bigint")
+	display, _, valid := previewValueForType("2124037125711300644", "bigint", "")
 	if !valid {
 		t.Fatal("expected valid")
 	}
@@ -114,7 +114,7 @@ func TestPreviewValueForType_ValidityForNonNumericTypes(t *testing.T) {
 		{"NULL", "date", true},
 	}
 	for _, c := range cases {
-		_, _, valid := previewValueForType(c.value, c.targetType)
+		_, _, valid := previewValueForType(c.value, c.targetType, "")
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, %q) valid = %v, want %v", c.value, c.targetType, valid, c.wantValid)
 		}
@@ -136,7 +136,7 @@ func TestPreviewValueForType_JsonbValidatesRealJSON(t *testing.T) {
 		{"NULL", true},
 	}
 	for _, c := range cases {
-		_, transform, valid := previewValueForType(c.value, "jsonb")
+		_, transform, valid := previewValueForType(c.value, "jsonb", "")
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, \"jsonb\") valid = %v, want %v", c.value, valid, c.wantValid)
 		}
@@ -157,7 +157,7 @@ func TestPreviewValueForType_UUID(t *testing.T) {
 		{"NULL", true},
 	}
 	for _, c := range cases {
-		_, _, valid := previewValueForType(c.value, "uuid")
+		_, _, valid := previewValueForType(c.value, "uuid", "")
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, \"uuid\") valid = %v, want %v", c.value, valid, c.wantValid)
 		}
@@ -177,7 +177,7 @@ func TestPreviewValueForType_UUIDList(t *testing.T) {
 		{"NULL", true},
 	}
 	for _, c := range cases {
-		_, _, valid := previewValueForType(c.value, "uuid[]")
+		_, _, valid := previewValueForType(c.value, "uuid[]", "")
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, \"uuid[]\") valid = %v, want %v", c.value, valid, c.wantValid)
 		}
@@ -189,7 +189,7 @@ func TestValidTypesForColumn_FiltersOutTypesAnySampleFails(t *testing.T) {
 	// and text-like types validate; boolean/date/timestamptz don't, since
 	// "12"/"34" aren't boolean-shaped or date-formatted.
 	values := []string{"12", "34", "0"}
-	got := validTypesForColumn(values, "integer")
+	got := validTypesForColumn(values, "integer", "")
 	want := map[string]bool{
 		"integer": true, "bigint": true, "smallint": true,
 		"real": true, "double precision": true, "numeric": true,
@@ -329,7 +329,7 @@ func TestValidTypesForColumn_OffersTimestamptzForAPlausibleUnixEpochValueNotAlre
 	// missing from the picker for any column that didn't already have it
 	// as its current type).
 	values := []string{"1712345678"}
-	got := validTypesForColumn(values, "integer")
+	got := validTypesForColumn(values, "integer", "")
 	found := false
 	for _, typ := range got {
 		if typ == "timestamptz" {
@@ -347,7 +347,7 @@ func TestValidTypesForColumn_DoesNotOfferTimestamptzForOrdinarySmallIntegers(t *
 	// a count) is not remotely epoch-shaped and must not "validate" as
 	// timestamptz just because Transform happens not to error on it.
 	values := []string{"12", "34", "0"}
-	got := validTypesForColumn(values, "integer")
+	got := validTypesForColumn(values, "integer", "")
 	for _, typ := range got {
 		if typ == "timestamptz" || typ == "date" {
 			t.Errorf("did not expect %q to be offered for ordinary small integers, got %v", typ, got)
@@ -356,7 +356,7 @@ func TestValidTypesForColumn_DoesNotOfferTimestamptzForOrdinarySmallIntegers(t *
 }
 
 func TestPreviewValueForType_TimestamptzViaUnixEpochSecondsTransform(t *testing.T) {
-	display, transform, valid := previewValueForType("1712345678", "timestamptz")
+	display, transform, valid := previewValueForType("1712345678", "timestamptz", "")
 	if !valid {
 		t.Fatal("expected 1712345678 to be valid as timestamptz via unix_epoch_seconds")
 	}
@@ -379,7 +379,7 @@ func TestPreviewValueForType_TimestamptzViaUnixEpochSecondsTransform(t *testing.
 // every epoch-seconds/millis/micros check for exactly the large-magnitude
 // values they exist to catch.
 func TestPreviewValueForType_TimestamptzViaScientificNotationEpoch(t *testing.T) {
-	display, transform, valid := previewValueForType("1.712345678e+09", "timestamptz")
+	display, transform, valid := previewValueForType("1.712345678e+09", "timestamptz", "")
 	if !valid {
 		t.Fatal("expected the scientific-notation form of a valid epoch-seconds value to still validate as timestamptz")
 	}
@@ -415,7 +415,7 @@ func TestPreviewValueForType_ReturnsTheTransformUsedToProduceEachPreview(t *test
 		{"cc75b164-273c-4dce-9cdf-292045a0d38b\x003422ac1a-8dbb-4f23-a337-0bd0a0150022", "uuid[]", "uuid_list_format"},
 	}
 	for _, c := range cases {
-		_, transform, valid := previewValueForType(c.value, c.targetType)
+		_, transform, valid := previewValueForType(c.value, c.targetType, "")
 		if !valid {
 			t.Errorf("previewValueForType(%q, %q): expected valid", c.value, c.targetType)
 			continue
@@ -456,7 +456,7 @@ func TestValidTypesForColumn_ExcludesSmallintForOutOfRangeValues(t *testing.T) {
 	// here would let the picker promise a type the real COPY then rejects
 	// with "value out of range for type smallint" (issue #27).
 	values := []string{"70000"}
-	got := validTypesForColumn(values, "integer")
+	got := validTypesForColumn(values, "integer", "")
 	for _, typ := range got {
 		if typ == "smallint" {
 			t.Errorf("did not expect smallint to be offered for out-of-range value 70000, got %v", got)
@@ -486,7 +486,7 @@ func TestPreviewValueForType_SmallintRangeCheck(t *testing.T) {
 		{"-32769", false},
 	}
 	for _, c := range cases {
-		_, _, valid := previewValueForType(c.value, "smallint")
+		_, _, valid := previewValueForType(c.value, "smallint", "")
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, \"smallint\") valid = %v, want %v", c.value, valid, c.wantValid)
 		}
@@ -503,7 +503,7 @@ func TestPreviewValueForType_IntegerRangeCheck(t *testing.T) {
 		{"-2147483648", true},
 	}
 	for _, c := range cases {
-		_, _, valid := previewValueForType(c.value, "integer")
+		_, _, valid := previewValueForType(c.value, "integer", "")
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, \"integer\") valid = %v, want %v", c.value, valid, c.wantValid)
 		}
@@ -512,7 +512,7 @@ func TestPreviewValueForType_IntegerRangeCheck(t *testing.T) {
 
 func TestValidTypesForColumn_AlwaysIncludesCurrentTypeEvenIfInvalid(t *testing.T) {
 	values := []string{"not-a-number-at-all"}
-	got := validTypesForColumn(values, "integer")
+	got := validTypesForColumn(values, "integer", "")
 	found := false
 	for _, typ := range got {
 		if typ == "integer" {
