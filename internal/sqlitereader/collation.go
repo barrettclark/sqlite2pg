@@ -117,13 +117,15 @@ func parseColumnCollations(createSQL string) map[string]string {
 }
 
 // maskParensAndStringLiterals returns s with every byte inside a
-// parenthesised group (depth >= 1) or a '...' string literal replaced by a
-// space, so a COLLATE keyword in a CHECK expression or a string-literal
-// DEFAULT is not mistaken for the column's own collation clause (issue
-// #145). A column's real COLLATE clause is always at the top level of its
-// definition. Top-level "..." / `...` / [...] identifier spans are kept
-// verbatim — a collation name may be written that way — but the same
-// spans nested inside parens are masked with everything else.
+// parenthesised group (depth >= 1) or a string-literal DEFAULT replaced by
+// a space, so a COLLATE keyword in a CHECK expression or a `DEFAULT
+// 'COLLATE NOCASE'` string is not mistaken for the column's own collation
+// clause (issue #145). A column's real COLLATE clause is always at the top
+// level of its definition. Top-level "..." / `...` / [...] identifier
+// spans are kept verbatim — a collation name may be written that way — as
+// is a top-level '...' that is the operand of a COLLATE (SQLite accepts
+// `COLLATE 'NOCASE'`); the same spans nested inside parens are masked with
+// everything else.
 func maskParensAndStringLiterals(s string) string {
 	b := []byte(s)
 	depth := 0
@@ -131,7 +133,8 @@ func maskParensAndStringLiterals(s string) string {
 		switch c := s[i]; c {
 		case '\'', '"', '`', '[':
 			j := skipQuoteOrComment(s, i)
-			if c == '\'' || depth > 0 {
+			collationName := depth == 0 && (c != '\'' || precededByCollateKeyword(s, i))
+			if !collationName {
 				for k := i; k < j; k++ {
 					b[k] = ' '
 				}
@@ -154,6 +157,23 @@ func maskParensAndStringLiterals(s string) string {
 		i++
 	}
 	return string(b)
+}
+
+// precededByCollateKeyword reports whether the token immediately before
+// s[i] (skipping intervening whitespace) is the keyword COLLATE — i.e.
+// s[i] opens the operand of a COLLATE clause. Used to tell
+// `COLLATE 'NOCASE'` (a real collation name SQLite accepts) from a string
+// DEFAULT that merely contains the word.
+func precededByCollateKeyword(s string, i int) bool {
+	k := i
+	for k > 0 && (s[k-1] == ' ' || s[k-1] == '\t' || s[k-1] == '\n' || s[k-1] == '\r') {
+		k--
+	}
+	const kw = "collate"
+	if k < len(kw) || !strings.EqualFold(s[k-len(kw):k], kw) {
+		return false
+	}
+	return k-len(kw) == 0 || isIdentBoundary(s[k-len(kw)-1])
 }
 
 // createTablePreambleRe matches CREATE TABLE's keyword preamble — CREATE

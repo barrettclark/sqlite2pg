@@ -50,3 +50,24 @@ func TestColumnCollations_StillFindsRealCollateAfterACheckConstraint(t *testing.
 		t.Errorf("ColumnCollations()[\"name\"] = %q, want \"NOCASE\"", got["name"])
 	}
 }
+
+// SQLite accepts a single-quoted collation name (COLLATE 'NOCASE') and
+// really applies it, so the string-literal masking must keep a '...' that
+// is the operand of a top-level COLLATE (Copilot review, PR #151).
+func TestColumnCollations_SingleQuotedCollationName(t *testing.T) {
+	db := openTestDB(t, `
+		CREATE TABLE t (
+			id   TEXT PRIMARY KEY COLLATE 'NOCASE',
+			note TEXT DEFAULT 'COLLATE NOCASE'
+		);`)
+	got, err := ColumnCollations(db, "t")
+	if err != nil {
+		t.Fatalf("ColumnCollations: %v", err)
+	}
+	if got["id"] != "NOCASE" {
+		t.Errorf("ColumnCollations()[\"id\"] = %q, want \"NOCASE\" (COLLATE 'NOCASE' is a real clause)", got["id"])
+	}
+	if got["note"] != "BINARY" {
+		t.Errorf("ColumnCollations()[\"note\"] = %q, want \"BINARY\" (COLLATE inside a string DEFAULT is not a clause)", got["note"])
+	}
+}
