@@ -5,8 +5,7 @@
 /.superpowers/
 
 # Compiled binaries
-/migrate
-migrate/migrate
+/sqlite2pg
 /bin/
 *.exe
 *.test
@@ -25,7 +24,7 @@ migrate/migrate
 .env
 .env.*
 
-# Draft migration configs produced by `migrate profile`
+# Draft migration configs produced by `sqlite2pg profile`
 *.migration.yaml
 
 # Local sqlite/geodatabase sources dropped in for testing (e.g. beets library)

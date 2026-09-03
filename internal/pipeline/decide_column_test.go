@@ -356,7 +356,7 @@ func TestDecideColumn_PersistsDisagreementTieAsNeedsReview(t *testing.T) {
 	// Issue #20 bug 2: when resolver.Decide flags needsReview because two
 	// findings genuinely tie (as opposed to one being simply below
 	// threshold), decideColumn used to store best.Confidence unchanged —
-	// e.g. 0.95, above any sane --threshold — so `migrate load`'s
+	// e.g. 0.95, above any sane --threshold — so `sqlite2pg load`'s
 	// confidence-only gate and the TUI's confidence-only NeedsReview both
 	// silently missed it. NeedsReview must persist the verdict
 	// independently of Confidence.

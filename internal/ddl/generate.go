@@ -98,7 +98,7 @@ func missingColumnOrder(tc config.TableConfig) bool {
 }
 
 // ValidateTableConfigs checks every included table in cfg for the
-// ErrMissingColumnOrder config bug up front, so `migrate load` (both
+// ErrMissingColumnOrder config bug up front, so `sqlite2pg load` (both
 // --dry-run and the real path) can reject a bad config before doing any
 // Postgres work, rather than discovering it mid-run the way
 // GenerateCreateTable's per-table check would.

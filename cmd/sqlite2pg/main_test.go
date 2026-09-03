@@ -19,6 +19,14 @@ func TestRun_NoArgsReturnsUsageError(t *testing.T) {
 	if !strings.Contains(err.Error(), "usage") {
 		t.Errorf("expected a usage message, got %q", err.Error())
 	}
+	// The bare-invocation usage string must list every real dispatched
+	// subcommand — `run` was missing (issue #119), and it is the primary
+	// end-to-end entry point.
+	for _, sub := range []string{"run", "profile", "review", "load", "verify", "resolve"} {
+		if !strings.Contains(err.Error(), sub) {
+			t.Errorf("usage string %q does not mention subcommand %q", err.Error(), sub)
+		}
+	}
 }
 
 func TestRun_UnknownCommandReturnsError(t *testing.T) {
@@ -161,7 +169,7 @@ func TestRunLoad_DoesNotBlockOnAnUnreviewedDroppedColumn(t *testing.T) {
 	// confidence 0.4 (unresolved by design, once decideColumn's
 	// full-table check is skipped for it) and BuildReviewSummary excludes
 	// __drop__ columns from the review UI entirely — there is nothing a
-	// human can ever do in `migrate review` to mark one Reviewed. If
+	// human can ever do in `sqlite2pg review` to mark one Reviewed. If
 	// load's gate iterates every column including dropped ones, an Esri
 	// source can never load without --force. The gate must only ask
 	// about columns the review UI can actually act on.
@@ -201,7 +209,7 @@ func TestRunLoad_DoesNotBlockOnAnUnreviewedDroppedColumn(t *testing.T) {
 
 func TestPrintDryRunDDL_OrdersTablesAlphabeticallyRegardlessOfMapIteration(t *testing.T) {
 	// Regression (issue #32): cfg.Tables is a Go map, and ranging over it
-	// directly randomizes CREATE TABLE order between runs, so `migrate
+	// directly randomizes CREATE TABLE order between runs, so `sqlite2pg
 	// load --dry-run` on an unchanged config could produce a spuriously
 	// different diff each time. printDryRunDDL must always sort table
 	// names before iterating, the same way executeLoad already does.

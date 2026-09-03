@@ -8,7 +8,7 @@ import (
 )
 
 // TestCleanupConfigAfterLoad_LoadFailureLeavesConfigInPlace is the
-// regression test for issue #38: `migrate run`'s config cleanup used to be
+// regression test for issue #38: `sqlite2pg run`'s config cleanup used to be
 // registered via `defer os.Remove(configPath)` before the review and load
 // steps ran, so it fired on every exit path — including a load that failed
 // partway through a table. A user who hit a load failure without having
@@ -114,7 +114,7 @@ func TestCleanupConfigAfterLoad_SuccessDeletesConfigUnlessKeepConfig(t *testing.
 // data in Postgres doesn't match the source — a real data-integrity
 // finding. The user needs the generated config (to see which type
 // decisions produced the bad data) and the .state.json (to re-run
-// `migrate verify` for the full report, and to know which timestamped
+// `sqlite2pg verify` for the full report, and to know which timestamped
 // database the data landed in). runRunFinish must NOT run cleanup when
 // verification failed; both files survive and the verify error is
 // returned unchanged.

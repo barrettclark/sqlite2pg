@@ -1,5 +1,5 @@
 // Package config defines and persists MigrationConfig, the reviewed
-// mapping file that both the review UI and `migrate load` read and write.
+// mapping file that both the review UI and `sqlite2pg load` read and write.
 // It is the single source of truth for a reproducible run.
 package config
 
@@ -39,7 +39,7 @@ type MigrationConfig struct {
 	// GDB_* or (on a confirmed Esri/Spatialite source) Spatialite st_*
 	// system tables (issue #35). Recorded here — not just warned on stderr
 	// at profile time — so a human reviewing this config later, or
-	// `migrate load` running non-interactively in CI where the original
+	// `sqlite2pg load` running non-interactively in CI where the original
 	// profile-time stderr isn't visible, can still see exactly what was
 	// filtered and why, rather than the omission being silent (issue #51).
 	FilteredSystemTables []FilteredSystemTable `yaml:"filtered_system_tables,omitempty"`
@@ -137,7 +137,7 @@ type ColumnConfig struct {
 	// trusted to signal "review this" the way it can for the
 	// below-threshold and full-table-violation cases (which also rewrite
 	// Confidence to a sentinel below threshold). Both BuildReviewSummary
-	// and `migrate load`'s gate must consult this in addition to
+	// and `sqlite2pg load`'s gate must consult this in addition to
 	// Confidence, not instead of it.
 	NeedsReview bool `yaml:"needs_review,omitempty"`
 

@@ -130,7 +130,7 @@ func TestTransform_JulianDayToDate_StillAcceptsRealDates(t *testing.T) {
 // TestTransform_UnixEpoch_RejectsWrappingValue is issue #111's regression:
 // a value inside int64's range but far outside any plausible timestamp
 // still wraps time.Time's own internal seconds-since-year-1 int64 to an
-// arbitrary instant with no error, and migrate verify recomputes the same
+// arbitrary instant with no error, and sqlite2pg verify recomputes the same
 // wrap on both sides and reports a match. rejectImplausibleTimestamp now
 // bounds the *result* to PostgreSQL's timestamptz year range.
 //

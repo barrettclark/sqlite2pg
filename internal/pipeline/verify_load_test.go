@@ -4,7 +4,7 @@
 // integration_test.go's doc comment for how to run this tier (same PGURL
 // convention, same build tag). These tests seed a source SQLite table,
 // load it into Postgres for real via the same copywriter pipeline
-// `migrate load` uses, then deliberately corrupt individual Postgres
+// `sqlite2pg load` uses, then deliberately corrupt individual Postgres
 // values (or drop a row) to prove VerifyTable's type-aware comparison
 // actually catches what it claims to catch — not just that a clean load
 // reports clean.
@@ -78,7 +78,7 @@ func connectVerifyTestPostgres(t *testing.T) *pgx.Conn {
 // loadVerifyFixture creates and populates the SQLite source table, then
 // creates and loads the matching Postgres table via the real DDL/COPY
 // pipeline (not hand-written SQL) — so a clean load here is exactly what
-// `migrate load` itself would have produced, and VerifyTable's job is to
+// `sqlite2pg load` itself would have produced, and VerifyTable's job is to
 // confirm that.
 func loadVerifyFixture(t *testing.T, pgConn *pgx.Conn, table string, tc config.TableConfig, insertSQL string) *sql.DB {
 	t.Helper()

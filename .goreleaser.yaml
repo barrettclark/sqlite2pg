@@ -1,13 +1,15 @@
 version: 2
 
-before:
-  hooks:
-    - go mod tidy
+# No `before.hooks` here: a release must build the tagged tree verbatim.
+# `go mod tidy` at release time hits the network and can resolve a
+# different dependency set than CI tested against, or abort the release
+# outright (issue #117 / L8). The tidiness check lives in CI instead
+# (.github/workflows/ci.yml), as a `git diff --exit-code` after tidy.
 
 builds:
-  - id: migrate
-    main: ./cmd/migrate
-    binary: migrate
+  - id: sqlite2pg
+    main: ./cmd/sqlite2pg
+    binary: sqlite2pg
     env:
       - CGO_ENABLED=0
     goos:
@@ -21,7 +23,7 @@ builds:
       - -s -w
 
 archives:
-  - id: migrate
+  - id: sqlite2pg
     formats: [tar.gz]
     name_template: >-
       {{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}
@@ -44,20 +46,24 @@ release:
     owner: barrettclark
     name: sqlite2pg
 
-brews:
+# `brews:` was deprecated in GoReleaser v2.10 — Homebrew Formulae are meant
+# to build from source, and shipping a pre-built binary through one was
+# always a workaround. `homebrew_casks:` is the sanctioned path for a
+# pre-compiled CLI (the Homebrew team helped design it). This publishes
+# Casks/sqlite2pg.rb to barrettclark/homebrew-tap; `brew install
+# barrettclark/tap/sqlite2pg` auto-detects it. GoReleaser adds the
+# Gatekeeper-quarantine removal postflight itself. There is no `test do`
+# equivalent for a cask — the release workflow's `go test ./...` step is
+# the smoke test now.
+homebrew_casks:
   - name: sqlite2pg
+    binaries:
+      - sqlite2pg
     repository:
       owner: barrettclark
       name: homebrew-tap
       branch: main
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
-    directory: Formula
+    directory: Casks
     homepage: "https://github.com/barrettclark/sqlite2pg"
     description: "A pgloader replacement for migrating SQLite databases into PostgreSQL"
-    license: "MIT"
-    install: |
-      bin.install "migrate"
-    test: |
-      # migrate has no --help; a bare invocation exits 1 with a usage
-      # message, which is the closest thing to a smoke test it offers.
-      assert_match "usage: migrate", shell_output("#{bin}/migrate 2>&1", 1)

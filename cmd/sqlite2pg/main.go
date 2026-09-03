@@ -37,7 +37,7 @@ func main() {
 
 func run(args []string) error {
 	if len(args) == 0 {
-		return errors.New("usage: migrate <profile|review|load|verify|resolve> ...")
+		return errors.New("usage: sqlite2pg <run|profile|review|load|verify|resolve> ...")
 	}
 
 	switch args[0] {
@@ -82,10 +82,10 @@ func runRun(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: migrate run --pg url [--sample-size N] [--threshold F] [--keep-config] [--verify|--noverify] <source.db>")
+		return errors.New("usage: sqlite2pg run --pg url [--sample-size N] [--threshold F] [--keep-config] [--verify|--noverify] <source.db>")
 	}
 	if *pgURL == "" {
-		return errors.New("--pg is required (use `migrate profile` + `migrate review` separately if you don't have a target yet)")
+		return errors.New("--pg is required (use `sqlite2pg profile` + `sqlite2pg review` separately if you don't have a target yet)")
 	}
 	sourcePath := fs.Arg(0)
 
@@ -167,7 +167,7 @@ func runRun(args []string) error {
 //     Postgres doesn't match the source — a real data-integrity finding.
 //     The config records every type decision, transform and confidence
 //     that produced the suspect data, and the state file records which
-//     timestamped Postgres database it landed in and lets `migrate verify`
+//     timestamped Postgres database it landed in and lets `sqlite2pg verify`
 //     be re-run for the full report. Keep both, for the same reason
 //     cleanupConfigAfterLoad keeps them after a load error, and tell the
 //     user where they are. The verify error is returned unchanged; since
@@ -176,7 +176,7 @@ func runRun(args []string) error {
 func runRunFinish(verifyErr error, configPath string, keepConfig bool) error {
 	if verifyErr != nil {
 		fmt.Fprintf(os.Stderr,
-			"keeping %s and %s.state.json so you can inspect the decisions and re-run `migrate verify`\n",
+			"keeping %s and %s.state.json so you can inspect the decisions and re-run `sqlite2pg verify`\n",
 			configPath, configPath)
 		return verifyErr
 	}
@@ -189,7 +189,7 @@ func runRunFinish(verifyErr error, configPath string, keepConfig bool) error {
 // a load that actually succeeded — on any load error it is left in place,
 // independent of --keep-config, so a user who hits a failure without having
 // anticipated --keep-config up front can still inspect what was decided or
-// retry via `migrate load --resume` against the surviving config and its
+// retry via `sqlite2pg load --resume` against the surviving config and its
 // state file. loadErr, when non-nil, is returned unchanged so callers still
 // see the real failure.
 //
@@ -197,13 +197,13 @@ func runRunFinish(verifyErr error, configPath string, keepConfig bool) error {
 // on success, keeping the invariant "the state file exists if and only if
 // the config file exists" — the two files describe the same run and neither
 // is useful without the other. This is deliberately scoped to `run`'s
-// single-shot flow only (executeLoad, reached from the separate `migrate
+// single-shot flow only (executeLoad, reached from the separate `sqlite2pg
 // load` command, never calls this function and so never touches its state
-// file): `migrate verify` locates its target database by reading
+// file): `sqlite2pg verify` locates its target database by reading
 // <configPath>.state.json, but it also needs configPath itself to load the
 // table definitions it verifies against (config.Load in runVerify) — and
 // `run`'s success path already deletes that config file, independent of
-// this fix. So `verify` was already unusable after a plain `migrate run`
+// this fix. So `verify` was already unusable after a plain `sqlite2pg run`
 // succeeded; removing the state file here doesn't take away any capability
 // `verify` users actually had. Someone who wants to `verify` after `run`
 // must already pass --keep-config to keep the config around, and that same
@@ -238,7 +238,7 @@ func runProfile(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: migrate profile [--out path] [--sample-size N] [--threshold F] <source.db>")
+		return errors.New("usage: sqlite2pg profile [--out path] [--sample-size N] [--threshold F] <source.db>")
 	}
 	sourcePath := fs.Arg(0)
 	if *out == "" {
@@ -267,7 +267,7 @@ func runProfile(args []string) error {
 		reportPath := *out + ".unresolved_report.yaml"
 		fr := resolver.FileResolver{ReportPath: reportPath}
 		_, resolveErr := fr.Resolve(context.Background(), result.Unresolved)
-		fmt.Printf("%d column(s) need review — run `migrate review %s` or edit %s\n", len(result.Unresolved), *out, *out)
+		fmt.Printf("%d column(s) need review — run `sqlite2pg review %s` or edit %s\n", len(result.Unresolved), *out, *out)
 		return resolveErr
 	}
 	return nil
@@ -328,7 +328,7 @@ func runReview(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: migrate review [--threshold F] <config.migration.yaml>")
+		return errors.New("usage: sqlite2pg review [--threshold F] <config.migration.yaml>")
 	}
 	configPath := fs.Arg(0)
 
@@ -364,7 +364,7 @@ func runLoad(args []string) error {
 		return errors.New("--dry-run cannot be combined with --verify or --noverify (a dry run never loads data, so there is nothing to verify)")
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: migrate load [--pg url] [--dry-run] [--force] [--resume] [--threshold F] [--verify|--noverify] <config.migration.yaml>")
+		return errors.New("usage: sqlite2pg load [--pg url] [--dry-run] [--force] [--resume] [--threshold F] [--verify|--noverify] <config.migration.yaml>")
 	}
 	configPath := fs.Arg(0)
 
@@ -380,7 +380,7 @@ func runLoad(args []string) error {
 		if drifted, err := config.DetectDrift(cfg); err != nil {
 			return err
 		} else if drifted {
-			return fmt.Errorf("source file %s has changed since this config was generated; re-run `migrate profile` or pass --force", cfg.Source.Path)
+			return fmt.Errorf("source file %s has changed since this config was generated; re-run `sqlite2pg profile` or pass --force", cfg.Source.Path)
 		}
 		for tableName, tc := range cfg.Tables {
 			// Scoped to ddl.IncludedColumns(tc) rather than all of
@@ -399,10 +399,10 @@ func runLoad(args []string) error {
 				// original value, above threshold, so Confidence alone
 				// isn't a reliable gate here.
 				if !col.Reviewed && col.Confidence < *threshold {
-					return fmt.Errorf("%s.%s is unreviewed (confidence %.2f < %.2f); run `migrate review` or pass --force", tableName, colName, col.Confidence, *threshold)
+					return fmt.Errorf("%s.%s is unreviewed (confidence %.2f < %.2f); run `sqlite2pg review` or pass --force", tableName, colName, col.Confidence, *threshold)
 				}
 				if !col.Reviewed && col.NeedsReview {
-					return fmt.Errorf("%s.%s is unreviewed (heuristics disagreed); run `migrate review` or pass --force", tableName, colName)
+					return fmt.Errorf("%s.%s is unreviewed (heuristics disagreed); run `sqlite2pg review` or pass --force", tableName, colName)
 				}
 			}
 		}
@@ -675,7 +675,7 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		// this step commits some constraints and then fails partway (an
 		// inferred-FK violation, a lock timeout, a dropped connection),
 		// FKsApplied stays false, every table stays Completed, and every
-		// subsequent `migrate load --resume` re-enters this block and
+		// subsequent `sqlite2pg load --resume` re-enters this block and
 		// aborts on the *first* statement with "constraint ... already
 		// exists" — never reaching, or reporting, the real failure
 		// (issue #109 / M6). Wrapping the step makes a partial failure
@@ -713,7 +713,7 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	// The state file is deliberately left in place even after a fully
 	// successful load, rather than removed: it's the durable record of
 	// which database this config's data actually landed in (issue #19),
-	// and `migrate verify` (which has no other way to know which database
+	// and `sqlite2pg verify` (which has no other way to know which database
 	// to check) reads it back out for exactly that reason. A --resume
 	// against an already-fully-loaded config is safe to run again — every
 	// table is skipped via Completed and the FK step above is skipped via
@@ -722,8 +722,8 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	// of an unused file lying around.
 	//
 	// This applies to executeLoad unconditionally — including when it's
-	// reached from `migrate load`, the flow `verify` is meant to be used
-	// with. `migrate run`'s single-shot flow additionally cleans up its
+	// reached from `sqlite2pg load`, the flow `verify` is meant to be used
+	// with. `sqlite2pg run`'s single-shot flow additionally cleans up its
 	// state file after a successful run, but only from cleanupConfigAfterLoad
 	// in main.go, once run has already decided (independent of this
 	// function) to delete its generated config too — see issue #52.
@@ -739,7 +739,7 @@ func runResolve(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 || *apply == "" {
-		return errors.New("usage: migrate resolve --apply resolutions.yaml <config.migration.yaml>")
+		return errors.New("usage: sqlite2pg resolve --apply resolutions.yaml <config.migration.yaml>")
 	}
 	configPath := fs.Arg(0)
 

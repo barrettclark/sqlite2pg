@@ -80,8 +80,8 @@ func connConfigForDatabase(serverURL, dbName string) (*pgx.ConnConfig, error) {
 	return cfg, nil
 }
 
-// connectForLoad decides which database `migrate load` (and the load step
-// of `migrate run`) should target and returns a ConnConfig for it.
+// connectForLoad decides which database `sqlite2pg load` (and the load step
+// of `sqlite2pg run`) should target and returns a ConnConfig for it.
 //
 // On a fresh run it derives a new timestamped name, provisions it, and
 // records it in the state file at statePath so that a later --resume knows

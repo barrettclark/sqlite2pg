@@ -13,7 +13,7 @@ import (
 
 // fullTableViolationConfidence is the confidence stamped onto a decision
 // a full-table check contradicts — deliberately below any sane
-// --threshold, so both BuildReviewSummary's NeedsReview flag and `migrate
+// --threshold, so both BuildReviewSummary's NeedsReview flag and `sqlite2pg
 // load`'s own confidence gate treat it as needing review through the same
 // mechanism every other low-confidence column already uses, with no new
 // field required.

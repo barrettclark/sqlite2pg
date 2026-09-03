@@ -80,7 +80,7 @@ func TestDetermineVerify_PromptModeParsesAffirmativeAnswers(t *testing.T) {
 		if !got {
 			t.Errorf("input %q: expected determineVerify to return true", answer)
 		}
-		if !strings.Contains(out.String(), "Run migrate verify now?") {
+		if !strings.Contains(out.String(), "Run sqlite2pg verify now?") {
 			t.Errorf("input %q: expected the prompt text to be written to out, got %q", answer, out.String())
 		}
 	}
@@ -132,7 +132,7 @@ func TestDetermineVerify_NonTerminalFileSkipsPromptWithoutBlocking(t *testing.T)
 }
 
 // TestDetermineVerify_NonTerminalPipeHonoursAScriptedAnswer covers issue
-// #66: `echo y | migrate load config.yaml` leaves stdin connected to a
+// #66: `echo y | sqlite2pg load config.yaml` leaves stdin connected to a
 // pipe (an *os.File, not a terminal), and the CI-hang guard skipped the
 // prompt without reading a byte — silently discarding the user's explicit
 // "y" and never verifying. determineVerify must do a short-deadline read
@@ -249,7 +249,7 @@ func TestDetermineVerify_NonTerminalPipeImmediateEOFStillSaysNoAnswer(t *testing
 
 // TestDetermineVerify_NonTerminalPipeDistinguishesEmptyAnswerFromNoAnswer
 // is issue #94's (audit finding L8) regression: a scripted bare newline
-// (`printf '\n' | migrate load ...`) is a real, explicit answer the user
+// (`printf '\n' | sqlite2pg load ...`) is a real, explicit answer the user
 // (or script) provided — just an empty one — not the same thing as a
 // silent, unwritten pipe that never answers at all. Both used to report
 // gotAnswer=false and print the same "no answer was provided" message;
@@ -287,7 +287,7 @@ func TestDetermineVerify_NonTerminalPipeDistinguishesEmptyAnswerFromNoAnswer(t *
 // --- flag wiring at the `run`/`load` CLI level --------------------------
 
 // TestRun_LoadDryRunWithVerifyIsUsageError covers the second half of issue
-// #66: `migrate load --dry-run --verify` parses --verify and then returns
+// #66: `sqlite2pg load --dry-run --verify` parses --verify and then returns
 // from the --dry-run branch without ever using it. That combination is
 // nonsensical (dry-run never loads, so there is nothing to verify) and
 // should be a clear usage error rather than a silently ignored flag.

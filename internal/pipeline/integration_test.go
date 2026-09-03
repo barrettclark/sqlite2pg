@@ -1,6 +1,6 @@
 //go:build integration
 
-// Tier 3: end-to-end `migrate load` against a real Postgres instance, for
+// Tier 3: end-to-end `sqlite2pg load` against a real Postgres instance, for
 // the smaller fixtures (bikes.db, AustinRoadConstruction.db,
 // DisabilityCompByCounty.db — MACS-scale tables are deliberately excluded
 // from this default-off tier; see PGLOADER_REWRITE_PLAN_V2.md). Run with:

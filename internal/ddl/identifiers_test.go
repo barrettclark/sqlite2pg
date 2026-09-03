@@ -124,7 +124,7 @@ func TestPostgresTableNames_LeavesNonCollidingNamesUnchanged(t *testing.T) {
 // TestGenerateCreateTable_UsingDisambiguatedTableName confirms that
 // GenerateCreateTable, given the identifier PostgresTableNames resolved for
 // a colliding table, actually emits that resolved identifier in the CREATE
-// TABLE statement — the end-to-end shape callers (cmd/migrate/main.go) rely
+// TABLE statement — the end-to-end shape callers (cmd/sqlite2pg/main.go) rely
 // on: PostgresTableNames only computes the mapping, GenerateCreateTable is
 // what has to honor it.
 func TestGenerateCreateTable_UsingDisambiguatedTableName(t *testing.T) {

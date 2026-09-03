@@ -20,17 +20,17 @@ import (
 // runVerify streams every row and every included column from both the
 // original SQLite source and its Postgres copy and confirms they agree —
 // exhaustively, not a spot check. It's the tool's answer to "did the load
-// actually work correctly", meant to be run after every `migrate load`,
+// actually work correctly", meant to be run after every `sqlite2pg load`,
 // not just as a one-off audit.
 func runVerify(args []string) error {
 	fs := flag.NewFlagSet("verify", flag.ContinueOnError)
-	pgURL := fs.String("pg", "", "Postgres server URL, e.g. postgres://user@localhost:5432/?sslmode=disable (required; no database name — the database to verify is read from <config>.state.json, the one `migrate load` provisioned)")
+	pgURL := fs.String("pg", "", "Postgres server URL, e.g. postgres://user@localhost:5432/?sslmode=disable (required; no database name — the database to verify is read from <config>.state.json, the one `sqlite2pg load` provisioned)")
 	outPath := fs.String("out", "", "path to write the verification report (default: print to stdout)")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 2 {
-		return errors.New("usage: migrate verify --pg url [--out report] <source.db> <config.migration.yaml>")
+		return errors.New("usage: sqlite2pg verify --pg url [--out report] <source.db> <config.migration.yaml>")
 	}
 	if *pgURL == "" {
 		return errors.New("--pg is required")
@@ -46,7 +46,7 @@ func runVerify(args []string) error {
 		return err
 	}
 
-	// The database to connect to is whatever `migrate load` (or `migrate
+	// The database to connect to is whatever `sqlite2pg load` (or `sqlite2pg
 	// load --resume`) actually provisioned for this exact config — never
 	// re-derived from the source filename, since that would only
 	// coincidentally point at the right database (issue #19's same
@@ -57,7 +57,7 @@ func runVerify(args []string) error {
 		return err
 	}
 	if st.Database == "" {
-		return fmt.Errorf("verify requires having run `migrate load` (or `migrate load --resume`) against %s first — no database is recorded in %s", configPath, statePath)
+		return fmt.Errorf("verify requires having run `sqlite2pg load` (or `sqlite2pg load --resume`) against %s first — no database is recorded in %s", configPath, statePath)
 	}
 
 	connCfg, err := connConfigForDatabase(*pgURL, st.Database)
@@ -108,7 +108,7 @@ func runVerify(args []string) error {
 // cfg, comparing sourceDB against conn, prints a "verifying <table>..."
 // progress line per table to progressOut as it goes, and writes the full
 // report (via writeVerifyReport) to reportOut. It's the single verification
-// engine both the standalone `migrate verify` command and the automatic
+// engine both the standalone `sqlite2pg verify` command and the automatic
 // post-load verification path (`run`/`load --verify`, see
 // postload_verify.go) call — so the two can never independently drift in
 // what they check or how they report it, the same "two similar paths
@@ -127,7 +127,7 @@ func verifyLoadedTables(ctx context.Context, sourceDB *sql.DB, conn *pgx.Conn, c
 	}
 	sort.Strings(tableNames)
 
-	// The identifier `migrate load` actually created this table under
+	// The identifier `sqlite2pg load` actually created this table under
 	// (see ddl.PostgresTableNames/issue #44) — computed the same way over
 	// the same full cfg, so a table that was disambiguated at load time is
 	// looked up by the name that really exists rather than its raw source

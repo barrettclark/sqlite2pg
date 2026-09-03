@@ -39,7 +39,7 @@ func TestLoad_RejectsAMismatchedConfigVersion(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected Load to reject a config_version other than the current schema version")
 	}
-	if !strings.Contains(err.Error(), "migrate profile") {
-		t.Errorf("expected the error to point at re-running migrate profile, got %q", err.Error())
+	if !strings.Contains(err.Error(), "sqlite2pg profile") {
+		t.Errorf("expected the error to point at re-running sqlite2pg profile, got %q", err.Error())
 	}
 }

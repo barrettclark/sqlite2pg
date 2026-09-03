@@ -1,5 +1,5 @@
 // Package pipeline wires together sqlitereader, profiler, and resolver into
-// the orchestration behind `migrate profile`: read schema, sample and
+// the orchestration behind `sqlite2pg profile`: read schema, sample and
 // profile every column, resolve or flag each one, and produce a draft
 // config.MigrationConfig plus any resolver.UnresolvedCases.
 package pipeline
