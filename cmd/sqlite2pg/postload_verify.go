@@ -205,13 +205,19 @@ func runPostLoadVerify(ctx context.Context, cfg *config.MigrationConfig, connCfg
 		fmt.Fprintln(out)
 		fmt.Fprintln(out, "*** LOAD SUCCEEDED, BUT POST-LOAD VERIFICATION FOUND A PROBLEM ***")
 		fmt.Fprintln(out, "The data is already in Postgres; this reports a data-integrity finding in it, not a failed import.")
-		return fmt.Errorf("post-load verification FAILED: %d table(s) with row-count mismatches, %d value mismatch(es) across %d table(s) checked",
+		msg := fmt.Sprintf("post-load verification FAILED: %d table(s) with row-count mismatches, %d value mismatch(es) across %d table(s) checked",
 			summary.rowCountFailures, summary.totalMismatches, summary.tablesChecked)
+		// The verdict wins, but still tell the operator the report they
+		// are reading is truncated (issue #159 — verifyOutcome composes
+		// both facts the same way for the standalone path).
+		if ew.err != nil {
+			return fmt.Errorf("%s; also failed writing the report: %w", msg, ew.err)
+		}
+		return errors.New(msg)
 	}
 	// Check the latched write error before printing "passed", so a
 	// truncated report never appears alongside a success line even though
-	// the command returns non-zero (Copilot review, PR #152). A FAILED
-	// verdict above still wins over this.
+	// the command returns non-zero (Copilot review, PR #152).
 	if ew.err != nil {
 		return fmt.Errorf("post-load verification report was incomplete: %w", ew.err)
 	}
