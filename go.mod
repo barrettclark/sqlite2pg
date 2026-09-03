@@ -1,6 +1,6 @@
 module sqlite2pg
 
-go 1.26.5
+go 1.26.8
 
 require (
 	github.com/gdamore/tcell/v2 v2.13.10

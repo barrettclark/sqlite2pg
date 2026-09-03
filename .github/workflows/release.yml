@@ -18,7 +18,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.5"
+          go-version: "1.26.8"
 
       # Gate the release on the same checks CI runs. A `v*` tag matches no
       # CI trigger unless it also runs here, so without this a tag could
