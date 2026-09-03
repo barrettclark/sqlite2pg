@@ -8,6 +8,16 @@ Sample databases the test suite exercises live in `testdata/fixtures/`
 within this project, so the tests don't depend on anything outside the repo.
 See `testdata/fixtures/README.md` for where they came from.
 
+## Install
+
+```
+brew install barrettclark/tap/sqlite2pg
+```
+
+Or download a binary for your platform from the
+[releases page](https://github.com/barrettclark/sqlite2pg/releases), or
+build from source: `git clone` this repo and `go build -o sqlite2pg ./cmd/sqlite2pg`.
+
 ## Why
 
 `pgloader` handles the SQLite→Postgres mechanics fine, but does no data
