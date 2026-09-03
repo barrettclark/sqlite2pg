@@ -35,7 +35,7 @@ func TestGenerateForeignKeyIndexes_EmitsCreateIndexForAValidForeignKey(t *testin
 		t.Fatalf("expected 1 CREATE INDEX statement, got %d: %v", len(statements), statements)
 	}
 	stmt := statements[0]
-	if !strings.Contains(stmt, `CREATE INDEX "idx_albums_ArtistId" ON "albums" ("ArtistId")`) {
+	if !strings.Contains(stmt, `CREATE INDEX IF NOT EXISTS "idx_albums_ArtistId" ON "albums" ("ArtistId")`) {
 		t.Errorf("expected a CREATE INDEX on albums.ArtistId, got %q", stmt)
 	}
 }
@@ -124,7 +124,7 @@ func TestGenerateForeignKeyIndexes_TruncatesAndDisambiguatesLongIndexNames(t *te
 
 	names := make(map[string]bool, len(statements))
 	for _, stmt := range statements {
-		start := strings.Index(stmt, "CREATE INDEX \"") + len("CREATE INDEX \"")
+		start := strings.Index(stmt, "CREATE INDEX IF NOT EXISTS \"") + len("CREATE INDEX IF NOT EXISTS \"")
 		end := strings.Index(stmt[start:], "\"")
 		name := stmt[start : start+end]
 
@@ -184,7 +184,7 @@ func TestGenerateForeignKeyIndexes_DisambiguatesAcrossDifferentTables(t *testing
 
 	names := make(map[string]bool, len(statements))
 	for _, stmt := range statements {
-		start := strings.Index(stmt, "CREATE INDEX \"") + len("CREATE INDEX \"")
+		start := strings.Index(stmt, "CREATE INDEX IF NOT EXISTS \"") + len("CREATE INDEX IF NOT EXISTS \"")
 		end := strings.Index(stmt[start:], "\"")
 		name := stmt[start : start+end]
 
@@ -264,12 +264,12 @@ func TestGenerateForeignKeyIndexes_DisambiguatesAgainstTableNames(t *testing.T) 
 	stmt := statements[0]
 
 	pgTables := PostgresTableNames(cfg)
-	collidingStart := "CREATE INDEX " + quoteIdent(pgTables["idx_orders_customer_id"]) + " "
+	collidingStart := "CREATE INDEX IF NOT EXISTS " + quoteIdent(pgTables["idx_orders_customer_id"]) + " "
 	if strings.HasPrefix(stmt, collidingStart) {
 		t.Errorf("FK index is named the same as the table in pg_class; Postgres would reject it:\n%s", stmt)
 	}
 	// Still disambiguated from the readable prefix, not renamed wholesale.
-	if !strings.HasPrefix(stmt, `CREATE INDEX "idx_orders_customer_id_`) {
+	if !strings.HasPrefix(stmt, `CREATE INDEX IF NOT EXISTS "idx_orders_customer_id_`) {
 		t.Errorf("expected the index disambiguated as idx_orders_customer_id_<hash>, got:\n%s", stmt)
 	}
 }

@@ -15,27 +15,13 @@ type loadState struct {
 	Database  string   `json:"database"`
 	Completed []string `json:"completed"`
 
-	// FKsApplied records whether executeLoad's foreign-key-constraints-
-	// and-indexes step has already succeeded for this run. Every table's
-	// COPY is its own resumable unit of work (see Completed above), and
-	// adding foreign keys is no different: without this flag, a --resume
-	// invoked after every table already finished loading but before (or
-	// after) the FK step had already run would either skip FKs entirely
-	// or try to re-add constraints Postgres already has, failing with
-	// "constraint already exists". Recording completion here — the same
-	// way Completed does per table — makes that step idempotent across
-	// separate `sqlite2pg load --resume` invocations too.
-	//
-	// This is a single flag for the whole step, not one entry per
-	// constraint, because executeLoad runs every constraint and index in
-	// one transaction: a failure anywhere in the step rolls all of it
-	// back, so a --resume that finds FKsApplied still false can retry the
-	// whole step wholesale (issue #109 / M6). The flag is written just
-	// after that transaction commits; a crash in the gap between commit
-	// and this write leaves the constraints in place with FKsApplied
-	// false, and the retry would then hit "constraint ... already exists"
-	// — the same narrow crash window markTableCompleted has, tracked
-	// separately (see issue #128).
+	// FKsApplied lets a --resume skip re-running the foreign-key step once
+	// it has succeeded. It's an optimization, not a correctness gate: the
+	// generated DDL is idempotent (DROP CONSTRAINT IF EXISTS + ADD,
+	// CREATE INDEX IF NOT EXISTS) and runs in one transaction, so
+	// re-running the whole step is always safe — including after a crash
+	// in the gap between the transaction commit and this flag being
+	// written (issues #109, #128).
 	FKsApplied bool `json:"fks_applied,omitempty"`
 }
 

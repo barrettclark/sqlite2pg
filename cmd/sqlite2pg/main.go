@@ -670,24 +670,12 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 			fmt.Printf("skipping foreign key: %s\n", reason)
 		}
 
-		// Every constraint and its index goes in as one transaction.
-		// FKsApplied is a single all-or-nothing flag (see loadState): if
-		// this step commits some constraints and then fails partway (an
-		// inferred-FK violation, a lock timeout, a dropped connection),
-		// FKsApplied stays false, every table stays Completed, and every
-		// subsequent `sqlite2pg load --resume` re-enters this block and
-		// aborts on the *first* statement with "constraint ... already
-		// exists" — never reaching, or reporting, the real failure
-		// (issue #109 / M6). Wrapping the step makes a partial failure
-		// roll back cleanly, so --resume retries it from scratch or
-		// surfaces the genuine error every time. CREATE INDEX below is
-		// plain (not CONCURRENTLY), so it is transaction-safe.
-		//
-		// Postgres doesn't auto-index foreign keys the way some other
-		// databases do, and an index on every FK column is
-		// well-established best practice with no real downside — added
-		// right after the constraints themselves, once every FK is known
-		// to be valid.
+		// One transaction, and every statement is idempotent (DROP
+		// CONSTRAINT IF EXISTS + ADD; CREATE INDEX IF NOT EXISTS), so a
+		// --resume can re-run the whole step after any failure or a crash
+		// mid-step without hitting "already exists" (issues #109, #128).
+		// CREATE INDEX here is plain, not CONCURRENTLY, so it's
+		// transaction-safe.
 		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
 			for _, stmt := range statements {
 				if _, err := tx.Exec(ctx, stmt); err != nil {

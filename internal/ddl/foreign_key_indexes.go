@@ -97,5 +97,6 @@ func GenerateForeignKeyIndexes(cfg *config.MigrationConfig) (statements []string
 // identifier CREATE TABLE emitted for it (see PostgresTableNames/issue
 // #44), not necessarily the raw source table name.
 func foreignKeyIndexStatement(table string, fk config.ForeignKey, name string, ids map[string]string) string {
-	return fmt.Sprintf("CREATE INDEX %s ON %s (%s);", quoteIdent(name), quoteIdent(table), quoteJoin(mapNames(fk.Columns, ids)))
+	// IF NOT EXISTS so the FK step is re-runnable after a resume (issues #109, #128).
+	return fmt.Sprintf("CREATE INDEX IF NOT EXISTS %s ON %s (%s);", quoteIdent(name), quoteIdent(table), quoteJoin(mapNames(fk.Columns, ids)))
 }

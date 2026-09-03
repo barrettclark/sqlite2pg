@@ -123,22 +123,16 @@ func includedSet(tc config.TableConfig) map[string]bool {
 	return set
 }
 
-// foreignKeyStatement renders one ALTER TABLE ... ADD CONSTRAINT ...
-// FOREIGN KEY statement using name as the constraint name (see
-// foreignKeyConstraintNames). ON DELETE/ON UPDATE clauses are only included
-// when set to something other than NO ACTION, Postgres's own default —
-// omitting it produces the same behavior with cleaner generated SQL.
-// localIDs and refIDs map fk's declared column names to the identifiers
-// actually emitted for them in CREATE TABLE (see PostgresColumnNames) —
-// necessary so a foreign key on a column that CREATE TABLE had to
-// disambiguate (issue #21) still references the column that really exists.
-// table and refTable must likewise already be the resolved identifiers
-// CREATE TABLE emitted for the constrained and referenced tables (see
-// PostgresTableNames/issue #44) — not necessarily the raw source table
-// names — so the ALTER TABLE and REFERENCES clauses both name a relation
-// that actually exists under that name.
+// foreignKeyStatement renders a DROP CONSTRAINT IF EXISTS followed by the
+// ADD CONSTRAINT for one foreign key. The DROP makes the whole FK step
+// re-runnable: `load --resume` after a crash between the FK commit and the
+// state-file write would otherwise re-issue ADD and fail on "already
+// exists" (issues #109, #128). ON DELETE/ON UPDATE are omitted when NO
+// ACTION (Postgres's default). localIDs/refIDs and table/refTable are the
+// disambiguated identifiers CREATE TABLE actually emitted (issues #21, #44).
 func foreignKeyStatement(table, refTable string, fk config.ForeignKey, name string, localIDs, refIDs map[string]string) string {
 	var b strings.Builder
+	fmt.Fprintf(&b, "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s;\n", quoteIdent(table), quoteIdent(name))
 	fmt.Fprintf(&b, "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s)",
 		quoteIdent(table), quoteIdent(name), quoteJoin(mapNames(fk.Columns, localIDs)), quoteIdent(refTable), quoteJoin(mapNames(fk.RefColumns, refIDs)))
 	if fk.OnDelete != "" && fk.OnDelete != "NO ACTION" {
