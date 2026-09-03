@@ -227,3 +227,27 @@ func TestDecide_CloseGapAndDifferentTransformStillForcesReview(t *testing.T) {
 		t.Fatal("expected findings that agree on SuggestedType but disagree on TransformExpr to still need review")
 	}
 }
+
+// TestDecide_TopTwoAgreeingSuppressesADisagreeingThird pins the known
+// scope limit documented at the disagreement gate (issue #106 / M3): the
+// gate compares only best and secondBest, so when the top two agree on
+// (SuggestedType, TransformExpr) a third finding inside the margin that
+// disagrees outright does NOT force review. This is latent (no registered
+// heuristic pair emits an identical top (type, transform)); the test
+// exists so that if the behavior is ever changed — to widen the check to
+// every in-margin finding — it's a deliberate edit here, not a silent
+// side effect.
+func TestDecide_TopTwoAgreeingSuppressesADisagreeingThird(t *testing.T) {
+	findings := []profiler.Finding{
+		{Heuristic: "bool_a", SuggestedType: "boolean", TransformExpr: "int_to_bool", Confidence: 0.90},
+		{Heuristic: "bool_b", SuggestedType: "boolean", TransformExpr: "int_to_bool", Confidence: 0.90},
+		{Heuristic: "numeric", SuggestedType: "integer", TransformExpr: "numeric_text_to_integer", Confidence: 0.89},
+	}
+	decision, needsReview := Decide(findings, 0.5)
+	if needsReview {
+		t.Fatal("current behavior: an agreeing top two suppress review for a disagreeing third — if this now forces review, update the gate comment and this test together (#106)")
+	}
+	if decision.SuggestedType != "boolean" || decision.TransformExpr != "int_to_bool" {
+		t.Errorf("expected the agreed top decision, got %+v", decision)
+	}
+}

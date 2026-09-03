@@ -83,11 +83,18 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) bool {
 	// *os.File (e.g. a strings.Reader test double), none of this applies
 	// and the plain read below runs unchanged.
 	if f, ok := in.(*os.File); ok && !term.IsTerminal(int(f.Fd())) {
+		// Print the prompt on this path too, and echo whatever the pipe
+		// answered, so a `sqlite2pg load < answers.txt` transcript records
+		// what was asked and answered rather than showing nothing at all
+		// (issue #120 / L11) — the same lines an interactive session
+		// would show.
+		fmt.Fprint(out, "Run sqlite2pg verify now? [y/N]: ")
 		if answer, gotAnswer := readAnswerWithDeadline(f, 250*time.Millisecond); gotAnswer {
 			answer = strings.ToLower(strings.TrimSpace(answer))
+			fmt.Fprintln(out, answer)
 			return answer == "y" || answer == "yes"
 		}
-		fmt.Fprintln(out, "stdin is not a terminal and no answer was provided — skipping verification (pass --verify to run it, or --noverify to silence this)")
+		fmt.Fprintln(out, "\nstdin is not a terminal and no answer was provided — skipping verification (pass --verify to run it, or --noverify to silence this)")
 		return false
 	}
 

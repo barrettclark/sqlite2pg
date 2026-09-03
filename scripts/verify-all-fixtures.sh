@@ -110,12 +110,22 @@ fi
 # Databases this run provisioned, so a Ctrl-C still cleans up.
 CREATED_DBS=()
 cleanup() {
+    # Disarm every trap first: a bash INT/TERM handler runs and then the
+    # script *resumes*, so without an explicit exit the loop kept running
+    # into an already-deleted WORK_DIR (issue #114 / L5). The INT/TERM
+    # trap below calls this and then exits; disarming here stops the EXIT
+    # trap from running cleanup a second time on that exit.
+    trap - EXIT INT TERM
     for db in "${CREATED_DBS[@]:-}"; do
         [ -n "$db" ] && dropdb --if-exists "$db" 2>/dev/null
     done
     if [ "$CLEAN_WORK" = "1" ]; then rm -rf "$WORK_DIR"; fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# On Ctrl-C, salvage whatever results table has been built so far before
+# cleanup removes WORK_DIR (issue #115 / L6 — an interrupted run is
+# exactly when an operator wants to see how far it got).
+trap '[ -n "${RESULTS_MD:-}" ] && [ -n "${FINAL_RESULTS:-}" ] && cp "$RESULTS_MD" "$FINAL_RESULTS" 2>/dev/null; cleanup; exit 130' INT TERM
 
 # --- database list -----------------------------------------------------------
 
@@ -136,7 +146,12 @@ fi
 
 # --- results table ---------------------------------------------------------
 
+# Built inside WORK_DIR, but copied out to FINAL_RESULTS at the end so the
+# path printed to the operator still exists after the EXIT trap removes a
+# default (CLEAN_WORK) WORK_DIR (issue #115 / L6). FINAL_RESULTS lands in
+# the repo root (the script's cwd) and is .gitignored.
 RESULTS_MD="$WORK_DIR/results.md"
+FINAL_RESULTS="${FINAL_RESULTS:-$REPO_ROOT/verify-all-fixtures-results.md}"
 {
     echo "# verify-all-fixtures campaign — $(date '+%Y-%m-%d %H:%M:%S')"
     echo
@@ -278,10 +293,12 @@ done
     echo "Work dir: \`$WORK_DIR\` (logs + per-db verify reports)"
 } >>"$RESULTS_MD"
 
+cp "$RESULTS_MD" "$FINAL_RESULTS" 2>/dev/null || FINAL_RESULTS="$RESULTS_MD"
+
 echo
 echo "=========================================================="
 cat "$RESULTS_MD"
 echo "=========================================================="
-echo "results table: $RESULTS_MD"
+echo "results table: $FINAL_RESULTS"
 
 [ "$fail_count" = "0" ] && [ "$error_count" = "0" ]

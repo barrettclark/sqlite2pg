@@ -583,6 +583,15 @@ func exactNumericEqual(expected, actual any) (equal, ok bool) {
 		}
 	case float64:
 		if a, isFloat := actual.(float64); isFloat {
+			// numericSortKey maps every NaN float64 to one key ("NaN"),
+			// and PostgreSQL itself defines NaN = NaN as true (so float8
+			// columns remain sortable). Align exactNumericEqual with both
+			// so the documented "equal keys iff equal values" invariant
+			// holds for the NaN edge too — `NaN == a` is false in Go
+			// (issue #122 / L13).
+			if math.IsNaN(e) && math.IsNaN(a) {
+				return true, true
+			}
 			return e == a, true
 		}
 	}
