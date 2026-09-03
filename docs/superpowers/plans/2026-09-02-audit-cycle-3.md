@@ -226,6 +226,142 @@ Postgres setup for this work: see `postgres-path-setup` memory
 
 Worktree: `.claude/worktrees/audit-cycle-3`, branch
 `worktree-audit-cycle-3`. Baseline before any work: `go build ./...`
-clean, `go test ./...` and `go test -tags integration ./...` all green.
+clean, `go test ./...` (11 packages) and `go test -tags integration
+./...` (11 packages) all green.
 
-*(Phase results appended here as the cycle runs.)*
+### Phase A — whole-codebase fresh-eyes review — complete (2026-09-02)
+
+Fresh `general-purpose` subagent on `model: opus`, no prior context,
+read-only, `internal/` + `cmd/` + `.goreleaser.yaml` + `.github/` +
+`scripts/`. Full report:
+`docs/superpowers/plans/audit-cycle3-diff-review-findings.md`.
+
+**20 findings — 1 High / 6 Medium / 13 Low.**
+
+| # | finding | sev | area |
+|---|---|---|---|
+| H1 | The H3/M7 "type-switch fall-through" remediation fixed 5 of 9 sibling arms — `iso8601_to_timestamptz`, `dayfirst_to_timestamptz`, `numeric_text_to_integer/double` still `return raw, nil`. Full-table verify is a dead no-op for the most common non-midnight `DATETIME` shape (Consequence A); a rare non-string row crashes mid-COPY on a profiler-auto-approved column (Consequence B). | High | `copywriter/transform.go` |
+| M1 | `matchingParen` is quote- and comment-blind, so `parseColumnCollations` truncates the column body and reports a `COLLATE NOCASE` PK as `BINARY` → whole-table false verification failure (H1's chain, different door). | Medium | `sqlitereader/collation.go` |
+| M2 | The TUI type picker's audit-final-M1 fix attaches `numeric_text_to_integer` to a column whose raw values are `float64` — the transform is a no-op there and COPY still fails. M1 only partially closed. | Medium | `tui/logic.go`, `tui/typepicker.go` |
+| M3 | `resolver.Decide`'s "genuine disagreement" gate only inspects the top two findings, so an agreeing top pair suppresses review for a disagreeing third. Latent (no registered heuristic pair emits identical type+transform), but the fix opens it in the same motion. | Medium | `resolver/confidence.go` |
+| M4 | The release workflow runs no tests and CI never runs on tags — `git push --tags` publishes binaries + a Homebrew formula with zero verification. Plus a floating `~> v2` GoReleaser pin and a deprecated `brews:` key. | Medium | `.github/workflows/`, `.goreleaser.yaml` |
+| M5 | The Homebrew formula installs a binary named `migrate`, colliding with homebrew-core's `migrate` (golang-migrate) — `brew link` fails, or the tools silently shadow each other. Needs a binary-name decision. | Medium | `.goreleaser.yaml` |
+| M6 | `FKsApplied` is all-or-nothing, so an FK/index step that fails partway leaves `--resume` permanently broken (re-adds an existing constraint, aborts). The feature H2 was filed to fix, still broken for this mode. | Medium | `cmd/migrate/main.go`, `state.go` |
+| L1 | `julianDayToDate` overflows int64 on intermediates; `floorDiv`'s comment claims the opposite. | Low | `copywriter/transform.go` |
+| L2 | `unix_epoch_*` guard int64's range but not `time.Time`'s — a far-out-of-range epoch wraps to an arbitrary instant, verify recomputes the same wrap and reports a match. | Low | `copywriter/transform.go` |
+| L3 | `dateTransformPreview`'s `int64(f)` runs on `±Inf` / past-2^63 values (the one float→int the PR #98 guard round missed). Latent. | Low | `tui/logic.go` |
+| L4 | `columnListOpenParen` mis-locates the paren for a doubled-quote table name (`"foo""(bar"`), and returns the module arg list for `CREATE VIRTUAL TABLE`. | Low | `sqlitereader/collation.go` |
+| L5 | `verify-all-fixtures.sh` traps `INT`/`TERM` without exiting — Ctrl-C tears down the run's state and DBs, then the script keeps running. ("Failure destroys the evidence" shape.) | Low | `scripts/verify-all-fixtures.sh` |
+| L6 | The campaign script prints a `results table:` path inside `$WORK_DIR`, which the EXIT trap `rm -rf`s moments later on a default run. | Low | `scripts/verify-all-fixtures.sh` |
+| L7 | `varchar` widening can produce `varchar(20000000)`, exceeding Postgres's `varchar(n) <= 10485760` cap → `CREATE TABLE` fails. No clamp, no `text` fallback. | Low | `pipeline/profile.go` |
+| L8 | `.goreleaser.yaml`'s `before` hook runs `go mod tidy` against the network at release time — the published binaries can be built from a dependency set no test ran against. | Low | `.goreleaser.yaml` |
+| L9 | `MaxTextLength` (singular) is dead outside its own tests — exported API with a different NUL/BLOB contract than its batched sibling and no caller to keep them honest. | Low | `sqlitereader/text_length.go` |
+| L10 | The bare-invocation usage string omits `run`, a real subcommand and the primary end-to-end entry point — now also baked into the Homebrew formula's smoke test. | Low | `cmd/migrate/main.go` |
+| L11 | `determineVerify`'s piped-stdin branch never prints the prompt it is reading an answer for. | Low | `cmd/migrate/postload_verify.go` |
+| L12 | `epochToInt64` accepts `int64`/`int`/`float64`; `toFloat64` also accepts `float32` — the PR #98 round matched their coverage for `int` and then left `float32` in only one. Latent. | Low | `copywriter/transform.go` |
+| L13 | `numericSortKey` gives two NaN `float64`s the same sort key while `exactNumericEqual` reports them unequal — the documented `sortKeyFor` invariant broken in the harmless direction; `compareColumnUnordered` compares keys only so no wrong verdict today. | Low | `pipeline/verify_load.go` |
+
+Clean bills (re-verified against the changed code, not taken on trust):
+the `verify_load.go` numeric quartet (intact but for L13's NaN edge), the
+`[]byte`-in-text-column fix (#83), `isTextTargetType`/`COLLATE "C"` (H1's
+own fix), `9cfec0c`'s batched VARCHAR scan (genuinely one query per
+table), the M5/#84 no-transform fit gate, `readAnswerWithDeadline` /
+`determineVerify` (all six scripted-stdin shapes walked, L8-audit-final
+correctly fixed), `markTableCompleted` vs a mid-table COPY failure (H2's
+fix), `boolean01.go`'s comment fix, `resolver.Decide`'s selection loop
+(the defect is the gate's scope, M3, not the selection), the `jsonb`
+picker arm + `text_to_jsonb`, and `cmd/migrate`'s config/state lifecycle
+(#62's fix). Full list in the report.
+
+### Phase B — full load-test campaign — complete (2026-09-02)
+
+`scripts/verify-all-fixtures.sh` over 17 `testdata/fixtures/` + 27
+`../more data/` + `beets_library.db` (profile-only, 1.4 GB). Full table:
+`docs/superpowers/plans/audit-cycle3-campaign-results.md`.
+
+**36 verified clean, 0 `migrate verify` failures.** No regression — every
+loaded database verified with zero mismatches (incl. `employee.db` 3.92M
+rows, `rt5i.db` 1.17M rows). The 8 non-passing loads are all accounted
+for: 6 are the rubber-stamp script force-accepting a correctly-flagged
+`needs_review` column (cycle-2 casualties, incl. the post-#69
+`DisabilityCompByCounty` `FIPS code` flag now firing *deterministically*),
+1 is the known `ssb-small.db` source-data FK violation, and 1 is the new
+`corrupt001.db` failing **cleanly** (`error: … database disk image is
+malformed`, exit 1, no panic).
+
+New databases: `manyblobs-512.db` (PASS), `corrupt001.db` (clean failure).
+Already-present sqlite.org DBs re-confirmed: `random-json.db`,
+`kjvbible-u8/u16be.db`, `TPC-H-small.db`, `multilinetext.db`,
+`manyblobs-4k.db` all PASS.
+
+Phase A's H1 (Consequence A) and M1 did not fire — no corpus database has
+the triggering column shape (same as cycle 2 with #60/#61). The two
+purpose-built fixtures the plan calls for were **not** built in this
+detection pass; they are regression coverage for the Phase E fixes and
+are best authored failing-test-first alongside them.
+
+### Phase C — property/fuzz — complete (2026-09-02)
+
+Full write-up: `docs/superpowers/plans/audit-cycle3-fuzz-results.md`.
+
+**Regression gate green.** All nine existing fuzz targets pass their seed
+corpora and a 45 s `-fuzz` burst each (~11 M execs total), no new
+failures, cycle-2's `knownIssue65Gap` / empty-name exemptions intact.
+`FuzzParseColumnCollations` still shows high "new interesting" churn —
+consistent with M1/L4's untested parser edges; worth a long dedicated run
+once those are fixed.
+
+New fuzz targets (`readAnswerWithDeadline`, `columnListOpenParen`, the #81
+TUI preview path) deferred to Phase E — Phase A already found the bugs
+they'd exercise analytically (L4, M1, M2/L3/#81); `readAnswerWithDeadline`
+got a clean bill. They belong as the failing tests for those fixes.
+
+### Phase D — performance regression check — complete (2026-09-02)
+
+`profile` at `db35d39` vs `main` tip, 3 runs each, `employee.db` +
+`beets_library.db`; `load`/`verify` on tip, `employee.db`, 2 runs. Full
+write-up: `docs/superpowers/plans/audit-cycle3-performance-results.md`.
+
+**No #55-class regression.** One minor, explained slowdown:
+`employee.db` `profile` 4710 → 5248 ms median (**+11 %**, ≈ +540 ms),
+attributable to two intentionally-added correctness scans (`9cfec0c`'s
+per-table VARCHAR-widening scan and the #69/#84 no-transform full-table
+fit check), each properly batched to one pass per *qualifying* table.
+`beets_library.db` `profile` is not a clean A/B (cold vs warm page cache);
+the honest read is "no catastrophic regression," not the apparent 2×
+speedup. `verify` at 3.9M rows in ~14 s clean. Recommend: accept the
+`profile` delta, or re-measure cold-cache if a tighter number is wanted.
+
+### Phase E — triage complete, execution PENDING (2026-09-03)
+
+All 20 Phase A findings filed as GitHub issues **#103–#122** (H1→#103,
+M1→#104, … L13→#122; plus pre-existing **#81** for the audit-final-M2 TUI
+precision bug). Dispositions per Barrett:
+
+- **M5 (#108):** rename the binary `migrate` → `sqlite2pg` (build output,
+  `.goreleaser.yaml`, `verify-all-fixtures.sh`, usage string, README,
+  test harnesses). The `cmd/migrate/` package dir may move or stay.
+- **M3 (#106):** document only — a code comment at the gate + a guard test
+  pinning current behavior. No logic change.
+- **L9 (#118), L12 (#121), L13 (#122):** fix opportunistically inside
+  whichever batch already touches that file.
+- **Phase D `profile` +11 %:** accept (two intentionally-added, properly
+  batched correctness scans), unless a cold-cache re-measure is wanted.
+
+**PR batches** (each: own branch off latest `main` / off the scaffolding
+PR until it merges; TDD per issue — failing test → minimal fix →
+real-Postgres integration test → one commit; Copilot review before merge;
+`verify-all-fixtures.sh` regression run + results doc per batch;
+`Closes #N` in the PR body):
+
+| PR | scope | issues |
+|---|---|---|
+| **0 — scaffolding** | the Phase A–D deliverables: 5 results docs, the two new `../more data/` DBs are not checked in so nothing there; no production code | — |
+| **1 — `transform.go`: finish the switch** | give `iso8601_to_timestamptz` / `dayfirst_to_timestamptz` / `numeric_text_to_integer` / `numeric_text_to_double` the explicit type-switch + erroring `default:` the 5 siblings got; JDN + epoch clamps; `float32` coverage match; new fuzz target for the timestamptz arms; purpose-built non-midnight-`DATETIME` fixture | #103 #110 #111 #121 |
+| **2 — collation parser** | quote/comment-aware `matchingParen`; doubled-quote `leadingIdentifier`; no-column-list for `CREATE VIRTUAL TABLE`; delete dead `MaxTextLength`; new fuzz target + long dedicated run | #104 #113 #118 |
+| **3 — TUI preview path** | attach a transform that handles the sample's real storage class; `math.IsInf`/range guard before `int64(f)`; the #81 integer-preview float64 fix; property test | #105 #112 #81 |
+| **4 — `--resume` FK state** | per-constraint/index state or `IF NOT EXISTS` + skip-on-exists, so a partial FK step resumes | #109 |
+| **5 — release / packaging** | binary rename → `sqlite2pg`; gate the tag/release path on the test suite; pin the GoReleaser action to an exact version; migrate off the deprecated `brews:` key; drop `go mod tidy` from the release `before` hook (+ CI tidiness check); add `run` to the usage string | #108 #107 #117 #119 |
+| **6 — script + small hygiene** | `trap 'cleanup; exit 130' INT TERM` + separate EXIT trap; write the results table outside `$WORK_DIR`; clamp widened `varchar(N)` to Postgres's limit / fall back to `text`; echo the verify prompt on the piped path; M3 comment + guard test; NaN sort-key fix | #114 #115 #116 #120 #106 #122 |
+
+**Not yet started.** No fix commits, no branches, nothing merged.
