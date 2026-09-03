@@ -121,13 +121,20 @@ func parseColumnCollations(createSQL string) map[string]string {
 // space, so a COLLATE keyword in a CHECK expression or a `DEFAULT 'COLLATE
 // NOCASE'` string is not mistaken for the column's own collation clause
 // (issues #145, #160). A column's real COLLATE clause is always at the top
-// level of its definition. The one span kept verbatim at top level is the
-// operand of a COLLATE — a name written bare or quoted with any of
-// SQLite's four styles, including `'…'` (SQLite accepts `COLLATE
-// 'NOCASE'`). A `"…"` or backtick span *not* after COLLATE is a
-// double-quoted string literal (SQLite's misfeature — a `DEFAULT` value
-// takes this form) and is masked like `'…'`. Everything nested inside
-// parens is masked regardless.
+// level of its definition.
+//
+// Kept verbatim at top level:
+//   - a `[…]` span — SQLite never treats brackets as a string literal, so
+//     it is always an identifier (a collation name, or noise the COLLATE
+//     search ignores anyway);
+//   - a `'…'`, `"…"`, or backtick span that directly follows the COLLATE
+//     keyword — the collation name (SQLite accepts all four quote styles,
+//     `COLLATE 'NOCASE'` included).
+//
+// A `'…'` / `"…"` / backtick span *not* after COLLATE is a string literal
+// (for `"…"` and backtick, via SQLite's double-quoted-string misfeature —
+// a `DEFAULT` value takes this form) and is masked. Everything nested
+// inside parens is masked regardless.
 func maskParensAndStringLiterals(s string) string {
 	b := []byte(s)
 	depth := 0
