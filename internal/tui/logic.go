@@ -233,7 +233,22 @@ func previewValueForType(value, targetType string) (display, transform string, v
 		// go to pgx unconverted. Any type this validates for must always
 		// carry the transform that actually makes it work, or a human
 		// selecting it here breaks the real COPY.
-		result, err := copywriter.Transform("numeric_text_to_integer", value)
+		// A REAL-affinity sample renders through fmt's %v, which switches
+		// to scientific notation past 1e6 ("1.712345678e+09").
+		// numeric_text_to_integer's exact-integer parse rejects an
+		// exponent outright, so without this the picker drops
+		// integer/bigint/smallint for a large whole-number REAL column
+		// (issue #139). That form is only ever produced from a float64,
+		// so reformatting it to plain decimal loses no precision the
+		// display string still had; a plain digit string (incl. a
+		// 19-digit exact ID) carries no exponent and is untouched.
+		numText := value
+		if strings.ContainsAny(numText, "eE") {
+			if f, perr := strconv.ParseFloat(numText, 64); perr == nil {
+				numText = strconv.FormatFloat(f, 'f', -1, 64)
+			}
+		}
+		result, err := copywriter.Transform("numeric_text_to_integer", numText)
 		if err != nil {
 			return value, "", false
 		}
