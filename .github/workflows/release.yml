@@ -44,9 +44,11 @@ jobs:
         run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
       - name: go.mod is tidy
-        run: |
-          go mod tidy
-          git diff --exit-code go.mod go.sum
+        # `go mod tidy -diff` (Go 1.23+) reports drift without writing
+        # go.mod/go.sum — the release must build the tagged tree verbatim
+        # and never run a mutating `go mod tidy` (issue #117 / #157). The
+        # writing form of this check lives in CI.
+        run: go mod tidy -diff
 
       - name: Test
         run: go test ./...
