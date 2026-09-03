@@ -79,20 +79,36 @@ func runVerify(args []string) error {
 	defer sourceDB.Close()
 
 	reportOut := io.Writer(os.Stdout)
+	var reportFile *os.File
 	if *outPath != "" {
 		f, err := os.Create(*outPath)
 		if err != nil {
 			return fmt.Errorf("creating report file %s: %w", *outPath, err)
 		}
-		defer f.Close()
+		reportFile = f
 		reportOut = f
 	}
 
-	summary, err := verifyLoadedTables(ctx, sourceDB, conn, cfg, os.Stdout, reportOut)
+	// Latch the first write error so a full disk (or any I/O failure)
+	// while writing the --out file doesn't leave a truncated report with
+	// a zero exit code (issue #136).
+	ew := &errWriter{w: reportOut}
+	summary, err := verifyLoadedTables(ctx, sourceDB, conn, cfg, os.Stdout, ew)
 	if err != nil {
+		if reportFile != nil {
+			reportFile.Close()
+		}
 		return err
 	}
-	if *outPath != "" {
+
+	if reportFile != nil {
+		closeErr := reportFile.Close()
+		if ew.err != nil {
+			return fmt.Errorf("writing report to %s: %w", *outPath, ew.err)
+		}
+		if closeErr != nil {
+			return fmt.Errorf("writing report to %s: %w", *outPath, closeErr)
+		}
 		fmt.Printf("report written to %s\n", *outPath)
 	}
 
@@ -262,4 +278,22 @@ func formatVerifyValue(v any) string {
 		return "NULL"
 	}
 	return fmt.Sprintf("%v", v)
+}
+
+// errWriter wraps an io.Writer, dropping later writes once one fails and
+// keeping the first error. writeVerifyReport does dozens of unchecked
+// fmt.Fprint* calls; this catches an I/O failure on the --out file so the
+// caller can report it instead of silently writing a truncated report.
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (e *errWriter) Write(p []byte) (int, error) {
+	if e.err != nil {
+		return 0, e.err
+	}
+	n, err := e.w.Write(p)
+	e.err = err
+	return n, err
 }
