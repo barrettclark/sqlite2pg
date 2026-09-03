@@ -103,18 +103,21 @@ sqlite2pg verify   --pg <postgres-url> <source.db> <config.yaml>   # confirm the
   `--out <path>` writes the detailed report to a file instead of stdout; a
   clean run reports 0 mismatches, a dirty one lists every mismatching
   column with up to 20 examples plus the true total count even when capped.
-  When the table has a primary key, both sides are read in genuine
+  When the table has a primary key whose every column is transform-free and
+  BINARY-collated in the SQLite source, both sides are read in genuine
   `ORDER BY <primary key>` order (byte-order-collated on both sides, even
-  for text keys), so mismatches are a real, deterministic row-by-row match —
-  this ordering was added specifically because a bare sequential scan proved
-  unsafe: Postgres 18 doesn't reliably return a freshly-COPY'd table's rows
-  in insertion order, and a locale-aware Postgres collation can disagree
-  with SQLite's default byte-order text comparison, either of which used to
-  produce false-positive mismatches. Without a usable primary key, `verify`
-  instead compares each column as a sorted value multiset — still
-  exhaustive, but a reported example is a position in the sorted comparison,
-  not a source row. See the doc comment on `internal/pipeline.VerifyTable`
-  for the full detail on both paths.
+  for `varchar(n)` text keys), so mismatches are a real, deterministic
+  row-by-row match — this ordering was added specifically because a bare
+  sequential scan proved unsafe: Postgres 18 doesn't reliably return a
+  freshly-COPY'd table's rows in insertion order, and a locale-aware
+  Postgres collation can disagree with SQLite's default byte-order text
+  comparison, either of which used to produce false-positive mismatches.
+  With no primary key — or a primary key that carries a value transform or
+  a `COLLATE NOCASE`/`RTRIM` text column, neither of which can be ordered
+  by safely — `verify` instead compares each column as a sorted value
+  multiset — still exhaustive, but a reported example is a position in the
+  sorted comparison, not a source row. See the doc comment on
+  `internal/pipeline.VerifyTable` for the full detail on both paths.
 - **Automatic post-load verification**: `run` and `load` both accept
   `--verify` (run verification unconditionally after a successful load) and
   `--noverify` (never run it); passing both is a usage error. With neither
