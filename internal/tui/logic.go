@@ -5,6 +5,7 @@
 package tui
 
 import (
+	"fmt"
 	"math"
 	"regexp"
 	"strconv"
@@ -238,13 +239,16 @@ func previewValueForType(value, targetType string) (display, transform string, v
 		// numeric_text_to_integer's exact-integer parse rejects an
 		// exponent outright, so without this the picker drops
 		// integer/bigint/smallint for a large whole-number REAL column
-		// (issue #139). That form is only ever produced from a float64,
-		// so reformatting it to plain decimal loses no precision the
-		// display string still had; a plain digit string (incl. a
-		// 19-digit exact ID) carries no exponent and is untouched.
+		// (issue #139). Only normalize when value really is that %v
+		// rendering — it round-trips through ParseFloat + %v. A
+		// TEXT-storage column literally holding "1.5e3" is not a float64
+		// rendering (%v of 1500.0 is "1500"), and must not be coerced
+		// into an integer transform the raw string then fails at COPY
+		// (issue #156). A plain digit string carries no exponent and is
+		// untouched.
 		numText := value
 		if strings.ContainsAny(numText, "eE") {
-			if f, perr := strconv.ParseFloat(numText, 64); perr == nil {
+			if f, perr := strconv.ParseFloat(numText, 64); perr == nil && fmt.Sprintf("%v", f) == numText {
 				numText = strconv.FormatFloat(f, 'f', -1, 64)
 			}
 		}

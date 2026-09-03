@@ -21,7 +21,11 @@ func TestPreviewValueForType_IntegerAcceptsScientificNotationWholeNumber(t *test
 		{"1.712345678e+09", "integer", true, "1712345678"},
 		{"1e+06", "integer", true, "1000000"},
 		{"1e+06", "smallint", false, ""}, // 1000000 is outside int2
-		{"1.5e+02", "smallint", true, "150"},
+		// "1.5e+02" is NOT what %v prints for float64(150) ("150"), so
+		// per issue #156 it is treated as a literal TEXT value that
+		// numeric_text_to_integer rejects at COPY — not a float64
+		// rendering to normalize.
+		{"1.5e+02", "smallint", false, ""},
 		{"1.712345678e+02", "integer", false, ""}, // 171.23… has a real fraction
 	}
 	for _, c := range cases {
