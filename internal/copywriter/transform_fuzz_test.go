@@ -169,3 +169,55 @@ func FuzzEpochScaleTransforms(f *testing.F) {
 		}
 	})
 }
+
+// FuzzTransformArmsNeverSilentlyPassThrough is issue #103's property: PR
+// #97/#98 rewrote five string-only transform arms to error on an
+// unexpected type instead of `return raw, nil`; four siblings
+// (iso8601_to_timestamptz, dayfirst_to_timestamptz,
+// numeric_text_to_integer, numeric_text_to_double) were left with the
+// fall-through and are fixed in this batch. The invariant across ALL of
+// them: given a non-string, non-time.Time input, Transform must either
+// return a typed error or a value of the arm's real target shape — it
+// must never hand back the raw input unchanged (which makes
+// verifyTransformAgainstFullTable a silent no-op and defers the failure
+// to COPY). Also: never panic.
+func FuzzTransformArmsNeverSilentlyPassThrough(f *testing.F) {
+	f.Add([]byte("2019-03-04"), int64(42), 3.5)
+	f.Add([]byte{0x00, 0xff}, int64(0), 0.0)
+	f.Add([]byte("31/07/2006"), int64(-9e18), 1e300)
+
+	arms := []string{
+		"iso8601_to_timestamptz",
+		"dayfirst_to_timestamptz",
+		"numeric_text_to_integer",
+		"numeric_text_to_double",
+		"iso8601_to_date",
+		"strip_commas",
+		"strip_commas_float",
+		"text_to_jsonb",
+		"nullif_sentinels",
+	}
+
+	check := func(t *testing.T, arm string, in profiler.Value) {
+		got, err := Transform(arm, in) // must not panic
+		if err != nil {
+			return
+		}
+		// Accepted with no error. The result must not be the raw input
+		// passed straight back.
+		switch in.(type) {
+		case []byte:
+			if b, ok := got.([]byte); ok {
+				t.Fatalf("Transform(%s, %T) returned the raw []byte unchanged (%q) — silent pass-through (issue #103)", arm, in, b)
+			}
+		}
+	}
+
+	f.Fuzz(func(t *testing.T, b []byte, n int64, fl float64) {
+		for _, arm := range arms {
+			check(t, arm, profiler.Value(b))
+			check(t, arm, profiler.Value(n))
+			check(t, arm, profiler.Value(fl))
+		}
+	})
+}
