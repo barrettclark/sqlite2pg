@@ -93,10 +93,21 @@ func dateTransformPreview(value, targetType string) (time.Time, string, bool) {
 	// audit, finding L6). ParseFloat parses both plain-integer and
 	// scientific-notation text; f == math.Trunc(f) keeps this from
 	// treating a genuinely fractional value as an epoch integer, the same
-	// thing ParseInt's own strictness did. Every epoch bound here is far
-	// below float64's 2^53 exact-integer range, so int64(f) loses no
-	// precision.
-	if f, err := strconv.ParseFloat(value, 64); err == nil && targetType == "timestamptz" && f == math.Trunc(f) {
+	// thing ParseInt's own strictness did.
+	//
+	// The magnitude guard (f within [epochSecondsMin, epochMicrosMax]) is
+	// load-bearing, not just an optimization: ParseFloat also accepts
+	// "Inf" and values past 2^63, and math.Trunc(±Inf) == ±Inf, so the
+	// f == math.Trunc(f) test passes for infinity — int64(f) on that is
+	// implementation-dependent per the Go spec, the exact class the
+	// transform.go PR #98 round guarded against in six places (issue #112
+	// / L3). Restricting entry to the epoch window means int64(f) only
+	// ever runs on a value below 2^53, where it is exact and defined; a
+	// non-finite or out-of-window f falls through to the float-shaped
+	// transforms below (which pass f straight to copywriter.Transform,
+	// where transform.go's own guards handle it).
+	if f, err := strconv.ParseFloat(value, 64); err == nil && targetType == "timestamptz" &&
+		f == math.Trunc(f) && f >= float64(epochSecondsMin) && f <= float64(epochMicrosMax) {
 		n := int64(f)
 		switch {
 		case n >= epochSecondsMin && n <= epochSecondsMax:
