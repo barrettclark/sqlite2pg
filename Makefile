@@ -30,8 +30,8 @@ vet: ## go vet
 fmt: ## Rewrite files with gofmt
 	gofmt -w .
 
-fmt-check: ## Fail if any file needs gofmt
-	@out=$$(gofmt -l .); if [ -n "$$out" ]; then printf 'gofmt needed:\n%s\n' "$$out"; exit 1; fi
+fmt-check: ## Fail if any file needs gofmt (or can't be parsed)
+	@out=$$(gofmt -l -e . 2>&1); if [ -n "$$out" ]; then printf 'gofmt:\n%s\n' "$$out"; exit 1; fi
 
 tidy-check: ## Fail if go.mod/go.sum aren't tidy
 	$(GO) mod tidy

@@ -21,8 +21,8 @@ jobs:
 
       - name: gofmt
         run: |
-          out=$(gofmt -l .)
-          if [ -n "$out" ]; then echo "gofmt needed:"; echo "$out"; exit 1; fi
+          out=$(gofmt -l -e . 2>&1)
+          if [ -n "$out" ]; then echo "gofmt:"; echo "$out"; exit 1; fi
 
       - name: Build
         run: go build ./...
