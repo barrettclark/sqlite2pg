@@ -208,9 +208,13 @@ func runPostLoadVerify(ctx context.Context, cfg *config.MigrationConfig, connCfg
 		return fmt.Errorf("post-load verification FAILED: %d table(s) with row-count mismatches, %d value mismatch(es) across %d table(s) checked",
 			summary.rowCountFailures, summary.totalMismatches, summary.tablesChecked)
 	}
-	fmt.Fprintf(out, "post-load verification passed: %d table(s) checked, %d row(s) compared, 0 mismatches\n", summary.tablesChecked, summary.totalRowsCompared)
+	// Check the latched write error before printing "passed", so a
+	// truncated report never appears alongside a success line even though
+	// the command returns non-zero (Copilot review, PR #152). A FAILED
+	// verdict above still wins over this.
 	if ew.err != nil {
 		return fmt.Errorf("post-load verification report was incomplete: %w", ew.err)
 	}
+	fmt.Fprintf(out, "post-load verification passed: %d table(s) checked, %d row(s) compared, 0 mismatches\n", summary.tablesChecked, summary.totalRowsCompared)
 	return nil
 }
