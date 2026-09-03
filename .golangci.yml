@@ -16,9 +16,11 @@ linters:
   settings:
     errcheck:
       # Suppresses errcheck on every call to these, not just deferred ones.
-      # Fine here: every .Close() in non-test code is deferred on a read or
-      # connection handle, and every fmt.Fprint* target is stdout/stderr or
-      # an in-memory buffer — no call site where the error is actionable.
+      # Accepted trade-off: every .Close() in non-test code is deferred on
+      # a read or connection handle, and fmt.Fprint* targets are stdout,
+      # stderr, an in-memory buffer, or the `verify --out` report file
+      # where a write error would at worst truncate the report (tracked in
+      # issue #136).
       exclude-functions:
         - (*database/sql.DB).Close
         - (*database/sql.Rows).Close
