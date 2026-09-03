@@ -187,6 +187,14 @@ func runPostLoadVerify(ctx context.Context, cfg *config.MigrationConfig, connCfg
 	}
 	defer sourceDB.Close()
 
+	// Latch write errors on the report/progress stream the same way
+	// `verify --out` does (issue #136), so `run --verify > report.txt` on
+	// a full disk fails loudly instead of leaving a truncated report with
+	// a zero exit code (issue #146). Narrower than --out — this is stdout,
+	// not a named file — but the same asymmetry.
+	ew := &errWriter{w: out}
+	out = ew
+
 	fmt.Fprintln(out, "running post-load verification...")
 	summary, err := verifyLoadedTables(ctx, sourceDB, conn, cfg, out, out)
 	if err != nil {
@@ -201,5 +209,8 @@ func runPostLoadVerify(ctx context.Context, cfg *config.MigrationConfig, connCfg
 			summary.rowCountFailures, summary.totalMismatches, summary.tablesChecked)
 	}
 	fmt.Fprintf(out, "post-load verification passed: %d table(s) checked, %d row(s) compared, 0 mismatches\n", summary.tablesChecked, summary.totalRowsCompared)
+	if ew.err != nil {
+		return fmt.Errorf("post-load verification report was incomplete: %w", ew.err)
+	}
 	return nil
 }
