@@ -37,3 +37,6 @@
 !testdata/fixtures/*.db
 !testdata/fixtures/*.sqlite
 !testdata/fixtures/*.geodatabase
+
+# go test -coverprofile output
+/coverage.out

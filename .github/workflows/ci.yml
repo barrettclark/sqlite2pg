@@ -17,18 +17,24 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.26.5"
+          go-version: "1.26.8"
 
       - name: gofmt
         run: |
           out=$(gofmt -l -e . 2>&1)
           if [ -n "$out" ]; then echo "gofmt:"; echo "$out"; exit 1; fi
 
+      - name: Lint
+        # golangci-lint runs govet among others; no separate vet step.
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13.2
+
       - name: Build
         run: go build ./...
 
-      - name: Vet
-        run: go vet ./...
+      - name: Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
 
       - name: go.mod is tidy
         # The release build no longer runs `go mod tidy` (issue #117): a
