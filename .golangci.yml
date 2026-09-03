@@ -15,9 +15,11 @@ linters:
     - misspell      # typos in comments and strings
   settings:
     errcheck:
+      # Suppresses errcheck on every call to these, not just deferred ones.
+      # Fine here: every .Close() in non-test code is deferred on a read or
+      # connection handle, and every fmt.Fprint* target is stdout/stderr or
+      # an in-memory buffer — no call site where the error is actionable.
       exclude-functions:
-        # defer x.Close() on read paths / process-exit writes — the error
-        # is never actionable and checking it is pure noise.
         - (*database/sql.DB).Close
         - (*database/sql.Rows).Close
         - (*os.File).Close
