@@ -811,7 +811,7 @@ func TestTransform_StripCommasFloat_HandlesAlreadyNumericInput(t *testing.T) {
 // not against the buggy code itself.
 func TestTransform_JulianDayToDate_NegativeJDNUsesFloorDivision(t *testing.T) {
 	cases := []struct {
-		jdn                    int64
+		jdn              int64
 		year, month, day int
 	}{
 		{-70000, -4904, 3, 30},
