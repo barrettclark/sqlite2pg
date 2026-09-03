@@ -20,7 +20,7 @@ func TestPreviewValueForType_IntegerAcceptsScientificNotationWholeNumber(t *test
 		{"1.712345678e+09", "bigint", true, "1712345678"},
 		{"1.712345678e+09", "integer", true, "1712345678"},
 		{"1e+06", "integer", true, "1000000"},
-		{"1e+06", "smallint", false, ""},   // 1000000 is outside int2
+		{"1e+06", "smallint", false, ""}, // 1000000 is outside int2
 		{"1.5e+02", "smallint", true, "150"},
 		{"1.712345678e+02", "integer", false, ""}, // 171.23… has a real fraction
 	}

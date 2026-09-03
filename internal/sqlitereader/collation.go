@@ -128,8 +128,8 @@ func maskParensAndStringLiterals(s string) string {
 	b := []byte(s)
 	depth := 0
 	for i := 0; i < len(s); {
-		switch c := s[i]; {
-		case c == '\'', c == '"', c == '`', c == '[':
+		switch c := s[i]; c {
+		case '\'', '"', '`', '[':
 			j := skipQuoteOrComment(s, i)
 			if c == '\'' || depth > 0 {
 				for k := i; k < j; k++ {
@@ -138,10 +138,10 @@ func maskParensAndStringLiterals(s string) string {
 			}
 			i = j
 			continue
-		case c == '(':
+		case '(':
 			depth++
 			b[i] = ' '
-		case c == ')':
+		case ')':
 			if depth > 0 {
 				depth--
 			}
