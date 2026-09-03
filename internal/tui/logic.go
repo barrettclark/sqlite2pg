@@ -252,6 +252,12 @@ func previewValueForType(value, targetType string) (display, transform string, v
 				numText = strconv.FormatFloat(f, 'f', -1, 64)
 			}
 		}
+		// For a float64 sample above 2^53 the exact-text parse below and
+		// the load-time int64(f) conversion can differ by a few units
+		// (issue #164 / L7) — the previewed integer is then slightly off
+		// from what is stored. Display-only: both sides of `verify`
+		// recompute the same value, so there is no mismatch. Not worth
+		// the float64 round-trip to make the preview exact.
 		result, err := copywriter.Transform("numeric_text_to_integer", numText)
 		if err != nil {
 			return value, "", false
