@@ -686,10 +686,29 @@ func numericSortKey(v any) (string, bool) {
 // different numeric values (int64(100) vs int64(200), or float64(100) vs
 // float64(100.5)) exactly as before, since each distinct value still
 // converts to a distinct float64 and so distinct key text.
+// normalizeNarrowNumeric collapses a plain int onto int64 and a float32
+// onto float64 so sortKeyFor and valuesMatch always see the 64-bit forms
+// every numeric path here is written for — the two can only reach the
+// comparison from a mixed-storage row (copywriter.Transform normalises
+// int->int64 and the SQLite driver yields int64/float64), and without
+// this they key apart while valuesMatch's %v fallback still matched them
+// (issue #148 / L6).
+func normalizeNarrowNumeric(v any) any {
+	switch n := v.(type) {
+	case int:
+		return int64(n)
+	case float32:
+		return float64(n)
+	default:
+		return v
+	}
+}
+
 func sortKeyFor(v any) string {
 	if v == nil {
 		return "\x00nil"
 	}
+	v = normalizeNarrowNumeric(v)
 	switch t := v.(type) {
 	case time.Time:
 		// Keyed at microsecond resolution to match valuesMatch's time.Time
@@ -979,6 +998,8 @@ func valuesMatch(expected, actual any) bool {
 	if expected == nil || actual == nil {
 		return expected == nil && actual == nil
 	}
+	expected = normalizeNarrowNumeric(expected)
+	actual = normalizeNarrowNumeric(actual)
 
 	if equal, ok := exactNumericEqual(expected, actual); ok {
 		return equal
