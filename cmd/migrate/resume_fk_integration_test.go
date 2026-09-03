@@ -103,7 +103,9 @@ func TestResume_ForeignKeyStepPartialFailureCanBeResumed(t *testing.T) {
 			return
 		}
 		defer conn.Close(ctx)
-		conn.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{dbName}.Sanitize())
+		if _, err := conn.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{dbName}.Sanitize()); err != nil {
+			t.Logf("cleanup: dropping test database %s failed (drop it by hand): %v", dbName, err)
+		}
 	})
 
 	// First attempt: every table loads, then the FK step fails on
