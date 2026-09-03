@@ -257,4 +257,25 @@ Working branch off `main`; baseline before any work: `go build ./...`,
   (~4.7–5.0 s both binaries); `load`/`verify` on `employee.db` unchanged
   (~14.8 s / ~14.2 s). Nothing to file.
 
-*(Phase E outcomes appended as the cycle runs.)*
+### Phase E outcomes
+
+All 11 Phase A findings filed as issues **#139–#149** (unconditional,
+before any fix work) and all 11 fixed and merged. Triage decision: fix
+every one this cycle (Phases B–D found nothing to file). Four PRs:
+
+| PR | theme | findings | notes |
+|---|---|---|---|
+| **#150** | scaffolding (merged first) | — | plan doc, the two purpose-built fixtures + golden tests, the Phase A–D result docs |
+| **#151** | transform / verify correctness | #139 M1, #140 M2, #145 L3, #148 L6, #149 L7 | M2 fixed at the verify layer (`fitsTargetType` range-checks a `time.Time` against Postgres's date/timestamptz bounds) rather than by bounding the transforms — consistent with the existing integer-range check there, and it doesn't disturb the deliberate issue #82 "loud COPY failure" design for `excel_serial`. Copilot round: `COLLATE 'NOCASE'` (single-quoted collation name — SQLite accepts it) was being masked by the L3 fix; added `precededByCollateKeyword` so a `'…'` operand of a top-level `COLLATE` is kept. |
+| **#152** | docs / messages / release CI | #141 M3, #143 L1, #144 L2, #146 L4, #147 L5 | Also carried a README `verify` accuracy pass (the ordered/unordered trigger was described as "has a primary key" — corrected to "transform-free, BINARY-collated PK"). Copilot round: post-load path printed "passed" before checking the latched write error — reordered. |
+| **#153** | FK step on `--resume` | #142 M4 | Dropped the `FKsApplied` gate entirely — the step is idempotent + transactional since #127/#132, so it now runs on every invocation. New integration test `TestResume_ForeignKeysForATableIncludedBetweenLoadAndResume` (confirmed to fail on the gated code). |
+
+Per-batch regression gate held throughout: `go build`, `go test`,
+`go test -tags integration`, `make lint`, `gofmt -l`, `govulncheck` green
+on each branch before merge.
+
+**Released as `v0.3.1`** — patch bump (bug/correctness/doc fixes only, no
+breaking changes, no new user-facing features). The release workflow ran
+the full CI check set for the first time (the #147 fix), all green, then
+goreleaser published the six platform archives and bumped the
+`barrettclark/homebrew-tap` cask.
