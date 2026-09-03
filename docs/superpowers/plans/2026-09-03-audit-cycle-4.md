@@ -218,4 +218,43 @@ Working branch off `main`; baseline before any work: `go build ./...`,
 `go test ./...`, `go test -tags integration ./...`, `make lint`, and
 `make vulncheck` all green.
 
-*(Phase results appended here as the cycle runs.)*
+### Detection phase outcomes
+
+- **Phase A** — `audit-cycle4-diff-review-findings.md`: **4 Medium, 7
+  Low, 0 High**.
+  - M1: `tui/logic.go` type picker no longer offers integer/bigint/
+    smallint for a REAL column whose sample renders in scientific
+    notation (`5522180` regressed the integer arm one arm over from the
+    date-arm fix).
+  - M2: `julian_day_to_date` / `excel_serial_to_timestamptz` still
+    produce out-of-range timestamps that full-table verify certifies
+    clean, then `load` aborts mid-COPY (the #111 failure mode, one arm
+    the PR #124 contract missed).
+  - M3: every README invocation example puts `--pg` after the positional
+    arg — Go's `flag` stops at the first positional, so the quickstart
+    exits 1 when copy-pasted.
+  - M4: `FKsApplied` boolean gates the FK step, but the FK set is
+    re-derived from a mutable config — a table flipped `include: true`
+    between a completed load and a `--resume` gets loaded with no FKs.
+  - L1–L7: stale `migrate` package doc; `verify --out` message ordering;
+    `collateClauseRe` matching inside string literals; post-load verify
+    path unlatched; release workflow skips CI's lint/fmt/tidy/vuln gates;
+    `sortKeyFor` vs `valuesMatch` for `int`/`float32` (latent);
+    `fallbackTargetNeedsStorageCheck` domain mismatch (latent).
+- **Phase B** — `audit-cycle4-campaign-results.md`: **38 verified clean,
+  0 verify failures.** No regression (cycle 3 was 36; +2 = the two new
+  purpose-built fixtures `sample-varchar-pk` / `sample-geojson`, both
+  PASS). The 8 non-passing are identical to cycle 3, all accounted for
+  (rubber-stamp casualties + known FK-violation + intentional corrupt
+  fixture).
+- **Phase C** — `audit-cycle4-fuzz-results.md`: all 12 fuzz targets green
+  on seed corpus + burst; `FuzzParseColumnCollations` green over a 3 min
+  / 5.28 M exec dedicated run. No regression. No new harness needed —
+  Phase A findings are analytic.
+- **Phase D** — `audit-cycle4-performance-results.md`: no regression.
+  `profile` on `employee.db` flat vs `db35d39` (5654 → 5614 ms);
+  `beets_library.db` within noise after a clean interleaved re-measure
+  (~4.7–5.0 s both binaries); `load`/`verify` on `employee.db` unchanged
+  (~14.8 s / ~14.2 s). Nothing to file.
+
+*(Phase E outcomes appended as the cycle runs.)*
