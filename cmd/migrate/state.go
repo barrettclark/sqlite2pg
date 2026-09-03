@@ -25,6 +25,12 @@ type loadState struct {
 	// "constraint already exists". Recording completion here — the same
 	// way Completed does per table — makes that step idempotent across
 	// separate `migrate load --resume` invocations too.
+	//
+	// This is a single flag for the whole step, not one entry per
+	// constraint, because executeLoad runs every constraint and index in
+	// one transaction: a partial failure rolls all of them back, so
+	// "FKsApplied is false" always means "none are in place" and a
+	// --resume can safely retry the step wholesale (issue #109 / M6).
 	FKsApplied bool `json:"fks_applied,omitempty"`
 }
 
