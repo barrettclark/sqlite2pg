@@ -139,10 +139,10 @@ func FuzzColumnCollationsRoundTripWithNoise(f *testing.F) {
 	lineComment := "-- trailing ( , COLLATE RTRIM to end of line\n"
 
 	f.Fuzz(func(t *testing.T, sel int) {
-		if sel < 0 {
-			sel = -sel
-		}
-		noise := noises[sel%len(noises)]
+		// uint conversion is overflow-safe where `sel = -sel` is not
+		// (math.MinInt negates to itself, staying negative and panicking
+		// the index).
+		noise := noises[uint(sel)%uint(len(noises))]
 
 		ddl := "CREATE TABLE rt (\n" +
 			"  col_0 TEXT " + noise + ",\n" +

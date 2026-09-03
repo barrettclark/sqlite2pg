@@ -160,14 +160,20 @@ func columnListOpenParen(createSQL string) int {
 }
 
 // skipQuoteOrComment reports the index just past the token starting at
-// s[i] when that token opens a quoted string/identifier ("...", `...`,
-// [...], '...', with a doubled closing char escaping itself for the first
-// three) or a comment (-- to end of line, or /* ... */); otherwise it
-// returns i unchanged. CREATE TABLE text stored verbatim in
-// sqlite_master.sql can contain any of these, and a '(' , ')' or ','
-// inside one is not structural — matchingParen and splitTopLevelCommas
-// both used to miss this, letting a DEFAULT ')' or an unbalanced paren in
-// a comment truncate the parsed column body (issue #104 / M1).
+// s[i] when that token opens a quoted string/identifier or a comment;
+// otherwise it returns i unchanged. Recognized openers:
+//
+//   - "..."  `...`  '...'  — a doubled closing char (""  ``  '') is an
+//     escaped literal, not the end (SQLite's rule for all three).
+//   - [...]  — closes at the first ']'. SQLite does not allow a ']' inside
+//     a bracket-quoted identifier at all, so there is nothing to escape.
+//   - -- to end of line, and /* ... */.
+//
+// CREATE TABLE text stored verbatim in sqlite_master.sql can contain any
+// of these, and a '(' , ')' or ',' inside one is not structural —
+// matchingParen and splitTopLevelCommas both used to miss this, letting a
+// DEFAULT ')' or an unbalanced paren in a comment truncate the parsed
+// column body (issue #104 / M1).
 func skipQuoteOrComment(s string, i int) int {
 	if i >= len(s) {
 		return i
