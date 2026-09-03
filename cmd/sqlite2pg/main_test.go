@@ -233,10 +233,7 @@ func TestPrintDryRunDDL_OrdersTablesAlphabeticallyRegardlessOfMapIteration(t *te
 	want := append([]string(nil), names...)
 	sort.Strings(want)
 
-	var got []string
-	for _, name := range names {
-		got = append(got, name)
-	}
+	got := append([]string(nil), names...)
 	sort.Slice(got, func(i, j int) bool {
 		return strings.Index(output, `CREATE TABLE "`+got[i]+`"`) < strings.Index(output, `CREATE TABLE "`+got[j]+`"`)
 	})

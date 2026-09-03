@@ -1,0 +1,19 @@
+name: Vulncheck
+
+# CI already runs govulncheck per push/PR. This weekly run catches a CVE
+# disclosed against an already-pinned dependency, which no push would
+# otherwise surface.
+on:
+  schedule:
+    - cron: "0 9 * * 1"
+  workflow_dispatch:
+
+jobs:
+  govulncheck:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26.5"
+      - run: go run golang.org/x/vuln/cmd/govulncheck@latest ./...

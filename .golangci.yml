@@ -1,0 +1,51 @@
+version: "2"
+
+run:
+  build-tags:
+    - integration
+
+linters:
+  default: none
+  enable:
+    - errcheck      # unchecked errors
+    - govet         # go vet
+    - ineffassign   # assignments never used
+    - staticcheck   # bugs, dead code, dubious constructs (bundles gosimple/stylecheck/unused)
+    - unconvert     # redundant type conversions
+    - misspell      # typos in comments and strings
+  settings:
+    errcheck:
+      exclude-functions:
+        # defer x.Close() on read paths / process-exit writes — the error
+        # is never actionable and checking it is pure noise.
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*os.File).Close
+        - (*github.com/jackc/pgx/v5.Conn).Close
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+    misspell:
+      # "DOUB" is a SQL type-name prefix (DOUBLE / DOUBLE PRECISION), not
+      # a typo for "DOUBT".
+      ignore-rules:
+        - DOUB
+    staticcheck:
+      # -ST1005: a usage string ending in "..." is a false positive.
+      # -QF1001/-QF1009: opinionated "could simplify" quickfixes.
+      checks:
+        - all
+        - -ST1005
+        - -QF1001
+        - -QF1009
+  exclusions:
+    rules:
+      # Test setup routinely ignores db.Exec errors on a fresh in-memory
+      # database where an INSERT can't realistically fail.
+      - path: _test\.go
+        linters:
+          - errcheck
+
+formatters:
+  enable:
+    - gofmt
