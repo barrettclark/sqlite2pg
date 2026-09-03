@@ -35,7 +35,7 @@ to only take those two values?).
 The common case — a human at the terminal, watching it happen — is one command:
 
 ```
-sqlite2pg run <source.db> --pg <postgres-url>
+sqlite2pg run --pg <postgres-url> <source.db>
 ```
 
 This profiles the source, then opens an in-terminal review screen: pick a
@@ -63,8 +63,8 @@ can't be scripted or run non-interactively:
 ```
 sqlite2pg profile  <source.db>   # sample + profile every column, write a draft config
 sqlite2pg review   <config.yaml>  # open the terminal review UI to approve/override ambiguous columns
-sqlite2pg load     <config.yaml> --pg <postgres-url>   # generate DDL, stream rows via COPY
-sqlite2pg verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the load was correct
+sqlite2pg load     --pg <postgres-url> <config.yaml>   # generate DDL, stream rows via COPY
+sqlite2pg verify   --pg <postgres-url> <source.db> <config.yaml>   # confirm the load was correct
 ```
 
 - **`run`** is `profile` + `review` + `load` collapsed into one command, with
@@ -93,7 +93,7 @@ sqlite2pg verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the
 - **`resolve --apply resolutions.yaml`** merges human- (or Claude Code-)
   supplied answers for an `unresolved_report.yaml` back into the config, for
   cases no heuristic could confidently resolve on its own.
-- **`verify <source.db> <config.yaml> --pg <postgres-url>`** streams every
+- **`verify --pg <postgres-url> <source.db> <config.yaml>`** streams every
   row and every included column from *both* sides and confirms the Postgres
   copy is byte-for-byte correct — not a spot check. It reads the database
   name to connect to from `<config>.state.json` (the same file `--resume`
@@ -103,18 +103,21 @@ sqlite2pg verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the
   `--out <path>` writes the detailed report to a file instead of stdout; a
   clean run reports 0 mismatches, a dirty one lists every mismatching
   column with up to 20 examples plus the true total count even when capped.
-  When the table has a primary key, both sides are read in genuine
+  When the table has a primary key whose every column is transform-free and
+  BINARY-collated in the SQLite source, both sides are read in genuine
   `ORDER BY <primary key>` order (byte-order-collated on both sides, even
-  for text keys), so mismatches are a real, deterministic row-by-row match —
-  this ordering was added specifically because a bare sequential scan proved
-  unsafe: Postgres 18 doesn't reliably return a freshly-COPY'd table's rows
-  in insertion order, and a locale-aware Postgres collation can disagree
-  with SQLite's default byte-order text comparison, either of which used to
-  produce false-positive mismatches. Without a usable primary key, `verify`
-  instead compares each column as a sorted value multiset — still
-  exhaustive, but a reported example is a position in the sorted comparison,
-  not a source row. See the doc comment on `internal/pipeline.VerifyTable`
-  for the full detail on both paths.
+  for `varchar(n)` text keys), so mismatches are a real, deterministic
+  row-by-row match — this ordering was added specifically because a bare
+  sequential scan proved unsafe: Postgres 18 doesn't reliably return a
+  freshly-COPY'd table's rows in insertion order, and a locale-aware
+  Postgres collation can disagree with SQLite's default byte-order text
+  comparison, either of which used to produce false-positive mismatches.
+  With no primary key — or a primary key that carries a value transform or
+  a `COLLATE NOCASE`/`RTRIM` text column, neither of which can be ordered
+  by safely — `verify` instead compares each column as a sorted value
+  multiset — still exhaustive, but a reported example is a position in the
+  sorted comparison, not a source row. See the doc comment on
+  `internal/pipeline.VerifyTable` for the full detail on both paths.
 - **Automatic post-load verification**: `run` and `load` both accept
   `--verify` (run verification unconditionally after a successful load) and
   `--noverify` (never run it); passing both is a usage error. With neither

@@ -103,23 +103,49 @@ func runVerify(args []string) error {
 		return err
 	}
 
+	var reportErr error
 	if reportFile != nil {
 		closeErr := reportFile.Close()
-		if ew.err != nil {
-			return fmt.Errorf("writing report to %s: %w", *outPath, ew.err)
+		switch {
+		case ew.err != nil:
+			reportErr = fmt.Errorf("writing report to %s: %w", *outPath, ew.err)
+		case closeErr != nil:
+			reportErr = fmt.Errorf("writing report to %s: %w", *outPath, closeErr)
 		}
-		if closeErr != nil {
-			return fmt.Errorf("writing report to %s: %w", *outPath, closeErr)
-		}
-		fmt.Printf("report written to %s\n", *outPath)
 	}
 
-	if !summary.passed() {
-		return fmt.Errorf("verification FAILED: %d table(s) with row-count mismatches, %d value mismatch(es) across %d table(s) checked",
-			summary.rowCountFailures, summary.totalMismatches, summary.tablesChecked)
+	lines, err := verifyOutcome(summary, *outPath, reportErr)
+	for _, l := range lines {
+		fmt.Println(l)
 	}
-	fmt.Printf("verification passed: %d table(s) checked, %d row(s) compared, 0 mismatches\n", summary.tablesChecked, summary.totalRowsCompared)
-	return nil
+	return err
+}
+
+// verifyOutcome turns the verification summary plus any --out report write
+// error into runVerify's result: the success lines to print (nil on
+// failure) and the error to return. The verification verdict always wins
+// — a report-file write failure must never shadow "your data is wrong"
+// (issue #144) — and "report written to" prints only on full success,
+// after the verdict is known.
+func verifyOutcome(summary verifySummary, outPath string, reportErr error) ([]string, error) {
+	if !summary.passed() {
+		msg := fmt.Sprintf("verification FAILED: %d table(s) with row-count mismatches, %d value mismatch(es) across %d table(s) checked",
+			summary.rowCountFailures, summary.totalMismatches, summary.tablesChecked)
+		if reportErr != nil {
+			return nil, fmt.Errorf("%s; also failed writing the report: %w", msg, reportErr)
+		}
+		return nil, errors.New(msg)
+	}
+	if reportErr != nil {
+		return nil, reportErr
+	}
+	var lines []string
+	if outPath != "" {
+		lines = append(lines, fmt.Sprintf("report written to %s", outPath))
+	}
+	lines = append(lines, fmt.Sprintf("verification passed: %d table(s) checked, %d row(s) compared, 0 mismatches",
+		summary.tablesChecked, summary.totalRowsCompared))
+	return lines, nil
 }
 
 // verifyLoadedTables runs pipeline.VerifyTable for every included table in

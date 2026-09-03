@@ -20,16 +20,33 @@ jobs:
         with:
           go-version: "1.26.8"
 
-      # Gate the release on the same checks CI runs. A `v*` tag matches no
-      # CI trigger unless it also runs here, so without this a tag could
-      # publish binaries and a Homebrew formula with zero verification
-      # (issue #107 / M4). Tier 3 (`integration`) tests still need a
-      # Postgres and are not run here, same as CI.
+      # Gate the release on the same checks CI runs. A `v*` tag also
+      # triggers the CI workflow, but GitHub does not order or gate one
+      # workflow on another — the two race, and goreleaser could publish
+      # while CI's Lint step is still red (issue #147 / L5). So run the
+      # full CI check set here too, before goreleaser. Tier 3
+      # (`integration`) tests still need a Postgres and are not run here,
+      # same as CI.
+      - name: gofmt
+        run: |
+          out=$(gofmt -l -e . 2>&1)
+          if [ -n "$out" ]; then echo "gofmt:"; echo "$out"; exit 1; fi
+
+      - name: Lint
+        uses: golangci/golangci-lint-action@v8
+        with:
+          version: v2.13.2
+
       - name: Build
         run: go build ./...
 
-      - name: Vet
-        run: go vet ./...
+      - name: Vulnerabilities
+        run: go run golang.org/x/vuln/cmd/govulncheck@v1.7.0 ./...
+
+      - name: go.mod is tidy
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
 
       - name: Test
         run: go test ./...
