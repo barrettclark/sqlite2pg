@@ -15,13 +15,13 @@ type loadState struct {
 	Database  string   `json:"database"`
 	Completed []string `json:"completed"`
 
-	// FKsApplied lets a --resume skip re-running the foreign-key step once
-	// it has succeeded. It's an optimization, not a correctness gate: the
-	// generated DDL is idempotent (DROP CONSTRAINT IF EXISTS + ADD,
-	// CREATE INDEX IF NOT EXISTS) and runs in one transaction, so
-	// re-running the whole step is always safe — including after a crash
-	// in the gap between the transaction commit and this flag being
-	// written (issues #109, #128).
+	// FKsApplied records that executeLoad's foreign-key step has completed
+	// at least once. Purely informational — executeLoad re-runs the step
+	// on every invocation regardless (the FK set is re-derived from a
+	// config that can change between runs — issue #142), which is safe
+	// because the generated DDL is idempotent (DROP CONSTRAINT IF EXISTS +
+	// ADD, CREATE INDEX IF NOT EXISTS) and runs in one transaction
+	// (issues #109, #128).
 	FKsApplied bool `json:"fks_applied,omitempty"`
 }
 
