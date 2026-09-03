@@ -1,7 +1,6 @@
 package sqlitereader
 
 import (
-	"strings"
 	"testing"
 )
 
@@ -145,19 +144,10 @@ func TestColumnCollations_TableNameContainingAParenDoesNotConfuseTheParser(t *te
 	}
 }
 
-// TestColumnListOpenParen_HandlesVirtualTableWithParenInName is a
-// regression test for Copilot's PR #101 review finding: ColumnCollations'
-// own sqlite_master query (type = 'table') matches virtual tables too —
-// SQLite gives them type='table' there, not a separate type — so a CREATE
-// VIRTUAL TABLE statement can reach columnListOpenParen just as a plain
-// one can. Without matching that preamble shape, the paren-in-table-name
-// bug this helper exists to avoid (issue #91) reproduces identically for
-// a virtual table literally named with one.
-func TestColumnListOpenParen_HandlesVirtualTableWithParenInName(t *testing.T) {
-	sql := `CREATE VIRTUAL TABLE "foo(bar)" USING fts5(name, bio)`
-	want := strings.Index(sql, "USING fts5(") + len("USING fts5")
-	got := columnListOpenParen(sql)
-	if got != want {
-		t.Errorf("columnListOpenParen(%q) = %d, want %d (the '(' after USING fts5, not the one inside the quoted table name)", sql, got, want)
-	}
-}
+// The former TestColumnListOpenParen_HandlesVirtualTableWithParenInName
+// (Copilot PR #101 finding) asserted columnListOpenParen returned the '('
+// after `USING fts5` for a virtual table. Issue #113 (L4) established that
+// a virtual table has no column-definition list at all — those parens are
+// the module's argument list — so columnListOpenParen now returns -1 for
+// CREATE VIRTUAL TABLE. See TestColumnListOpenParen_ReturnsNoListForVirtualTable
+// in collation_cycle3_test.go, which covers the paren-in-name case too.

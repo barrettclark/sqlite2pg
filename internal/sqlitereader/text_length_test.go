@@ -2,75 +2,71 @@ package sqlitereader
 
 import "testing"
 
-func TestMaxTextLength_ReturnsLongestValue(t *testing.T) {
+// These tests were written against the former MaxTextLength (singular),
+// deleted in issue #118 (L9) as dead outside its own tests. They now
+// exercise the same behaviours through MaxTextLengths, the only form
+// production code calls — absence from the result map is the "not ok"
+// (all-NULL) signal the singular form returned as a bool.
+
+func TestMaxTextLengths_ReturnsLongestValue(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE t (name TEXT);`)
 	db.Exec(`INSERT INTO t (name) VALUES ('short'), ('a much longer value'), (NULL)`)
 
-	max, ok, err := MaxTextLength(db, "t", "name")
+	got, err := MaxTextLengths(db, "t", []string{"name"})
 	if err != nil {
-		t.Fatalf("MaxTextLength: %v", err)
+		t.Fatalf("MaxTextLengths: %v", err)
 	}
-	if !ok {
-		t.Fatal("expected ok=true, at least one non-NULL row present")
-	}
-	if max != len("a much longer value") {
-		t.Errorf("expected max=%d, got %d", len("a much longer value"), max)
+	if got["name"] != len("a much longer value") {
+		t.Errorf("expected name=%d, got %d", len("a much longer value"), got["name"])
 	}
 }
 
-func TestMaxTextLength_NotOKWhenEveryValueIsNull(t *testing.T) {
+func TestMaxTextLengths_NoEntryWhenEveryValueIsNull(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE t (name TEXT);`)
 	db.Exec(`INSERT INTO t (name) VALUES (NULL), (NULL)`)
 
-	_, ok, err := MaxTextLength(db, "t", "name")
+	got, err := MaxTextLengths(db, "t", []string{"name"})
 	if err != nil {
-		t.Fatalf("MaxTextLength: %v", err)
+		t.Fatalf("MaxTextLengths: %v", err)
 	}
-	if ok {
-		t.Error("expected ok=false when every row is NULL")
+	if _, ok := got["name"]; ok {
+		t.Errorf("expected no entry for an all-NULL column, got %d", got["name"])
 	}
 }
 
-func TestMaxTextLength_CountsCharactersNotBytesForABlobRow(t *testing.T) {
+func TestMaxTextLengths_CountsCharactersNotBytesForABlobRow(t *testing.T) {
 	// A BLOB row in a column otherwise holding TEXT (SQLite's dynamic
 	// typing permits this — the same shape issue #83 found) must still be
 	// measured in characters, matching what Postgres's varchar(N) would
 	// actually enforce, not in raw bytes (Copilot PR #96 finding). Without
 	// CAST(... AS TEXT), LENGTH() on this BLOB returns 3 (its byte count);
-	// with it, 1 (its single-character content) — the value the test
-	// checks for.
+	// with it, 1 (its single-character content).
 	db := openTestDB(t, `CREATE TABLE t (v);`)
 	// x'e282ac' is the 3-byte UTF-8 encoding of '€' — 1 character.
 	db.Exec(`INSERT INTO t (v) VALUES (x'e282ac')`)
 
-	max, ok, err := MaxTextLength(db, "t", "v")
+	got, err := MaxTextLengths(db, "t", []string{"v"})
 	if err != nil {
-		t.Fatalf("MaxTextLength: %v", err)
+		t.Fatalf("MaxTextLengths: %v", err)
 	}
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if max != 1 {
-		t.Errorf("expected max=1 (character count of the BLOB row, not its 3-byte length), got %d", max)
+	if got["v"] != 1 {
+		t.Errorf("expected v=1 (character count of the BLOB row, not its 3-byte length), got %d", got["v"])
 	}
 }
 
-func TestMaxTextLength_CountsCharactersNotBytesForMultibyteText(t *testing.T) {
+func TestMaxTextLengths_CountsCharactersNotBytesForMultibyteText(t *testing.T) {
 	db := openTestDB(t, `CREATE TABLE t (name TEXT);`)
 	// 5 multi-byte characters — Postgres's varchar(N) counts characters,
 	// matching SQLite's LENGTH() on TEXT (not the byte count octet_length
 	// would give).
 	db.Exec(`INSERT INTO t (name) VALUES ('héllo')`)
 
-	max, ok, err := MaxTextLength(db, "t", "name")
+	got, err := MaxTextLengths(db, "t", []string{"name"})
 	if err != nil {
-		t.Fatalf("MaxTextLength: %v", err)
+		t.Fatalf("MaxTextLengths: %v", err)
 	}
-	if !ok {
-		t.Fatal("expected ok=true")
-	}
-	if max != 5 {
-		t.Errorf("expected max=5 (character count), got %d", max)
+	if got["name"] != 5 {
+		t.Errorf("expected name=5 (character count), got %d", got["name"])
 	}
 }
 
