@@ -35,7 +35,7 @@ to only take those two values?).
 The common case — a human at the terminal, watching it happen — is one command:
 
 ```
-sqlite2pg run <source.db> --pg <postgres-url>
+sqlite2pg run --pg <postgres-url> <source.db>
 ```
 
 This profiles the source, then opens an in-terminal review screen: pick a
@@ -63,8 +63,8 @@ can't be scripted or run non-interactively:
 ```
 sqlite2pg profile  <source.db>   # sample + profile every column, write a draft config
 sqlite2pg review   <config.yaml>  # open the terminal review UI to approve/override ambiguous columns
-sqlite2pg load     <config.yaml> --pg <postgres-url>   # generate DDL, stream rows via COPY
-sqlite2pg verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the load was correct
+sqlite2pg load     --pg <postgres-url> <config.yaml>   # generate DDL, stream rows via COPY
+sqlite2pg verify   --pg <postgres-url> <source.db> <config.yaml>   # confirm the load was correct
 ```
 
 - **`run`** is `profile` + `review` + `load` collapsed into one command, with
@@ -93,7 +93,7 @@ sqlite2pg verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the
 - **`resolve --apply resolutions.yaml`** merges human- (or Claude Code-)
   supplied answers for an `unresolved_report.yaml` back into the config, for
   cases no heuristic could confidently resolve on its own.
-- **`verify <source.db> <config.yaml> --pg <postgres-url>`** streams every
+- **`verify --pg <postgres-url> <source.db> <config.yaml>`** streams every
   row and every included column from *both* sides and confirms the Postgres
   copy is byte-for-byte correct — not a spot check. It reads the database
   name to connect to from `<config>.state.json` (the same file `--resume`
