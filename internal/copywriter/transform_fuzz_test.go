@@ -170,17 +170,20 @@ func FuzzEpochScaleTransforms(f *testing.F) {
 	})
 }
 
-// FuzzTransformArmsNeverSilentlyPassThrough is issue #103's property: PR
-// #97/#98 rewrote five string-only transform arms to error on an
-// unexpected type instead of `return raw, nil`; four siblings
+// FuzzTransformArmsNeverSilentlyPassThrough guards issue #103's specific
+// reachable failure: PR #97/#98 rewrote five string-only transform arms to
+// error on an unexpected type instead of `return raw, nil`; four siblings
 // (iso8601_to_timestamptz, dayfirst_to_timestamptz,
 // numeric_text_to_integer, numeric_text_to_double) were left with the
-// fall-through and are fixed in this batch. The invariant across ALL of
-// them: given a non-string, non-time.Time input, Transform must either
-// return a typed error or a value of the arm's real target shape — it
-// must never hand back the raw input unchanged (which makes
-// verifyTransformAgainstFullTable a silent no-op and defers the failure
-// to COPY). Also: never panic.
+// fall-through and are fixed in this batch. Across all nine string-ish
+// arms this asserts: (1) no arm ever hands a raw []byte straight back —
+// that is the storage class the paired heuristics tolerate with
+// `continue`, so it is the one that actually reaches these arms and makes
+// verifyTransformAgainstFullTable a silent no-op; and (2) no arm panics on
+// any []byte / int64 / float64 input. It does NOT constrain the int64 /
+// float64 results: strip_commas, numeric_text_to_double and others
+// legitimately accept an already-numeric value and return it (or a
+// same-typed conversion) unchanged.
 func FuzzTransformArmsNeverSilentlyPassThrough(f *testing.F) {
 	f.Add([]byte("2019-03-04"), int64(42), 3.5)
 	f.Add([]byte{0x00, 0xff}, int64(0), 0.0)

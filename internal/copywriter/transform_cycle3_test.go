@@ -131,10 +131,13 @@ func TestTransform_JulianDayToDate_StillAcceptsRealDates(t *testing.T) {
 // a value inside int64's range but far outside any plausible timestamp
 // still wraps time.Time's own internal seconds-since-year-1 int64 to an
 // arbitrary instant with no error, and migrate verify recomputes the same
-// wrap on both sides and reports a match. (unix_epoch_micros is excluded:
-// the entire int64 µs range maps to within ±292471 years of 1970, all of
-// which PostgreSQL's timestamptz can represent, so no µs value can produce
-// an implausible-year timestamp.)
+// wrap on both sides and reports a match. rejectImplausibleTimestamp now
+// bounds the *result* to PostgreSQL's timestamptz year range.
+//
+// The positive 9e18 probe is only out of range for seconds and millis:
+// 9e18 µs is ~285k years, which lands at year ~287168 — still inside
+// timestamptz's max (294276) — so micros is probed with a large negative
+// value instead, which is out of range on the -4713 end.
 func TestTransform_UnixEpoch_RejectsWrappingValue(t *testing.T) {
 	for _, transform := range []string{"unix_epoch_seconds", "unix_epoch_millis"} {
 		if got, err := Transform(transform, float64(9e18)); err == nil {
@@ -143,6 +146,13 @@ func TestTransform_UnixEpoch_RejectsWrappingValue(t *testing.T) {
 		if got, err := Transform(transform, int64(9000000000000000000)); err == nil {
 			t.Errorf("%s(int64 9e18): expected an out-of-range error, got %v", transform, got)
 		}
+	}
+	// -9e18 µs is ~-285k years, well before 4713 BC.
+	if got, err := Transform("unix_epoch_micros", int64(-9000000000000000000)); err == nil {
+		t.Errorf("unix_epoch_micros(int64 -9e18): expected an out-of-range error, got %v", got)
+	}
+	if got, err := Transform("unix_epoch_micros", float64(-9e18)); err == nil {
+		t.Errorf("unix_epoch_micros(-9e18): expected an out-of-range error, got %v", got)
 	}
 }
 
