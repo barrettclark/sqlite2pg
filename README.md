@@ -161,6 +161,10 @@ unit tests and no I/O.
 
 ## Testing
 
+`make` lists the developer targets — `make check` runs what CI does
+(gofmt, vet, `go mod tidy` check, unit tests); `make test-integration`
+and `make campaign` cover the Postgres-backed suites.
+
 ```
 go test ./...                              # Tiers 1-2: heuristics, schema reader,
                                             # resolver, config, and golden-fixture

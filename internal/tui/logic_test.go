@@ -404,7 +404,7 @@ func TestPreviewValueForType_ReturnsTheTransformUsedToProduceEachPreview(t *test
 	}{
 		{"3", "integer", "numeric_text_to_integer"},         // issue #80/#81
 		{"1", "boolean", "int_to_bool"},                     // issue #80
-		{`{"a":1}`, "jsonb", "text_to_jsonb"},                // issue #80
+		{`{"a":1}`, "jsonb", "text_to_jsonb"},               // issue #80
 		{"anything at all", "text", ""},                     // native text passthrough
 		{"1712345678", "timestamptz", "unix_epoch_seconds"}, // issue #27/#41
 		{"2024-01-02T03:04:05Z", "timestamptz", "iso8601_to_timestamptz"},

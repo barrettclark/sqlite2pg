@@ -19,6 +19,11 @@ jobs:
         with:
           go-version: "1.26.5"
 
+      - name: gofmt
+        run: |
+          out=$(gofmt -l -e . 2>&1)
+          if [ -n "$out" ]; then echo "gofmt:"; echo "$out"; exit 1; fi
+
       - name: Build
         run: go build ./...
 

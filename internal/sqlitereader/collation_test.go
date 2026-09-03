@@ -79,10 +79,10 @@ func TestColumnCollations_HandlesQuotedColumnNames(t *testing.T) {
 }
 
 // TestLeadingIdentifier_RejectsAnEmptyQuotedIdentifier covers issue #70:
-// an empty quoted identifier ("", ``, []) is not a valid leading
-// identifier — leadingIdentifier used to return ok=true with an empty
-// name, letting parseColumnCollations emit a ""-keyed entry from
-// malformed CREATE TABLE text.
+// an empty quoted identifier (a bare pair of double, back or square
+// quotes) is not a valid leading identifier — leadingIdentifier used to
+// return ok=true with an empty name, letting parseColumnCollations emit a
+// ""-keyed entry from malformed CREATE TABLE text.
 func TestLeadingIdentifier_RejectsAnEmptyQuotedIdentifier(t *testing.T) {
 	for _, s := range []string{`""COLLATE 0`, "``rest", `[]rest`, `""`, "``", `[]`} {
 		if name, _, ok := leadingIdentifier(s); ok {

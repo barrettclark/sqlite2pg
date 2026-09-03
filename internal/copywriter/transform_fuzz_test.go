@@ -21,13 +21,13 @@ func FuzzNumericTextToInteger(f *testing.F) {
 	f.Add("0")
 	f.Add("42")
 	f.Add("-1")
-	f.Add("9223372036854775807")   // MaxInt64
-	f.Add("-9223372036854775808")  // MinInt64
-	f.Add("9223372036854775808")   // MaxInt64+1, must error not saturate
-	f.Add("1234567890123456789")   // bikes.db.legacy_id shape, 19 digits
-	f.Add("12345678901234567890")  // 20 digits, overflows int64
-	f.Add("1998.0")                // trailing ".0" is accepted (whole number)
-	f.Add("1998.5")                // non-zero fraction must error
+	f.Add("9223372036854775807")  // MaxInt64
+	f.Add("-9223372036854775808") // MinInt64
+	f.Add("9223372036854775808")  // MaxInt64+1, must error not saturate
+	f.Add("1234567890123456789")  // bikes.db.legacy_id shape, 19 digits
+	f.Add("12345678901234567890") // 20 digits, overflows int64
+	f.Add("1998.0")               // trailing ".0" is accepted (whole number)
+	f.Add("1998.5")               // non-zero fraction must error
 	f.Add("  5  ")
 	f.Add("0x10")
 	f.Add("1e3")
