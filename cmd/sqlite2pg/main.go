@@ -654,48 +654,39 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	// Foreign keys are added only now, after every table exists and is
 	// fully loaded — never interleaved with CREATE TABLE/COPY above, so
 	// table creation and data loading never need to be ordered by FK
-	// dependency. Guarded by the state file's FKsApplied flag so this step
-	// is itself idempotent across separate --resume invocations: without
-	// it, a --resume run that finds every table already completed but
-	// hasn't yet recorded FKsApplied would either skip foreign keys
-	// entirely (if this guard were "resume implies FKs done") or, worse,
-	// try to re-add constraints Postgres already has and fail.
-	st, err := readState(statePath)
-	if err != nil {
+	// dependency. The step runs on every invocation, including a --resume
+	// that finds every table already completed: the FK set is re-derived
+	// from cfg each time, and cfg can change between runs (a table flipped
+	// include: false -> true, or a reference that was "excluded or
+	// missing" now valid), so gating on a one-shot FKsApplied flag would
+	// silently skip the foreign keys and indexes for the newly-eligible
+	// tables (issue #142 / M4). Re-running is safe: every statement is
+	// idempotent (DROP CONSTRAINT IF EXISTS + ADD; CREATE INDEX IF NOT
+	// EXISTS), in one transaction, so a re-run after any failure or a
+	// crash mid-step never hits "already exists" (issues #109, #128).
+	// CREATE INDEX here is plain, not CONCURRENTLY, so it's
+	// transaction-safe.
+	statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
+	for _, reason := range skipped {
+		fmt.Printf("skipping foreign key: %s\n", reason)
+	}
+	if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+		for _, stmt := range statements {
+			if _, err := tx.Exec(ctx, stmt); err != nil {
+				return fmt.Errorf("adding foreign key: %w", err)
+			}
+		}
+		for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
+			if _, err := tx.Exec(ctx, stmt); err != nil {
+				return fmt.Errorf("adding foreign key index: %w", err)
+			}
+		}
+		return nil
+	}); err != nil {
 		return err
 	}
-	if !st.FKsApplied {
-		statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
-		for _, reason := range skipped {
-			fmt.Printf("skipping foreign key: %s\n", reason)
-		}
-
-		// One transaction, and every statement is idempotent (DROP
-		// CONSTRAINT IF EXISTS + ADD; CREATE INDEX IF NOT EXISTS), so a
-		// --resume can re-run the whole step after any failure or a crash
-		// mid-step without hitting "already exists" (issues #109, #128).
-		// CREATE INDEX here is plain, not CONCURRENTLY, so it's
-		// transaction-safe.
-		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
-			for _, stmt := range statements {
-				if _, err := tx.Exec(ctx, stmt); err != nil {
-					return fmt.Errorf("adding foreign key: %w", err)
-				}
-			}
-			for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
-				if _, err := tx.Exec(ctx, stmt); err != nil {
-					return fmt.Errorf("adding foreign key index: %w", err)
-				}
-			}
-			return nil
-		}); err != nil {
-			return err
-		}
-		if err := markForeignKeysApplied(statePath); err != nil {
-			return err
-		}
-	} else {
-		fmt.Println("foreign keys already applied in a prior run — skipping")
+	if err := markForeignKeysApplied(statePath); err != nil {
+		return err
 	}
 
 	// The state file is deliberately left in place even after a fully
@@ -704,8 +695,8 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	// and `sqlite2pg verify` (which has no other way to know which database
 	// to check) reads it back out for exactly that reason. A --resume
 	// against an already-fully-loaded config is safe to run again — every
-	// table is skipped via Completed and the FK step above is skipped via
-	// FKsApplied — so there's no correctness reason to remove it once
+	// table is skipped via Completed, and the FK step above re-runs but is
+	// idempotent — so there's no correctness reason to remove it once
 	// nothing is left to resume, only the (deliberately declined) tidiness
 	// of an unused file lying around.
 	//
