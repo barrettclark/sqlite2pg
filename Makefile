@@ -3,8 +3,11 @@
 GO  ?= go
 PKG ?= ./...
 
+# Pinned, not @latest: a new upstream release shouldn't change results or
+# break CI with no repo change (the vuln DB govulncheck queries stays live
+# regardless). Bump deliberately; CI pins the same versions.
 GOLANGCI_LINT ?= go run github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.13.2
-GOVULNCHECK   ?= go run golang.org/x/vuln/cmd/govulncheck@latest
+GOVULNCHECK   ?= go run golang.org/x/vuln/cmd/govulncheck@v1.7.0
 
 # `make campaign` inputs (see scripts/verify-all-fixtures.sh for the rest).
 PG_URL        ?= postgres://localhost:5432/?sslmode=disable
