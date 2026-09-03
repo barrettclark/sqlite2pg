@@ -80,20 +80,22 @@ func runVerify(args []string) error {
 
 	reportOut := io.Writer(os.Stdout)
 	var reportFile *os.File
+	var ew *errWriter
 	if *outPath != "" {
 		f, err := os.Create(*outPath)
 		if err != nil {
 			return fmt.Errorf("creating report file %s: %w", *outPath, err)
 		}
+		// Latch the first write error so a full disk (or any I/O failure)
+		// while writing the --out file doesn't leave a truncated report
+		// with a zero exit code (issue #136). Only for --out; the stdout
+		// path is left byte-identical to before.
 		reportFile = f
-		reportOut = f
+		ew = &errWriter{w: f}
+		reportOut = ew
 	}
 
-	// Latch the first write error so a full disk (or any I/O failure)
-	// while writing the --out file doesn't leave a truncated report with
-	// a zero exit code (issue #136).
-	ew := &errWriter{w: reportOut}
-	summary, err := verifyLoadedTables(ctx, sourceDB, conn, cfg, os.Stdout, ew)
+	summary, err := verifyLoadedTables(ctx, sourceDB, conn, cfg, os.Stdout, reportOut)
 	if err != nil {
 		if reportFile != nil {
 			reportFile.Close()
