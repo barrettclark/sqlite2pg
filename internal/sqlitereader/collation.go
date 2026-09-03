@@ -167,7 +167,8 @@ func columnListOpenParen(createSQL string) int {
 //     escaped literal, not the end (SQLite's rule for all three).
 //   - [...]  — closes at the first ']'. SQLite does not allow a ']' inside
 //     a bracket-quoted identifier at all, so there is nothing to escape.
-//   - -- to end of line, and /* ... */.
+//   - -- to the next newline (LF or CR, so CRLF and lone-CR endings both
+//     terminate it), and /* ... */.
 //
 // CREATE TABLE text stored verbatim in sqlite_master.sql can contain any
 // of these, and a '(' , ')' or ',' inside one is not structural —
@@ -198,7 +199,7 @@ func skipQuoteOrComment(s string, i int) int {
 		}
 		return len(s)
 	case s[i] == '-' && i+1 < len(s) && s[i+1] == '-':
-		if j := strings.IndexByte(s[i:], '\n'); j >= 0 {
+		if j := strings.IndexAny(s[i:], "\r\n"); j >= 0 {
 			return i + j + 1
 		}
 		return len(s)

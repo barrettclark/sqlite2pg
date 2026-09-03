@@ -19,8 +19,10 @@ func TestMatchingParen_IgnoresParensInStringLiteralsAndComments(t *testing.T) {
 	}{
 		{"paren in string literal", `(note TEXT DEFAULT ')', id TEXT)`},
 		{"paren in line comment", "(note TEXT, -- free-form (see notes\n id TEXT)"},
+		{"paren in CR-terminated line comment", "(note TEXT, -- free-form (see notes\r id TEXT)"},
+		{"paren in CRLF-terminated line comment", "(note TEXT, -- free-form (see notes\r\n id TEXT)"},
 		{"paren in block comment", "(note TEXT, /* a ( here */ id TEXT)"},
-		{"doubled-quote identifier with paren", `("we(ird" TEXT, id TEXT)`},
+		{"quoted identifier containing a paren", `("we(ird" TEXT, id TEXT)`},
 	}
 	for _, c := range cases {
 		close := matchingParen(c.s, 0)
