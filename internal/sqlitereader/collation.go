@@ -139,8 +139,9 @@ var createVirtualTableRe = regexp.MustCompile(`(?i)^\s*CREATE\s+VIRTUAL\s+TABLE\
 // CREATE TABLE keyword preamble, then the table name itself — quoted with
 // any of SQLite's four identifier-quoting styles or bare, same as
 // leadingIdentifier already handles for a column name — before searching
-// for '(' from there. Returns -1 if no '(' follows the table name, or if
-// createSQL is a CREATE VIRTUAL TABLE statement (which has no
+// for '(' from there, skipping any comment between the table name and the
+// real column list (issue #104). Returns -1 if no '(' follows the table
+// name, or if createSQL is a CREATE VIRTUAL TABLE statement (which has no
 // column-definition list — issue #113).
 func columnListOpenParen(createSQL string) int {
 	if createVirtualTableRe.MatchString(createSQL) {
@@ -153,8 +154,15 @@ func columnListOpenParen(createSQL string) int {
 	if _, afterName, ok := leadingIdentifier(strings.TrimLeft(rest, " \t\n\r")); ok {
 		rest = afterName
 	}
-	if idx := strings.IndexByte(rest, '('); idx >= 0 {
-		return len(createSQL) - len(rest) + idx
+	for k := 0; k < len(rest); {
+		if j := skipQuoteOrComment(rest, k); j != k {
+			k = j
+			continue
+		}
+		if rest[k] == '(' {
+			return len(createSQL) - len(rest) + k
+		}
+		k++
 	}
 	return -1
 }

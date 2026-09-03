@@ -136,6 +136,8 @@ func TestColumnListOpenParen_StillFindsListForOrdinaryTables(t *testing.T) {
 		`CREATE TABLE "t" (a INT)`,
 		`CREATE TABLE IF NOT EXISTS main.t (a INT)`,
 		`CREATE TABLE "foo(bar)" (a INT)`,
+		"CREATE TABLE t -- note: (ignore this paren)\n(a INT)",
+		"CREATE TABLE t /* and ( this one */ (a INT)",
 	}
 	for _, s := range cases {
 		got := columnListOpenParen(s)
