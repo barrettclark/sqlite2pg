@@ -5,14 +5,14 @@
 // CREATE INDEX one at a time and only then set FKsApplied. If it failed
 // partway (an inferred-FK violation, a lock timeout, a dropped
 // connection), the constraints added so far were committed, FKsApplied
-// stayed false, and every subsequent `migrate load --resume` re-entered
+// stayed false, and every subsequent `sqlite2pg load --resume` re-entered
 // the step and aborted on the *first* statement with
 // "constraint ... already exists" — never reaching, or reporting, the
 // genuine failure. The step is now one transaction, so a partial failure
 // rolls back cleanly. Run with:
 //
 //	PGURL=postgres://user@localhost:5432/postgres?sslmode=disable \
-//	  go test -tags integration ./cmd/migrate/... -run TestResume_ForeignKey -v
+//	  go test -tags integration ./cmd/sqlite2pg/... -run TestResume_ForeignKey -v
 package main
 
 import (

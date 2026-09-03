@@ -57,7 +57,7 @@ func NewTableSource(db *sql.DB, table string, tc config.TableConfig) *TableSourc
 					// below-threshold decision. Name the column and
 					// suggest the fix rather than surfacing only the raw
 					// transform error.
-					return fmt.Errorf("%s.%s: %w (this column's type was chosen from a sample; consider re-profiling with a larger --sample-size, or run `migrate review` to override its type)", table, columns[i], err)
+					return fmt.Errorf("%s.%s: %w (this column's type was chosen from a sample; consider re-profiling with a larger --sample-size, or run `sqlite2pg review` to override its type)", table, columns[i], err)
 				}
 				transformed[i] = out
 			}

@@ -443,7 +443,7 @@ type flaggedColumn struct {
 // resolved stays on it, so jumping back to something already decided is
 // always possible, not just the columns still outstanding. This is a
 // documented, shared contract, not local to the TUI: review.State.ApplyDecision
-// and `migrate resolve --apply` (cmd/migrate/main.go's runResolve, issue
+// and `sqlite2pg resolve --apply` (cmd/sqlite2pg/main.go's runResolve, issue
 // #53) both leave NeedsReview untouched on override for the same reason —
 // it's a permanent profiler verdict, and Reviewed is what tracks whether a
 // human has acted on the column.

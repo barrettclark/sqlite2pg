@@ -7,7 +7,7 @@
 // holds, never by re-reading configPath/statePath from disk. Run with:
 //
 //	PGURL=postgres://user@localhost:5432/postgres?sslmode=disable \
-//	  go test -tags integration ./cmd/migrate/... -run TestPostLoadVerify -v
+//	  go test -tags integration ./cmd/sqlite2pg/... -run TestPostLoadVerify -v
 package main
 
 import (

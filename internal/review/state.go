@@ -24,7 +24,7 @@ const (
 	// OutcomePending means the session hasn't ended yet.
 	OutcomePending Outcome = iota
 	// OutcomeConfirmed means the human clicked "Finish Review" / "Confirm
-	// & Import" — callers should proceed (e.g. `migrate run` continues to
+	// & Import" — callers should proceed (e.g. `sqlite2pg run` continues to
 	// the load step).
 	OutcomeConfirmed
 	// OutcomeCancelled means the human clicked "Cancel" — callers must not
@@ -37,7 +37,7 @@ const (
 // State holds the in-progress review session: the config being reviewed,
 // where it's persisted, and the signal that fires once the human clicks
 // "Finish Review"/"Confirm & Import" or "Cancel" — the mechanism
-// `migrate review` and `migrate run` use to unblock and return control to
+// `sqlite2pg review` and `sqlite2pg run` use to unblock and return control to
 // the CLI.
 type State struct {
 	mu        sync.Mutex
@@ -123,7 +123,7 @@ func (s *State) ApplyDecision(table, column string, req DecisionRequest) error {
 	// col.NeedsReview is deliberately left untouched (issue #53): it's a
 	// permanently-stable profiler verdict, not a to-do flag cleared by
 	// resolution — see internal/tui/logic.go's flaggedColumns comment and
-	// cmd/migrate/main.go's runResolve, which share this same contract.
+	// cmd/sqlite2pg/main.go's runResolve, which share this same contract.
 
 	tc.Columns[column] = col
 	s.cfg.Tables[table] = tc
@@ -161,7 +161,7 @@ func (s *State) Finish() error {
 
 // Cancel aborts the session: records OutcomeCancelled and signals Done,
 // without the bulk "accept everything else" Finish does. Callers (notably
-// `migrate run`) must not proceed to load when Outcome() is
+// `sqlite2pg run`) must not proceed to load when Outcome() is
 // OutcomeCancelled.
 func (s *State) Cancel() {
 	s.mu.Lock()

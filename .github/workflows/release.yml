@@ -20,10 +20,28 @@ jobs:
         with:
           go-version: "1.26.5"
 
+      # Gate the release on the same checks CI runs. A `v*` tag matches no
+      # CI trigger unless it also runs here, so without this a tag could
+      # publish binaries and a Homebrew formula with zero verification
+      # (issue #107 / M4). Tier 3 (`integration`) tests still need a
+      # Postgres and are not run here, same as CI.
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
       - uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
-          version: "~> v2"
+          # Exact version, not a floating "~> v2": a later GoReleaser
+          # release that changes or drops a config key (e.g. the
+          # deprecated `brews`) must not break this pipeline with no
+          # change to the repository (issue #107 / M4). Bump deliberately.
+          version: "2.18.0"
           args: release --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

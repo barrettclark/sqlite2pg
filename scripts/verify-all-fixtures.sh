@@ -3,7 +3,7 @@
 # verify-all-fixtures.sh — full local load-test campaign for sqlite2pg.
 #
 # For every SQLite database in a list, run the complete pipeline against a
-# real local Postgres and use `migrate verify` (not ad-hoc MD5/row-count
+# real local Postgres and use `sqlite2pg verify` (not ad-hoc MD5/row-count
 # tricks) as the correctness check:
 #
 #     profile  ->  mark every column reviewed  ->  load  ->  verify  ->  dropdb
@@ -29,13 +29,13 @@
 #     BEETS_DB              Path to the large beets_library.db fixture.
 #                           Default: ~/Downloads/beets_library.db. Skipped
 #                           silently if absent.
-#     MIGRATE_BIN           Path to a prebuilt `migrate`. Default: build it
-#                           into ./bin/migrate from ./cmd/migrate.
+#     SQLITE2PG_BIN           Path to a prebuilt `sqlite2pg`. Default: build it
+#                           into ./bin/sqlite2pg from ./cmd/sqlite2pg.
 #     WORK_DIR              Scratch dir for configs/reports/state files.
 #                           Default: a fresh mktemp -d (removed on exit
 #                           unless KEEP_WORK is set).
 #     KEEP_WORK             If non-empty, keep WORK_DIR after the run.
-#     SAMPLE_SIZE           `migrate profile --sample-size`. Default: 500.
+#     SAMPLE_SIZE           `sqlite2pg profile --sample-size`. Default: 500.
 #     PROFILE_ONLY_OVER_MB  Databases larger than this are profiled only
 #                           (no load/verify), to keep a routine campaign
 #                           bounded. Default: 1200. Set to 0 to load
@@ -86,14 +86,14 @@ run_with_timeout() {
     fi
 }
 
-# --- migrate binary --------------------------------------------------------
+# --- sqlite2pg binary --------------------------------------------------------
 
-if [ -n "${MIGRATE_BIN:-}" ]; then
-    MIGRATE="$MIGRATE_BIN"
+if [ -n "${SQLITE2PG_BIN:-}" ]; then
+    BIN="$SQLITE2PG_BIN"
 else
-    MIGRATE="$REPO_ROOT/bin/migrate"
-    echo "building migrate -> $MIGRATE" >&2
-    go build -o "$MIGRATE" ./cmd/migrate || { echo "error: build failed" >&2; exit 2; }
+    BIN="$REPO_ROOT/bin/sqlite2pg"
+    echo "building sqlite2pg -> $BIN" >&2
+    go build -o "$BIN" ./cmd/sqlite2pg || { echo "error: build failed" >&2; exit 2; }
 fi
 
 # --- scratch dir ---------------------------------------------------------
@@ -180,11 +180,11 @@ for db in "${DBS[@]}"; do
     echo ">>> [$idx/${#DBS[@]}] $name ($human_size)"
 
     # --- profile ---------------------------------------------------------
-    # `migrate profile` exits non-zero when columns need review; that's
+    # `sqlite2pg profile` exits non-zero when columns need review; that's
     # expected here, we mark them ourselves. What matters is the config
     # got written.
     t0=$SECONDS
-    "$MIGRATE" profile --sample-size "$SAMPLE_SIZE" -out "$cfg" "$db" >"$prof_log" 2>&1
+    "$BIN" profile --sample-size "$SAMPLE_SIZE" -out "$cfg" "$db" >"$prof_log" 2>&1
     prof_rc=$?
     prof_secs=$((SECONDS - t0))
 
@@ -216,7 +216,7 @@ for db in "${DBS[@]}"; do
 
     # --- load --------------------------------------------------------
     t0=$SECONDS
-    run_with_timeout "$LOAD_TIMEOUT" "$MIGRATE" load --noverify --pg "$PG_URL" "$cfg" >"$load_log" 2>&1 </dev/null
+    run_with_timeout "$LOAD_TIMEOUT" "$BIN" load --noverify --pg "$PG_URL" "$cfg" >"$load_log" 2>&1 </dev/null
     load_rc=$?
     load_secs=$((SECONDS - t0))
 
@@ -236,7 +236,7 @@ for db in "${DBS[@]}"; do
 
     # --- verify ----------------------------------------------------
     t0=$SECONDS
-    run_with_timeout "$VERIFY_TIMEOUT" "$MIGRATE" verify --pg "$PG_URL" --out "$verify_report" "$db" "$cfg" >"$verify_log" 2>&1 </dev/null
+    run_with_timeout "$VERIFY_TIMEOUT" "$BIN" verify --pg "$PG_URL" --out "$verify_report" "$db" "$cfg" >"$verify_log" 2>&1 </dev/null
     verify_rc=$?
     verify_secs=$((SECONDS - t0))
 

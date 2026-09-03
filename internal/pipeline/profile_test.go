@@ -61,7 +61,7 @@ func TestProfileDatabase_AutoResolvesUnambiguousColumns(t *testing.T) {
 // surfaced as a one-time stderr warning at profile time (issue #35), never
 // persisted into the generated config — unlike SkippedTables (#29) and
 // SkippedForeignKeys (#46), which exist so a human reviewing the config
-// later, or `migrate load` running non-interactively in CI where the
+// later, or `sqlite2pg load` running non-interactively in CI where the
 // original stderr is gone, can still see what was left out and why.
 func TestProfileDatabase_PersistsFilteredSystemTablesIntoTheConfig(t *testing.T) {
 	db, path := openTestDB(t, `

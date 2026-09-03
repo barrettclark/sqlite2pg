@@ -32,7 +32,7 @@ func TestRun_VerifyRequiresThePgFlag(t *testing.T) {
 
 func TestRun_VerifyFailsClearlyWithoutAPriorLoad(t *testing.T) {
 	// verify reads which database to connect to from <config>.state.json
-	// — the file `migrate load` writes (issue #19). Without ever having
+	// — the file `sqlite2pg load` writes (issue #19). Without ever having
 	// run load, that file doesn't exist, and the error must say so rather
 	// than failing some other, more confusing way (e.g. a raw "file not
 	// found").
@@ -58,8 +58,8 @@ func TestRun_VerifyFailsClearlyWithoutAPriorLoad(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected an error when no state file exists for this config")
 	}
-	if !strings.Contains(err.Error(), "migrate load") {
-		t.Errorf("expected the error to explain that `migrate load` must run first, got %q", err.Error())
+	if !strings.Contains(err.Error(), "sqlite2pg load") {
+		t.Errorf("expected the error to explain that `sqlite2pg load` must run first, got %q", err.Error())
 	}
 }
 

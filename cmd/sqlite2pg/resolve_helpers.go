@@ -11,7 +11,7 @@ import (
 )
 
 // loadResolutions reads a resolutions file keyed by "table.column", the
-// format a human (or Claude Code session) fills in after `migrate profile`
+// format a human (or Claude Code session) fills in after `sqlite2pg profile`
 // writes an unresolved_report.yaml and exits non-zero pointing at it.
 func loadResolutions(path string) (map[string]resolver.Resolution, error) {
 	data, err := os.ReadFile(path)

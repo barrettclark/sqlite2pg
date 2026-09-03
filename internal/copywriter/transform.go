@@ -145,7 +145,7 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// int64's range still spans ~292 billion years, well past
 		// time.Time's own working range: a value that clears the guard
 		// above can still wrap time.Time's internal seconds-since-year-1
-		// int64 to an arbitrary instant with no error, and migrate verify
+		// int64 to an arbitrary instant with no error, and sqlite2pg verify
 		// recomputes the same wrap on both sides and reports a match
 		// (issue #111 / L2). Bound the *result* to the plausible
 		// timestamp window instead — same reasoning as excelSerialToTime's
@@ -710,7 +710,7 @@ const maxPlausibleJulianDay = 1e12
 // rejectImplausibleTimestamp errors here where
 // verifyTransformAgainstFullTable can route the column to review instead
 // of the load failing (or, worse, silently round-tripping the same wrong
-// value on both sides of migrate verify).
+// value on both sides of sqlite2pg verify).
 const (
 	minPlausibleTimestampYear = -4713
 	maxPlausibleTimestampYear = 294276

@@ -18,7 +18,7 @@ import (
 )
 
 // verifyMode is `run`/`load`'s decision about whether to automatically run
-// `migrate verify`-equivalent verification once a load has succeeded — set
+// `sqlite2pg verify`-equivalent verification once a load has succeeded — set
 // from the --verify/--noverify flags, or left to an interactive prompt when
 // neither is passed.
 type verifyMode int
@@ -73,7 +73,7 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) bool {
 	}
 
 	// stdin is not an interactive terminal. It might carry a scripted
-	// answer (`echo y | migrate load ...`) or it might be an open pipe a
+	// answer (`echo y | sqlite2pg load ...`) or it might be an open pipe a
 	// CI runner never writes to and never closes — a plain blocking read
 	// on the latter hangs forever. Distinguish them with a short-deadline
 	// read: a scripted answer is already waiting and returns at once; a
@@ -91,7 +91,7 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) bool {
 		return false
 	}
 
-	fmt.Fprint(out, "Run migrate verify now? [y/N]: ")
+	fmt.Fprint(out, "Run sqlite2pg verify now? [y/N]: ")
 	line, _ := bufio.NewReader(in).ReadString('\n')
 	answer := strings.ToLower(strings.TrimSpace(line))
 	return answer == "y" || answer == "yes"
@@ -102,7 +102,7 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) bool {
 // above, and File.Fd() puts the descriptor back into blocking mode and
 // detaches it from the runtime poller — so SetReadDeadline would silently
 // no-op here. Instead the read runs on its own goroutine and we race it
-// against a timer: a scripted answer (`echo y | migrate load ...`) or a
+// against a timer: a scripted answer (`echo y | sqlite2pg load ...`) or a
 // closed empty pipe returns at once; a CI runner's open, unwritten stdin
 // leaves that goroutine parked on Read until the process exits, which is
 // harmless (it's a one-shot, not a loop, and nothing else reads stdin
@@ -156,7 +156,7 @@ func readAnswerWithDeadline(r io.Reader, d time.Duration) (string, bool) {
 // A verification mismatch found here is a different, more serious finding
 // than a load failure would have been: the import already succeeded and the
 // data is already sitting in Postgres, so this returns a non-zero-signaling
-// error (mirroring standalone `migrate verify`'s own exit-code convention)
+// error (mirroring standalone `sqlite2pg verify`'s own exit-code convention)
 // without implying the load itself failed or should be rolled back — the
 // message printed makes the LOAD-succeeded/VERIFICATION-failed distinction
 // explicit for exactly that reason.

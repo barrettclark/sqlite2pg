@@ -21,7 +21,7 @@ const maxDistinctSamplesShown = 10
 // FileResolver is the first Resolver implementation: it writes every
 // UnresolvedCase to a human-readable YAML report and returns immediately,
 // resolving nothing inline. A human (or a Claude Code session) edits a
-// companion resolutions file out of band; `migrate resolve --apply` merges
+// companion resolutions file out of band; `sqlite2pg resolve --apply` merges
 // it back into the config. This keeps the tool scriptable — no long-lived
 // blocking process.
 type FileResolver struct {

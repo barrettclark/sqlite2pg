@@ -13,7 +13,7 @@ import (
 
 // maxIdentifierLen is Postgres's identifier length limit (NAMEDATALEN=64,
 // minus 1 for the trailing null byte the server reserves) — the same
-// constant cmd/migrate/provision.go applies to generated database names
+// constant cmd/sqlite2pg/provision.go applies to generated database names
 // (see maxDatabaseNameLen there).
 const maxIdentifierLen = 63
 
@@ -189,7 +189,7 @@ func quoteIdent(name string) string {
 // truncates identifiers byte-wise (not rune-wise), so this matches that
 // behavior rather than trying to avoid splitting a multi-byte UTF-8
 // sequence — the same tradeoff deriveDatabaseName in
-// cmd/migrate/provision.go accepts.
+// cmd/sqlite2pg/provision.go accepts.
 func truncateBytes(s string, max int) string {
 	if len(s) <= max {
 		return s

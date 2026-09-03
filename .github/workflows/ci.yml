@@ -3,8 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ["v*"]
+  # No branch filter: a PR against any base (e.g. a stacked audit-cycle
+  # branch) still runs CI. Previously `branches: [main]` here meant such
+  # PRs got no CI at all (issue #107 / M4).
   pull_request:
-    branches: [main]
 
 jobs:
   build-and-test:
@@ -21,6 +24,14 @@ jobs:
 
       - name: Vet
         run: go vet ./...
+
+      - name: go.mod is tidy
+        # The release build no longer runs `go mod tidy` (issue #117): a
+        # release must build the tagged tree verbatim. Enforce tidiness
+        # here instead, so a drift is caught in review, not at release.
+        run: |
+          go mod tidy
+          git diff --exit-code go.mod go.sum
 
       - name: Test
         # Tier 1-2 only (heuristics, schema reader, resolver, config,

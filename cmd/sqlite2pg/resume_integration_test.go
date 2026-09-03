@@ -1,6 +1,6 @@
 //go:build integration
 
-// Tier 3 (real Postgres): issue #78's end-to-end proof. `migrate load
+// Tier 3 (real Postgres): issue #78's end-to-end proof. `sqlite2pg load
 // --resume`'s primary scenario — a load that fails partway through a
 // table, then gets resumed — used to be non-functional: markTableCompleted
 // only runs after a table's COPY finishes, but CREATE TABLE (unconditional,
@@ -10,7 +10,7 @@
 // first table --resume was meant to continue from. Run with:
 //
 //	PGURL=postgres://user@localhost:5432/postgres?sslmode=disable \
-//	  go test -tags integration ./cmd/migrate/... -run TestResume -v
+//	  go test -tags integration ./cmd/sqlite2pg/... -run TestResume -v
 package main
 
 import (

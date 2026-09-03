@@ -25,7 +25,7 @@ to only take those two values?).
 The common case — a human at the terminal, watching it happen — is one command:
 
 ```
-migrate run <source.db> --pg <postgres-url>
+sqlite2pg run <source.db> --pg <postgres-url>
 ```
 
 This profiles the source, then opens an in-terminal review screen: pick a
@@ -51,10 +51,10 @@ step itself is interactive-only (it needs a real terminal for the TUI) and
 can't be scripted or run non-interactively:
 
 ```
-migrate profile  <source.db>   # sample + profile every column, write a draft config
-migrate review   <config.yaml>  # open the terminal review UI to approve/override ambiguous columns
-migrate load     <config.yaml> --pg <postgres-url>   # generate DDL, stream rows via COPY
-migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the load was correct
+sqlite2pg profile  <source.db>   # sample + profile every column, write a draft config
+sqlite2pg review   <config.yaml>  # open the terminal review UI to approve/override ambiguous columns
+sqlite2pg load     <config.yaml> --pg <postgres-url>   # generate DDL, stream rows via COPY
+sqlite2pg verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the load was correct
 ```
 
 - **`run`** is `profile` + `review` + `load` collapsed into one command, with
@@ -72,7 +72,7 @@ migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the l
   commits straight through to the config file on disk — quitting the
   terminal never loses progress made before that point. (For standalone
   `review`, finishing just ends the review and unblocks the CLI — the
-  actual load is a separate `migrate load` step; only `run` loads
+  actual load is a separate `sqlite2pg load` step; only `run` loads
   immediately after.)
 - **`load`** refuses to run if unreviewed columns remain above the confidence
   gate (override with `--force`), or if the source file has changed since the
@@ -87,7 +87,7 @@ migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the l
   row and every included column from *both* sides and confirms the Postgres
   copy is byte-for-byte correct — not a spot check. It reads the database
   name to connect to from `<config>.state.json` (the same file `--resume`
-  uses), so it needs a completed `migrate load` (or `load --resume`) against
+  uses), so it needs a completed `sqlite2pg load` (or `load --resume`) against
   that exact config first. Run it after every load as the real pass/fail
   gate on data integrity — exit code is non-zero on any mismatch.
   `--out <path>` writes the detailed report to a file instead of stdout; a
@@ -108,14 +108,14 @@ migrate verify   <source.db> <config.yaml> --pg <postgres-url>   # confirm the l
 - **Automatic post-load verification**: `run` and `load` both accept
   `--verify` (run verification unconditionally after a successful load) and
   `--noverify` (never run it); passing both is a usage error. With neither
-  flag, they prompt interactively (`Run migrate verify now? [y/N]:`) and
+  flag, they prompt interactively (`Run sqlite2pg verify now? [y/N]:`) and
   default to *not* verifying on a bare Enter, since verification re-streams
   every row and can take a while. This runs against the in-memory config and
   connection the load itself just used, not by re-reading files from disk,
   so it works for `run` whether or not `--keep-config` was passed. A
   mismatch found here is reported as a distinct, serious finding (the load
   already succeeded) and exits non-zero, mirroring standalone `verify`. See
-  `cmd/migrate/postload_verify.go`'s doc comments for the full detail.
+  `cmd/sqlite2pg/postload_verify.go`'s doc comments for the full detail.
 
 ## Extending the profiler
 
@@ -180,7 +180,7 @@ opt-in via the `integration` build tag — it's not part of the default
 ## Package layout
 
 ```
-cmd/migrate/          CLI entrypoint (run, profile, review, load, verify, resolve subcommands)
+cmd/sqlite2pg/          CLI entrypoint (run, profile, review, load, verify, resolve subcommands)
 internal/
   sqlitereader/        schema + streaming row reading (modernc.org/sqlite, no CGO)
   profiler/            heuristic interface + registry

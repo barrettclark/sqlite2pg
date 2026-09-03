@@ -6,7 +6,7 @@ import (
 	"os"
 )
 
-// loadState is the schema of the per-run state file `migrate load --resume`
+// loadState is the schema of the per-run state file `sqlite2pg load --resume`
 // consults: which database the run provisioned (so a later --resume
 // reconnects to the very same database instead of provisioning a new,
 // empty one — see issue #19) and which tables have already been loaded
@@ -24,7 +24,7 @@ type loadState struct {
 	// or try to re-add constraints Postgres already has, failing with
 	// "constraint already exists". Recording completion here — the same
 	// way Completed does per table — makes that step idempotent across
-	// separate `migrate load --resume` invocations too.
+	// separate `sqlite2pg load --resume` invocations too.
 	//
 	// This is a single flag for the whole step, not one entry per
 	// constraint, because executeLoad runs every constraint and index in
@@ -66,7 +66,7 @@ func writeState(path string, st loadState) error {
 }
 
 // loadCompletedTables reads the state file and returns the set of tables
-// already loaded, for `migrate load --resume` to skip.
+// already loaded, for `sqlite2pg load --resume` to skip.
 func loadCompletedTables(path string) (map[string]bool, error) {
 	st, err := readState(path)
 	if err != nil {

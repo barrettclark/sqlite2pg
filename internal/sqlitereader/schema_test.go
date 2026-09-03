@@ -202,7 +202,7 @@ func TestReadForeignKeys_ReturnsEmptyForTableWithNoForeignKeys(t *testing.T) {
 // legitimate, common SQLite shape (a plain rowid table with no declared
 // PRIMARY KEY at all), not a driver failure — so ReadForeignKeys must drop
 // just the one FK relationship it can't resolve, not abort the whole call
-// and, transitively, the whole `migrate profile` run.
+// and, transitively, the whole `sqlite2pg profile` run.
 
 func TestReadForeignKeys_DropsImplicitReferenceWhenParentHasNoPrimaryKey(t *testing.T) {
 	db := openTestDB(t, `
