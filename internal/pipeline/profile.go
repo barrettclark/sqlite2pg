@@ -473,19 +473,17 @@ func fallbackSampleMismatch(target string, samples []profiler.Value) (bad profil
 	return nil, false
 }
 
-// fallbackTargetNeedsStorageCheck reports whether target is one of the
-// concrete Postgres types fallbackTypeFor can pick where a wrong-storage-
-// class value would fail at COPY time — i.e. everything except "text",
-// which can hold any value's string form. Used to gate both the
-// sample-level check (fallbackSampleMismatch) and the full-table one
-// (issue #69).
+// fallbackTargetNeedsStorageCheck reports whether a wrong-storage-class
+// value could fail at COPY time for target — true for every concrete
+// Postgres type except a string-holding one (text / varchar / varchar(N)),
+// which can hold any value's text form. Enumerating the safe targets
+// rather than the unsafe ones keeps this correct for both call sites:
+// fallbackTypeFor's output vocabulary (issue #69) and, since issue #84,
+// the heuristic-winner path's — which also emits boolean/date/jsonb/uuid/
+// uuid[]/smallint (issue #149 / L7). Gates both the sample-level check
+// (fallbackSampleMismatch) and the full-table one.
 func fallbackTargetNeedsStorageCheck(target string) bool {
-	switch target {
-	case "integer", "bigint", "double precision", "timestamptz", "bytea":
-		return true
-	default:
-		return false
-	}
+	return !isTextTargetType(target)
 }
 
 // fallbackValueFitsTarget reports whether v's Go runtime storage class can
