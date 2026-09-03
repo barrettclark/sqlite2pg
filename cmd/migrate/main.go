@@ -669,21 +669,39 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		for _, reason := range skipped {
 			fmt.Printf("skipping foreign key: %s\n", reason)
 		}
-		for _, stmt := range statements {
-			if _, err := conn.Exec(ctx, stmt); err != nil {
-				return fmt.Errorf("adding foreign key: %w", err)
-			}
-		}
 
+		// Every constraint and its index goes in as one transaction.
+		// FKsApplied is a single all-or-nothing flag (see loadState): if
+		// this step commits some constraints and then fails partway (an
+		// inferred-FK violation, a lock timeout, a dropped connection),
+		// FKsApplied stays false, every table stays Completed, and every
+		// subsequent `migrate load --resume` re-enters this block and
+		// aborts on the *first* statement with "constraint ... already
+		// exists" — never reaching, or reporting, the real failure
+		// (issue #109 / M6). Wrapping the step makes a partial failure
+		// roll back cleanly, so --resume retries it from scratch or
+		// surfaces the genuine error every time. CREATE INDEX below is
+		// plain (not CONCURRENTLY), so it is transaction-safe.
+		//
 		// Postgres doesn't auto-index foreign keys the way some other
 		// databases do, and an index on every FK column is
 		// well-established best practice with no real downside — added
 		// right after the constraints themselves, once every FK is known
 		// to be valid.
-		for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
-			if _, err := conn.Exec(ctx, stmt); err != nil {
-				return fmt.Errorf("adding foreign key index: %w", err)
+		if err := pgx.BeginFunc(ctx, conn, func(tx pgx.Tx) error {
+			for _, stmt := range statements {
+				if _, err := tx.Exec(ctx, stmt); err != nil {
+					return fmt.Errorf("adding foreign key: %w", err)
+				}
 			}
+			for _, stmt := range ddl.GenerateForeignKeyIndexes(cfg) {
+				if _, err := tx.Exec(ctx, stmt); err != nil {
+					return fmt.Errorf("adding foreign key index: %w", err)
+				}
+			}
+			return nil
+		}); err != nil {
+			return err
 		}
 		if err := markForeignKeysApplied(statePath); err != nil {
 			return err
