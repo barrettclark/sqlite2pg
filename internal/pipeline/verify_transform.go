@@ -4,6 +4,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"time"
 
 	"sqlite2pg/internal/copywriter"
 	"sqlite2pg/internal/profiler"
@@ -203,12 +204,46 @@ func verifyTransformAgainstFullTable(db *sql.DB, table, column, transform, targe
 // integer-only); every other target type is left to the transform's own
 // error handling.
 func fitsTargetType(val any, targetType string) bool {
+	if tm, ok := val.(time.Time); ok {
+		return fitsTemporalRange(tm, targetType)
+	}
 	n, ok := asInt64(val)
 	if !ok {
 		// Not an integer-shaped value at all; nothing for this check to say.
 		return true
 	}
 	return copywriter.FitsRange(n, targetType)
+}
+
+// pgDateMaxYear / pgTimestampMaxYear / pgTemporalMinYear are PostgreSQL's
+// documented storable-range bounds (proleptic Gregorian year): date runs
+// to 5874897 AD, timestamp/timestamptz to 294276 AD, both back to
+// 4713 BC. A temporal transform (julian_day_to_date, excel_serial_to_
+// timestamptz, an epoch arm on a stray huge value) can convert without
+// error to a time.Time outside these — verify then recomputes the same
+// value on both sides and reports a match, so the column auto-approves
+// and `load` aborts mid-COPY on a certified column. Range-check here so
+// it is routed to review instead (issue #140 / M2).
+const (
+	pgDateMaxYear      = 5874897
+	pgTimestampMaxYear = 294276
+	pgTemporalMinYear  = -4713
+)
+
+func fitsTemporalRange(tm time.Time, targetType string) bool {
+	y := tm.Year()
+	if y < pgTemporalMinYear {
+		return false
+	}
+	switch targetType {
+	case "date":
+		return y <= pgDateMaxYear
+	case "timestamptz", "timestamp", "timestamp with time zone", "timestamp without time zone":
+		return y <= pgTimestampMaxYear
+	default:
+		// Some other target holding a time.Time (unusual); no opinion.
+		return true
+	}
 }
 
 // badValueString renders the offending raw value for a verifyResult /
