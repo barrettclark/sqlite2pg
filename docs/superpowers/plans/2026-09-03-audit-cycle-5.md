@@ -279,4 +279,35 @@ green at `f212de1` (`v0.3.1`).
 
 ### Phase E outcomes
 
-*(appended as the cycle runs.)*
+All 9 Phase A findings filed as issues **#156–#164** (unconditional,
+before fix work). Triage: fix M1, M2, L1–L5; document-and-defer L6, L7.
+Three PRs:
+
+| PR | theme | findings |
+|---|---|---|
+| **#155** | scaffolding (merged first) | plan doc + Phase A–D result docs |
+| **#165** | TUI / parser / verify correctness | #156 M1, #160 L3, #161 L4, #162 L5, #163 L6 (doc), #164 L7 (doc) |
+| **#166** | verify report paths + release CI | #157 M2, #158 L1, #159 L2 |
+
+Notes on the fixes:
+
+- **M1 (#156)** — the round-trip discriminator: normalize an exponent-form
+  sample only when `ParseFloat(value)` then `%v` reproduces `value`
+  exactly. A genuine `float64` rendering always round-trips; an arbitrary
+  scientific-notation string does not (`%v` prints the shortest form).
+  The cycle-4 test case `{"1.5e+02" -> valid}` encoded the M1 bug and was
+  corrected to `invalid`.
+- **M2 (#157)** — `go mod tidy` → `go mod tidy -diff` in the release job;
+  non-mutating, no network write, restores issue #117's guarantee.
+- **L4 (#161)** — both `pgTemporalMinYear` and `copywriter`'s
+  `minPlausibleTimestampYear` floored at Go year `-4712` (4713 BC);
+  Go year `-4713` (4714 BC) is now rejected.
+- **L3 (#160)** — the collation masker now blanks a `"…"` / backtick span
+  too unless it directly follows `COLLATE`; `[…]` stays an identifier
+  quote. Collation fuzz round-trip re-run green.
+- **L6 (#163) / L7 (#164)** — comment-only: the FK-step comment now spells
+  out the `--resume` re-validation cost and `ACCESS EXCLUSIVE` footprint;
+  `previewValueForType` notes the >2^53 preview-vs-stored drift.
+
+Per-batch gate held: `go build`, `go test`, `go test -tags integration`,
+`make lint` green on each branch before merge.
