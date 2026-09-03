@@ -54,8 +54,7 @@ different function relies on.
   the column's SQLite affinity (`ColumnView.DeclaredType`), not the
   display string.
 
-### 2. Two features sharing one artifact, where a change to one breaks an
-### assumption the other makes
+### 2. Two features sharing one artifact, where a change to one breaks an assumption the other makes
 
 Precedents:
 
