@@ -113,3 +113,83 @@ func FuzzColumnCollationsRoundTrip(f *testing.F) {
 		}
 	})
 }
+
+// FuzzColumnCollationsRoundTripWithNoise is issue #104's (M1) property,
+// through a real SQLite database: an unbalanced paren, comma, or COLLATE
+// keyword sitting inside a string-literal DEFAULT or a -- / /* */ comment
+// on an earlier column must not stop ColumnCollations from reporting a
+// later column's genuine COLLATE clause. The noise is placed on col_0,
+// which always has no real COLLATE; col_1 always carries COLLATE NOCASE
+// and must round-trip.
+func FuzzColumnCollationsRoundTripWithNoise(f *testing.F) {
+	f.Add(0)
+	f.Add(1)
+	f.Add(2)
+	f.Add(3)
+	f.Add(4)
+
+	noises := []string{
+		`DEFAULT ')'`,
+		`DEFAULT '('`,
+		`DEFAULT ',,,'`,
+		`DEFAULT 'COLLATE RTRIM'`,
+		`/* a ( ) , COLLATE RTRIM here */`,
+	}
+	// Line comments need a newline terminator; handled separately.
+	lineComment := "-- trailing ( , COLLATE RTRIM to end of line\n"
+
+	f.Fuzz(func(t *testing.T, sel int) {
+		if sel < 0 {
+			sel = -sel
+		}
+		noise := noises[sel%len(noises)]
+
+		ddl := "CREATE TABLE rt (\n" +
+			"  col_0 TEXT " + noise + ",\n" +
+			"  " + lineComment +
+			"  col_1 TEXT COLLATE NOCASE,\n" +
+			"  col_2 TEXT\n" +
+			");"
+
+		db := openTestDB(t, ddl)
+		got, err := ColumnCollations(db, "rt")
+		if err != nil {
+			t.Fatalf("ColumnCollations: %v\nddl:\n%s", err, ddl)
+		}
+		if got["col_1"] != "NOCASE" {
+			t.Fatalf("ColumnCollations()[\"col_1\"] = %q, want \"NOCASE\" — noise on an earlier column hid a real COLLATE (issue #104)\nddl:\n%s\nfull result: %+v",
+				got["col_1"], ddl, got)
+		}
+		if got["col_2"] != "BINARY" {
+			t.Fatalf("ColumnCollations()[\"col_2\"] = %q, want \"BINARY\"\nddl:\n%s", got["col_2"], ddl)
+		}
+	})
+}
+
+// FuzzMatchingParenNeverCountsQuotedOrCommentedParens asserts the two
+// structural invariants matchingParen must hold for any input (issue
+// #104): its result is either -1 or an index that actually holds ')', and
+// a '(' / ')' inside a quoted span or a comment never shifts that result.
+func FuzzMatchingParenNeverCountsQuotedOrCommentedParens(f *testing.F) {
+	f.Add("(a, b)")
+	f.Add("(a DEFAULT ')', b)")
+	f.Add("(a, -- )\n b)")
+	f.Add("(a /* ) */ , b)")
+	f.Add("(")
+	f.Add(")")
+	f.Add("")
+
+	f.Fuzz(func(t *testing.T, s string) {
+		open := strings.IndexByte(s, '(')
+		if open < 0 {
+			return
+		}
+		got := matchingParen(s, open) // must not panic
+		if got == -1 {
+			return
+		}
+		if got < 0 || got >= len(s) || s[got] != ')' {
+			t.Fatalf("matchingParen(%q, %d) = %d, which is not the index of a ')'", s, open, got)
+		}
+	})
+}

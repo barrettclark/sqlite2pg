@@ -97,7 +97,7 @@ func parseColumnCollations(createSQL string) map[string]string {
 	if close < 0 {
 		close = len(createSQL)
 	}
-	body := createSQL[open+1 : close]
+	body := stripSQLComments(createSQL[open+1 : close])
 
 	for _, part := range splitTopLevelCommas(body) {
 		name, rest, ok := leadingIdentifier(strings.TrimSpace(part))
@@ -117,15 +117,17 @@ func parseColumnCollations(createSQL string) map[string]string {
 }
 
 // createTablePreambleRe matches CREATE TABLE's keyword preamble — CREATE
-// [VIRTUAL] TABLE [IF NOT EXISTS] — up to and including "IF NOT EXISTS"
-// when present, everything before the table name itself. VIRTUAL is
-// included because ColumnCollations' own sqlite_master query (`type =
-// 'table'`) matches virtual tables too — SQLite gives them type='table'
-// there, not a separate type — so a CREATE VIRTUAL TABLE statement can
-// reach columnListOpenParen just as a plain one can, and without matching
-// its preamble the paren-in-table-name bug this whole helper exists to
-// avoid reproduces identically for it (Copilot PR #101 finding).
-var createTablePreambleRe = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:VIRTUAL\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`)
+// TABLE [IF NOT EXISTS] — up to and including "IF NOT EXISTS" when
+// present, everything before the table name itself.
+var createTablePreambleRe = regexp.MustCompile(`(?i)^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`)
+
+// createVirtualTableRe matches a CREATE VIRTUAL TABLE preamble.
+// ColumnCollations' own sqlite_master query (`type = 'table'`) matches
+// virtual tables too — SQLite gives them type='table' there — so a CREATE
+// VIRTUAL TABLE statement reaches columnListOpenParen. A virtual table has
+// no column-definition list at all: the parens after `USING <module>` are
+// the module's argument list, not column definitions (issue #113 / L4).
+var createVirtualTableRe = regexp.MustCompile(`(?i)^\s*CREATE\s+VIRTUAL\s+TABLE\b`)
 
 // columnListOpenParen returns the index of the '(' that opens the
 // column-definition list — the first '(' AFTER the table name, not simply
@@ -137,8 +139,13 @@ var createTablePreambleRe = regexp.MustCompile(`(?i)^\s*CREATE\s+(?:VIRTUAL\s+)?
 // CREATE TABLE keyword preamble, then the table name itself — quoted with
 // any of SQLite's four identifier-quoting styles or bare, same as
 // leadingIdentifier already handles for a column name — before searching
-// for '(' from there. Returns -1 if no '(' follows the table name.
+// for '(' from there. Returns -1 if no '(' follows the table name, or if
+// createSQL is a CREATE VIRTUAL TABLE statement (which has no
+// column-definition list — issue #113).
 func columnListOpenParen(createSQL string) int {
+	if createVirtualTableRe.MatchString(createSQL) {
+		return -1
+	}
 	rest := createSQL
 	if loc := createTablePreambleRe.FindStringIndex(createSQL); loc != nil {
 		rest = createSQL[loc[1]:]
@@ -152,12 +159,91 @@ func columnListOpenParen(createSQL string) int {
 	return -1
 }
 
+// skipQuoteOrComment reports the index just past the token starting at
+// s[i] when that token opens a quoted string/identifier ("...", `...`,
+// [...], '...', with a doubled closing char escaping itself for the first
+// three) or a comment (-- to end of line, or /* ... */); otherwise it
+// returns i unchanged. CREATE TABLE text stored verbatim in
+// sqlite_master.sql can contain any of these, and a '(' , ')' or ','
+// inside one is not structural — matchingParen and splitTopLevelCommas
+// both used to miss this, letting a DEFAULT ')' or an unbalanced paren in
+// a comment truncate the parsed column body (issue #104 / M1).
+func skipQuoteOrComment(s string, i int) int {
+	if i >= len(s) {
+		return i
+	}
+	switch {
+	case s[i] == '"' || s[i] == '`' || s[i] == '\'':
+		q := s[i]
+		for j := i + 1; j < len(s); j++ {
+			if s[j] != q {
+				continue
+			}
+			if j+1 < len(s) && s[j+1] == q { // doubled: an escaped quote
+				j++
+				continue
+			}
+			return j + 1
+		}
+		return len(s)
+	case s[i] == '[':
+		if j := strings.IndexByte(s[i:], ']'); j >= 0 {
+			return i + j + 1
+		}
+		return len(s)
+	case s[i] == '-' && i+1 < len(s) && s[i+1] == '-':
+		if j := strings.IndexByte(s[i:], '\n'); j >= 0 {
+			return i + j + 1
+		}
+		return len(s)
+	case s[i] == '/' && i+1 < len(s) && s[i+1] == '*':
+		if j := strings.Index(s[i+2:], "*/"); j >= 0 {
+			return i + 2 + j + 2
+		}
+		return len(s)
+	}
+	return i
+}
+
+// stripSQLComments replaces every -- line comment and /* ... */ block
+// comment in s with a single space, leaving quoted strings/identifiers
+// (which may legitimately contain "--" or "/*") untouched. The
+// column-body split and per-column COLLATE search run on the result, so a
+// comment can't contribute a spurious leading identifier or let a real
+// column's COLLATE clause be attributed to the wrong name (issue #104).
+func stripSQLComments(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for i := 0; i < len(s); {
+		j := skipQuoteOrComment(s, i)
+		if j == i {
+			b.WriteByte(s[i])
+			i++
+			continue
+		}
+		switch s[i] {
+		case '"', '`', '\'', '[':
+			b.WriteString(s[i:j]) // quoted span — keep verbatim
+		default:
+			b.WriteByte(' ') // comment span — drop, preserving a boundary
+		}
+		i = j
+	}
+	return b.String()
+}
+
 // matchingParen returns the index of the ')' matching the '(' at open, or
 // -1 if createSQL[open:] never balances back to depth 0 (malformed input —
 // callers fall back to treating the rest of the string as the body).
+// Parens inside a quoted string/identifier or a comment are skipped (issue
+// #104).
 func matchingParen(s string, open int) int {
 	depth := 0
-	for i := open; i < len(s); i++ {
+	for i := open; i < len(s); {
+		if j := skipQuoteOrComment(s, i); j != i {
+			i = j
+			continue
+		}
 		switch s[i] {
 		case '(':
 			depth++
@@ -167,33 +253,26 @@ func matchingParen(s string, open int) int {
 				return i
 			}
 		}
+		i++
 	}
 	return -1
 }
 
 // splitTopLevelCommas splits s on commas that appear at parenthesis depth
-// 0 and outside any quoted string/identifier — so a comma inside a nested
-// `CHECK (a, b)` expression or a quoted name like `"a, b"` doesn't produce
-// a spurious split. Quote handling covers all four identifier/string
-// quoting styles SQLite accepts: "...", `...`, [...], and '...'.
+// 0 and outside any quoted string/identifier or comment — so a comma
+// inside a nested `CHECK (a, b)` expression, a quoted name like `"a, b"`,
+// or a `-- ...` / `/* ... */` comment doesn't produce a spurious split.
+// Quoting and comments are handled by skipQuoteOrComment (issue #104).
 func splitTopLevelCommas(s string) []string {
 	var parts []string
 	depth := 0
-	var quote byte
 	start := 0
-	for i := 0; i < len(s); i++ {
-		c := s[i]
-		if quote != 0 {
-			if c == quote {
-				quote = 0
-			}
+	for i := 0; i < len(s); {
+		if j := skipQuoteOrComment(s, i); j != i {
+			i = j
 			continue
 		}
-		switch c {
-		case '"', '`', '\'':
-			quote = c
-		case '[':
-			quote = ']'
+		switch s[i] {
 		case '(':
 			depth++
 		case ')':
@@ -204,6 +283,7 @@ func splitTopLevelCommas(s string) []string {
 				start = i + 1
 			}
 		}
+		i++
 	}
 	parts = append(parts, s[start:])
 	return parts
@@ -221,14 +301,29 @@ func leadingIdentifier(s string) (name, rest string, ok bool) {
 	switch s[0] {
 	case '"', '`', '\'':
 		q := s[0]
-		end := strings.IndexByte(s[1:], q)
-		// end < 0: no closing quote. end == 0: closing quote immediately,
-		// i.e. an empty quoted identifier ("", ``, '') — not a valid name
-		// (issue #70). Both mean "not an identifier here".
-		if end <= 0 {
-			return "", "", false
+		// SQLite spells an embedded quote in a quoted identifier by
+		// doubling it — `"foo""bar"` is the identifier foo"bar. Scan for
+		// the closing quote past any doubled pair, then un-escape (issue
+		// #113 / L4: stopping at the first inner quote returned a
+		// truncated name and left `"..." ` in the remainder, which
+		// columnListOpenParen then mis-parsed).
+		for j := 1; j < len(s); j++ {
+			if s[j] != q {
+				continue
+			}
+			if j+1 < len(s) && s[j+1] == q { // doubled: an escaped quote
+				j++
+				continue
+			}
+			// j is the closing quote. j == 1 means "" — an empty quoted
+			// identifier, not a valid name (issue #70).
+			if j == 1 {
+				return "", "", false
+			}
+			return strings.ReplaceAll(s[1:j], string([]byte{q, q}), string(q)), s[j+1:], true
 		}
-		return s[1 : 1+end], s[1+end+1:], true
+		// No closing quote.
+		return "", "", false
 	case '[':
 		end := strings.IndexByte(s, ']')
 		// end < 0: no closing bracket. end == 1: "[]" — empty. Neither is
