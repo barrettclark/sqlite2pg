@@ -123,18 +123,16 @@ func includedSet(tc config.TableConfig) map[string]bool {
 	return set
 }
 
-// foreignKeyStatement renders a DROP CONSTRAINT IF EXISTS followed by the
-// ADD CONSTRAINT for one foreign key. The DROP makes the whole FK step
-// re-runnable: `load --resume` after a crash between the FK commit and the
-// state-file write would otherwise re-issue ADD and fail on "already
-// exists" (issues #109, #128). ON DELETE/ON UPDATE are omitted when NO
-// ACTION (Postgres's default). localIDs/refIDs and table/refTable are the
+// foreignKeyStatement renders a single ALTER TABLE with DROP CONSTRAINT IF
+// EXISTS + ADD CONSTRAINT subcommands, so the FK step is re-runnable after
+// a --resume without hitting "already exists" (issues #109, #128) while
+// staying one SQL command. ON DELETE/ON UPDATE are omitted when NO ACTION
+// (Postgres's default). localIDs/refIDs and table/refTable are the
 // disambiguated identifiers CREATE TABLE actually emitted (issues #21, #44).
 func foreignKeyStatement(table, refTable string, fk config.ForeignKey, name string, localIDs, refIDs map[string]string) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s;\n", quoteIdent(table), quoteIdent(name))
-	fmt.Fprintf(&b, "ALTER TABLE %s ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s)",
-		quoteIdent(table), quoteIdent(name), quoteJoin(mapNames(fk.Columns, localIDs)), quoteIdent(refTable), quoteJoin(mapNames(fk.RefColumns, refIDs)))
+	fmt.Fprintf(&b, "ALTER TABLE %s DROP CONSTRAINT IF EXISTS %s, ADD CONSTRAINT %s FOREIGN KEY (%s) REFERENCES %s (%s)",
+		quoteIdent(table), quoteIdent(name), quoteIdent(name), quoteJoin(mapNames(fk.Columns, localIDs)), quoteIdent(refTable), quoteJoin(mapNames(fk.RefColumns, refIDs)))
 	if fk.OnDelete != "" && fk.OnDelete != "NO ACTION" {
 		fmt.Fprintf(&b, " ON DELETE %s", fk.OnDelete)
 	}
