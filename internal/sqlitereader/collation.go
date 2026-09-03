@@ -104,7 +104,7 @@ func parseColumnCollations(createSQL string) map[string]string {
 		if !ok {
 			continue
 		}
-		if m := collateClauseRe.FindStringSubmatch(rest); m != nil {
+		if m := collateClauseRe.FindStringSubmatch(maskParensAndStringLiterals(rest)); m != nil {
 			for _, g := range m[1:] {
 				if g != "" {
 					result[name] = strings.ToUpper(g)
@@ -114,6 +114,46 @@ func parseColumnCollations(createSQL string) map[string]string {
 		}
 	}
 	return result
+}
+
+// maskParensAndStringLiterals returns s with every byte inside a
+// parenthesised group (depth >= 1) or a '...' string literal replaced by a
+// space, so a COLLATE keyword in a CHECK expression or a string-literal
+// DEFAULT is not mistaken for the column's own collation clause (issue
+// #145). A column's real COLLATE clause is always at the top level of its
+// definition. Top-level "..." / `...` / [...] identifier spans are kept
+// verbatim — a collation name may be written that way — but the same
+// spans nested inside parens are masked with everything else.
+func maskParensAndStringLiterals(s string) string {
+	b := []byte(s)
+	depth := 0
+	for i := 0; i < len(s); {
+		switch c := s[i]; {
+		case c == '\'', c == '"', c == '`', c == '[':
+			j := skipQuoteOrComment(s, i)
+			if c == '\'' || depth > 0 {
+				for k := i; k < j; k++ {
+					b[k] = ' '
+				}
+			}
+			i = j
+			continue
+		case c == '(':
+			depth++
+			b[i] = ' '
+		case c == ')':
+			if depth > 0 {
+				depth--
+			}
+			b[i] = ' '
+		default:
+			if depth > 0 {
+				b[i] = ' '
+			}
+		}
+		i++
+	}
+	return string(b)
 }
 
 // createTablePreambleRe matches CREATE TABLE's keyword preamble — CREATE
