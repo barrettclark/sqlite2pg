@@ -78,24 +78,23 @@ func runVerify(args []string) error {
 	}
 	defer sourceDB.Close()
 
-	reportOut := io.Writer(os.Stdout)
+	reportW := io.Writer(os.Stdout)
 	var reportFile *os.File
-	var ew *errWriter
 	if *outPath != "" {
 		f, err := os.Create(*outPath)
 		if err != nil {
 			return fmt.Errorf("creating report file %s: %w", *outPath, err)
 		}
-		// Latch the first write error so a full disk (or any I/O failure)
-		// while writing the --out file doesn't leave a truncated report
-		// with a zero exit code (issue #136). Only for --out; the stdout
-		// path is left byte-identical to before.
 		reportFile = f
-		ew = &errWriter{w: f}
-		reportOut = ew
+		reportW = f
 	}
+	// Latch the first write error on whichever destination the report goes
+	// to, so a full disk (or any I/O failure) truncating the report leaves
+	// a non-zero exit — for `verify > report.txt` (stdout) as well as
+	// `verify --out` (issues #136, #158).
+	ew := &errWriter{w: reportW}
 
-	summary, err := verifyLoadedTables(ctx, sourceDB, conn, cfg, os.Stdout, reportOut)
+	summary, err := verifyLoadedTables(ctx, sourceDB, conn, cfg, os.Stdout, ew)
 	if err != nil {
 		if reportFile != nil {
 			reportFile.Close()
@@ -103,15 +102,20 @@ func runVerify(args []string) error {
 		return err
 	}
 
-	var reportErr error
+	dst := "stdout"
+	if *outPath != "" {
+		dst = *outPath
+	}
+	var closeErr error
 	if reportFile != nil {
-		closeErr := reportFile.Close()
-		switch {
-		case ew.err != nil:
-			reportErr = fmt.Errorf("writing report to %s: %w", *outPath, ew.err)
-		case closeErr != nil:
-			reportErr = fmt.Errorf("writing report to %s: %w", *outPath, closeErr)
-		}
+		closeErr = reportFile.Close()
+	}
+	var reportErr error
+	switch {
+	case ew.err != nil:
+		reportErr = fmt.Errorf("writing report to %s: %w", dst, ew.err)
+	case closeErr != nil:
+		reportErr = fmt.Errorf("writing report to %s: %w", dst, closeErr)
 	}
 
 	lines, err := verifyOutcome(summary, *outPath, reportErr)
