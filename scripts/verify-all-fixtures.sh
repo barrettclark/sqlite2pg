@@ -293,7 +293,12 @@ done
     echo "Work dir: \`$WORK_DIR\` (logs + per-db verify reports)"
 } >>"$RESULTS_MD"
 
-cp "$RESULTS_MD" "$FINAL_RESULTS" 2>/dev/null || FINAL_RESULTS="$RESULTS_MD"
+if ! cp "$RESULTS_MD" "$FINAL_RESULTS" 2>/dev/null; then
+    # Couldn't copy it out — keep WORK_DIR so the path we're about to
+    # print still exists (issue #115 / L6).
+    FINAL_RESULTS="$RESULTS_MD"
+    CLEAN_WORK=0
+fi
 
 echo
 echo "=========================================================="

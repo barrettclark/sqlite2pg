@@ -19,7 +19,10 @@ func TestDetermineVerify_NonTerminalPipeEchoesPromptAndAnswer(t *testing.T) {
 		t.Fatalf("os.Pipe: %v", err)
 	}
 	defer r.Close()
-	if _, err := w.WriteString("y\n"); err != nil {
+	// "yes" rather than "y": "y" is a substring of the "[y/N]" prompt, so
+	// a test asserting the answer was echoed has to use a token the
+	// prompt itself doesn't contain.
+	if _, err := w.WriteString("yes\n"); err != nil {
 		t.Fatalf("writing scripted answer: %v", err)
 	}
 	w.Close()
@@ -31,17 +34,18 @@ func TestDetermineVerify_NonTerminalPipeEchoesPromptAndAnswer(t *testing.T) {
 	select {
 	case got := <-done:
 		if !got {
-			t.Error("determineVerify(y) = false, want true")
+			t.Error("determineVerify(yes) = false, want true")
 		}
 	case <-time.After(2 * time.Second):
 		t.Fatal("determineVerify blocked")
 	}
 
+	const prompt = "Run sqlite2pg verify now? [y/N]: "
 	s := out.String()
-	if !strings.Contains(s, "Run sqlite2pg verify now?") {
-		t.Errorf("piped-stdin path did not print the prompt; got %q", s)
+	if !strings.HasPrefix(s, prompt) {
+		t.Fatalf("piped-stdin path did not print the prompt first; got %q", s)
 	}
-	if !strings.Contains(s, "y") {
-		t.Errorf("piped-stdin path did not echo the answer; got %q", s)
+	if rest := strings.TrimPrefix(s, prompt); !strings.HasPrefix(strings.TrimSpace(rest), "yes") {
+		t.Errorf("piped-stdin path did not echo the answer after the prompt; got %q", s)
 	}
 }
