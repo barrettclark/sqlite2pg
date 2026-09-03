@@ -15,9 +15,13 @@ linters:
     - misspell      # typos in comments and strings
   settings:
     errcheck:
+      # Suppresses errcheck on every call to these, not just deferred ones.
+      # Accepted trade-off: in non-test code the only .Close() not on a
+      # read/connection handle is verify's `--out` report file, and every
+      # fmt.Fprint* target is stdout, stderr, an in-memory buffer, or that
+      # same report file — where a write or close error would at worst
+      # truncate the report (tracked in issue #136).
       exclude-functions:
-        # defer x.Close() on read paths / process-exit writes — the error
-        # is never actionable and checking it is pure noise.
         - (*database/sql.DB).Close
         - (*database/sql.Rows).Close
         - (*os.File).Close
