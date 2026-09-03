@@ -660,12 +660,21 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 	// include: false -> true, or a reference that was "excluded or
 	// missing" now valid), so gating on a one-shot FKsApplied flag would
 	// silently skip the foreign keys and indexes for the newly-eligible
-	// tables (issue #142 / M4). Re-running is safe: every statement is
-	// idempotent (DROP CONSTRAINT IF EXISTS + ADD; CREATE INDEX IF NOT
+	// tables (issue #142 / M4). Re-running is *correct*: every statement
+	// is idempotent (DROP CONSTRAINT IF EXISTS + ADD; CREATE INDEX IF NOT
 	// EXISTS), in one transaction, so a re-run after any failure or a
 	// crash mid-step never hits "already exists" (issues #109, #128).
 	// CREATE INDEX here is plain, not CONCURRENTLY, so it's
 	// transaction-safe.
+	//
+	// It is not free, though: DROP CONSTRAINT IF EXISTS + ADD re-validates
+	// the constraint on the second pass (a child-table scan plus a parent
+	// index probe per row — measured ~2x the first application on a
+	// 200k-row child), and all FKs run in one transaction, so a --resume
+	// against a fully-loaded large FK-heavy database holds ACCESS
+	// EXCLUSIVE on every constrained table until the last FK finishes.
+	// Accepted: a --resume is not the hot path, and correctness (issue
+	// #142) beats the saved re-validation work (issue #163 / L6).
 	statements, skipped := ddl.GenerateForeignKeyConstraints(cfg)
 	for _, reason := range skipped {
 		fmt.Printf("skipping foreign key: %s\n", reason)

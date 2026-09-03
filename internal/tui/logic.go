@@ -183,6 +183,28 @@ func columnSampleValues(tv review.TableView, columnName string) []string {
 	return values
 }
 
+// sqliteNumericAffinity reports whether declaredType gives the column
+// INTEGER, REAL, or NUMERIC affinity per SQLite's rules
+// (sqlite.org/datatype3.html#determination_of_column_affinity) — the
+// affinities where the driver hands back an int64/float64 that %v renders
+// (a large float64 in scientific notation). TEXT and BLOB affinity, and a
+// column with no declared type, preserve a row's literal string, so a
+// sample like "1e+06" there is text the row actually stores — not a
+// float64 rendering to normalize (issue #156).
+func sqliteNumericAffinity(declaredType string) bool {
+	t := strings.ToUpper(declaredType)
+	switch {
+	case strings.Contains(t, "INT"):
+		return true
+	case strings.Contains(t, "CHAR"), strings.Contains(t, "CLOB"), strings.Contains(t, "TEXT"):
+		return false
+	case strings.Contains(t, "BLOB"), t == "":
+		return false
+	default:
+		return true // REAL / FLOA / DOUB, or NUMERIC (the catch-all)
+	}
+}
+
 // previewValueForType returns what value would look like under targetType:
 // for numeric target types, the actual coerced number (truncated for
 // integer types, decimal-formatted for floating-point types, and
@@ -216,7 +238,12 @@ func columnSampleValues(tv review.TableView, columnName string) []string {
 // transform makes it work (date/timestamptz via dateTransformPreview,
 // uuid[] via uuid_list_format) must carry that same transform forward when
 // selected, or the real COPY fails on the untransformed raw value.
-func previewValueForType(value, targetType string) (display, transform string, valid bool) {
+//
+// declaredType is the column's raw SQLite declared type, used only to
+// tell a float64 the driver returned (rendered by %v, possibly in
+// scientific notation) from a string the row literally stores that
+// happens to look the same — see the integer arm (issue #156).
+func previewValueForType(value, targetType, declaredType string) (display, transform string, valid bool) {
 	if value == "NULL" {
 		return value, "", true
 	}
@@ -233,21 +260,28 @@ func previewValueForType(value, targetType string) (display, transform string, v
 		// go to pgx unconverted. Any type this validates for must always
 		// carry the transform that actually makes it work, or a human
 		// selecting it here breaks the real COPY.
-		// A REAL-affinity sample renders through fmt's %v, which switches
-		// to scientific notation past 1e6 ("1.712345678e+09").
+		// A REAL/NUMERIC-affinity sample renders through fmt's %v, which
+		// switches to scientific notation past 1e6 ("1.712345678e+09").
 		// numeric_text_to_integer's exact-integer parse rejects an
 		// exponent outright, so without this the picker drops
 		// integer/bigint/smallint for a large whole-number REAL column
-		// (issue #139). That form is only ever produced from a float64,
-		// so reformatting it to plain decimal loses no precision the
-		// display string still had; a plain digit string (incl. a
-		// 19-digit exact ID) carries no exponent and is untouched.
+		// (issue #139). Only normalize when the column's SQLite affinity
+		// is numeric — on a TEXT/BLOB-affinity column "1e+06" is a
+		// literal string the row stores, and coercing it into an integer
+		// transform makes COPY abort on the raw value (issue #156).
+		// A plain digit string carries no exponent and is untouched.
 		numText := value
-		if strings.ContainsAny(numText, "eE") {
+		if strings.ContainsAny(numText, "eE") && sqliteNumericAffinity(declaredType) {
 			if f, perr := strconv.ParseFloat(numText, 64); perr == nil {
 				numText = strconv.FormatFloat(f, 'f', -1, 64)
 			}
 		}
+		// For a float64 sample above 2^53 the exact-text parse below and
+		// the load-time int64(f) conversion can differ by a few units
+		// (issue #164 / L7) — the previewed integer is then slightly off
+		// from what is stored. Display-only: both sides of `verify`
+		// recompute the same value, so there is no mismatch. Not worth
+		// the float64 round-trip to make the preview exact.
 		result, err := copywriter.Transform("numeric_text_to_integer", numText)
 		if err != nil {
 			return value, "", false
@@ -395,13 +429,13 @@ func firstNonNullValue(values []string) string {
 // NULL). Non-date types are unaffected: previewValueForType returns a
 // fixed transform per type ("" for text/integer, uuid_format for uuid), so
 // those always agree.
-func commonTransformForType(values []string, typeName string) (transform string, ok bool) {
+func commonTransformForType(values []string, typeName, declaredType string) (transform string, ok bool) {
 	seen := false
 	for _, v := range values {
 		if v == "NULL" || v == "" {
 			continue
 		}
-		_, t, valid := previewValueForType(v, typeName)
+		_, t, valid := previewValueForType(v, typeName, declaredType)
 		if !valid {
 			return "", false
 		}
@@ -510,12 +544,12 @@ func nextFlaggedColumn(flagged []flaggedColumn, current flaggedColumn, forward b
 // always including currentType even if it fails that check — so the type
 // picker is never empty and never forces a human off their column's
 // current assignment.
-func validTypesForColumn(values []string, currentType string) []string {
+func validTypesForColumn(values []string, currentType, declaredType string) []string {
 	var result []string
 	for _, t := range review.TypeOptions {
 		ok := true
 		for _, v := range values {
-			if _, _, valueValid := previewValueForType(v, t); !valueValid {
+			if _, _, valueValid := previewValueForType(v, t, declaredType); !valueValid {
 				ok = false
 				break
 			}

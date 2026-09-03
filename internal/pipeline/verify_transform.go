@@ -215,19 +215,24 @@ func fitsTargetType(val any, targetType string) bool {
 	return copywriter.FitsRange(n, targetType)
 }
 
-// pgDateMaxYear / pgTimestampMaxYear / pgTemporalMinYear are PostgreSQL's
-// documented storable-range bounds (proleptic Gregorian year): date runs
-// to 5874897 AD, timestamp/timestamptz to 294276 AD, both back to
-// 4713 BC. A temporal transform (julian_day_to_date, excel_serial_to_
-// timestamptz, an epoch arm on a stray huge value) can convert without
-// error to a time.Time outside these — verify then recomputes the same
-// value on both sides and reports a match, so the column auto-approves
-// and `load` aborts mid-COPY on a certified column. Range-check here so
-// it is routed to review instead (issue #140 / M2).
+// pgDateMaxYear / pgTimestampMaxYear / pgTemporalMinYear bound the years a
+// temporal transform result may take for `verify` to accept it without
+// review. A transform (julian_day_to_date, excel_serial_to_timestamptz, an
+// epoch arm on a stray huge value) can convert without error to a
+// time.Time outside PostgreSQL's storable range — verify then recomputes
+// the same value on both sides, reports a match, the column auto-approves,
+// and `load` aborts mid-COPY on a certified column (issue #140).
+//
+// Postgres stores date to 5874897 AD and timestamp/timestamptz to
+// 294276 AD. Its floor is Julian day 0 = 4714-11-24 BC. Go's Year() uses
+// astronomical numbering (year 0 = 1 BC), so 4713 BC is Go year -4712 and
+// 4714 BC is Go year -4713 — of which Postgres can store only the last 38
+// days. pgTemporalMinYear is set to -4712 so the whole ambiguous year is
+// rejected rather than half-accepted (issue #161).
 const (
 	pgDateMaxYear      = 5874897
 	pgTimestampMaxYear = 294276
-	pgTemporalMinYear  = -4713
+	pgTemporalMinYear  = -4712
 )
 
 func fitsTemporalRange(tm time.Time, targetType string) bool {

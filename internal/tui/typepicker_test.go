@@ -555,7 +555,7 @@ func TestCommonTransformForType_UnanimousAndMixed(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			got, ok := commonTransformForType(c.values, c.typ)
+			got, ok := commonTransformForType(c.values, c.typ, "")
 			if got != c.want || ok != c.wantOK {
 				t.Errorf("commonTransformForType(%v, %q) = (%q, %v), want (%q, %v)", c.values, c.typ, got, ok, c.want, c.wantOK)
 			}
