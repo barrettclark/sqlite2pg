@@ -219,4 +219,64 @@ Baseline before any work: `go build ./...`, `go test ./...`,
 `go test -tags integration ./...`, `make lint`, `make vulncheck` all
 green at `f212de1` (`v0.3.1`).
 
-*(Phase results appended here as the cycle runs.)*
+### Detection phase outcomes
+
+- **Phase A** — `audit-cycle5-diff-review-findings.md`: **2 Medium, 7
+  Low, 0 High**. Notably, four findings are regressions introduced by
+  cycle 4's own fixes — exactly the "a fix quietly breaks a contract"
+  shape the cycle hunts for:
+  - **M1** (#151/#139 regression): the cycle-4 M1 fix rests on a false
+    premise — `value` in `previewValueForType` is `%v` of the raw value,
+    which for a *string* SQLite value is the string verbatim. A TEXT
+    column holding `"1.5e3"` now gets `bigint` + `numeric_text_to_integer`
+    offered and committed by the picker; COPY then aborts on the raw
+    string (`parseWholeNumberText` rejects the exponent). Before #151 the
+    picker correctly hid the type.
+  - **M2** (#152/#147 regression): `release.yml` now runs `go mod tidy`,
+    which issue #117 deliberately removed from the release job (network
+    access, can abort the release). `.goreleaser.yaml` and `ci.yml` both
+    still document it as gone. Fix: `go mod tidy -diff` (non-mutating).
+  - **L1**: #146 closed the report-write-latch asymmetry in one
+    direction (`load --verify > f` now latches) and left it open in the
+    other (`verify > f`, no `--out`, still doesn't).
+  - **L2**: the two report paths differ on what "FAILED + write error"
+    reports (message only, not exit code).
+  - **L3**: the #145 masker handles `'…'` only; `DEFAULT "COLLATE
+    NOCASE"` (SQLite's double-quoted-string misfeature) still yields a
+    false NOCASE. Fail-safe direction, same as the residual cycle 4
+    accepted.
+  - **L4** (#151/#140 regression): `pgTemporalMinYear = -4713` is one
+    year too permissive — Go astronomical year -4713 is 4714 BC, and
+    Postgres's floor is Julian day 0 = 4714-11-24 BC. Cycle 4's clean
+    bill wrongly asserted the bounds matched exactly. Upper bounds are
+    right. (The same constant, `minPlausibleTimestampYear`, is
+    pre-existing in `transform.go`.)
+  - **L5** (#148 regression): `normalizeNarrowNumeric` was inserted
+    between `sortKeyFor`'s 35-line invariant doc block and its `func`,
+    so `sortKeyFor` now has no doc comment and the invariant history
+    documents a 3-line helper. `go doc` confirms.
+  - **L6** (#142 consequence): `load --resume` on a completed load now
+    re-runs the whole FK step; `DROP CONSTRAINT IF EXISTS … , ADD`
+    re-validates (measured ~2.2 s vs ~1.0 s on a 200 k-row child), all
+    under `ACCESS EXCLUSIVE` in one transaction. The #142 fix is correct;
+    "re-running is safe" undersells the lock/validation cost at scale.
+  - **L7**: the picker's integer preview can differ from the stored
+    value for a `float64` above 2^53 (preview `…6800`, stored `…6768`).
+    Display accuracy only; both `verify` sides recompute identically.
+- **Phase B** — `audit-cycle5-campaign-results.md`: **38 verified clean,
+  0 verify failures**, identical to cycle 4. Both cycle-4 fixtures still
+  pass; the 8 non-passing are the same known set. No regression.
+- **Phase C** — `audit-cycle5-fuzz-results.md`: all 12 fuzz targets green
+  on seed corpus + burst; `FuzzParseColumnCollations` green over 3 min /
+  5.9 M execs (higher "new interesting" churn from the added masking
+  branch, but all round-trip / paren invariants held). No new harness.
+- **Phase D** — `audit-cycle5-performance-results.md`: no regression from
+  the `d0cb219..HEAD` diff. `profile` on `employee.db` +10 % vs
+  `db35d39` — unchanged from cycle 3's accepted regression, not new.
+  `load`/`verify` unchanged (the #148 type switch adds nothing on 3.9 M
+  rows). L6's `--resume` cost is ~45 ms on `chinook` (invisible),
+  seconds at scale.
+
+### Phase E outcomes
+
+*(appended as the cycle runs.)*
