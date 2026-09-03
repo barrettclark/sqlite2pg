@@ -1,4 +1,4 @@
-// Command migrate replaces pgloader for SQLite -> Postgres migrations: it
+// Command sqlite2pg replaces pgloader for SQLite -> Postgres migrations: it
 // profiles a source database, lets a human review ambiguous type
 // decisions in a terminal review UI, and loads the result into Postgres via
 // the COPY protocol.
