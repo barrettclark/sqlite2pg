@@ -110,6 +110,19 @@ func Decide(findings []profiler.Finding, threshold float64) (profiler.Finding, b
 		// above), but resolver.Decide shouldn't force needless review the
 		// moment two heuristics ever do converge on the same answer from
 		// different evidence.
+		//
+		// Known scope limit (issue #106 / M3, deliberately left as-is):
+		// this gate only inspects best and secondBest, the two highest
+		// confidences. If the top two agree on (SuggestedType,
+		// TransformExpr), review is skipped even when a *third* finding
+		// sits inside disagreementMargin and disagrees outright (e.g.
+		// {boolean 0.90, boolean 0.90, integer 0.89}). This is also
+		// latent: it needs two heuristics at the very top emitting an
+		// identical (type, transform), which none do. If that ever
+		// becomes reachable, widen the disagreement check to every
+		// finding within the margin, not just secondBest.
+		// TestDecide_TopTwoAgreeingSuppressesADisagreeingThird pins the
+		// current behavior so it can't change unnoticed.
 		if gap <= confidenceHundredths(disagreementMargin) &&
 			(best.SuggestedType != secondBest.SuggestedType || best.TransformExpr != secondBest.TransformExpr) {
 			return best, true

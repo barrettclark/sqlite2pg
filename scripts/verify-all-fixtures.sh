@@ -59,6 +59,10 @@ SAMPLE_SIZE="${SAMPLE_SIZE:-500}"
 PROFILE_ONLY_OVER_MB="${PROFILE_ONLY_OVER_MB:-1200}"
 LOAD_TIMEOUT="${LOAD_TIMEOUT:-30m}"
 VERIFY_TIMEOUT="${VERIFY_TIMEOUT:-30m}"
+# Where the results table is copied for the operator to read after
+# WORK_DIR is gone (issue #115 / L6). Set here, before any trap is armed,
+# so salvage_results below can always rely on it.
+FINAL_RESULTS="${FINAL_RESULTS:-$REPO_ROOT/verify-all-fixtures-results.md}"
 
 # psql / dropdb are not always on PATH (e.g. a stale Postgres.app entry
 # shadowing a Homebrew install). Fall back to the Homebrew keg.
@@ -107,15 +111,44 @@ else
 fi
 [ -n "${KEEP_WORK:-}" ] && CLEAN_WORK=0
 
+# Results table is built here (inside WORK_DIR); salvage_results copies it
+# out to FINAL_RESULTS. Set before the traps so the INT/TERM handler can
+# rely on it.
+RESULTS_MD="$WORK_DIR/results.md"
+
+# salvage_results copies the results table out of WORK_DIR so the path the
+# script prints outlives a CLEAN_WORK cleanup. If the copy fails (repo
+# root not writable, disk full), fall back to the in-WORK_DIR path and
+# keep WORK_DIR so that path still exists. Safe to call before the table
+# is written (no-op) and from both the normal end-of-run and the INT/TERM
+# handler.
+salvage_results() {
+    [ -f "$RESULTS_MD" ] || return 0
+    if ! cp "$RESULTS_MD" "$FINAL_RESULTS" 2>/dev/null; then
+        FINAL_RESULTS="$RESULTS_MD"
+        CLEAN_WORK=0
+    fi
+}
+
 # Databases this run provisioned, so a Ctrl-C still cleans up.
 CREATED_DBS=()
 cleanup() {
+    # Disarm every trap first: a bash INT/TERM handler runs and then the
+    # script *resumes*, so without an explicit exit the loop kept running
+    # into an already-deleted WORK_DIR (issue #114 / L5). The INT/TERM
+    # trap below calls this and then exits; disarming here stops the EXIT
+    # trap from running cleanup a second time on that exit.
+    trap - EXIT INT TERM
     for db in "${CREATED_DBS[@]:-}"; do
         [ -n "$db" ] && dropdb --if-exists "$db" 2>/dev/null
     done
     if [ "$CLEAN_WORK" = "1" ]; then rm -rf "$WORK_DIR"; fi
 }
-trap cleanup EXIT INT TERM
+trap cleanup EXIT
+# On Ctrl-C, salvage whatever results table has been built so far before
+# cleanup removes WORK_DIR (issue #115 / L6 — an interrupted run is
+# exactly when an operator wants to see how far it got).
+trap 'salvage_results; cleanup; exit 130' INT TERM
 
 # --- database list -----------------------------------------------------------
 
@@ -136,7 +169,9 @@ fi
 
 # --- results table ---------------------------------------------------------
 
-RESULTS_MD="$WORK_DIR/results.md"
+# RESULTS_MD / FINAL_RESULTS and salvage_results() are defined above, before
+# the traps. FINAL_RESULTS (the copied-out path) is $REPO_ROOT/
+# verify-all-fixtures-results.md by default, .gitignored.
 {
     echo "# verify-all-fixtures campaign — $(date '+%Y-%m-%d %H:%M:%S')"
     echo
@@ -278,10 +313,12 @@ done
     echo "Work dir: \`$WORK_DIR\` (logs + per-db verify reports)"
 } >>"$RESULTS_MD"
 
+salvage_results
+
 echo
 echo "=========================================================="
 cat "$RESULTS_MD"
 echo "=========================================================="
-echo "results table: $RESULTS_MD"
+echo "results table: $FINAL_RESULTS"
 
 [ "$fail_count" = "0" ] && [ "$error_count" = "0" ]

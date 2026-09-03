@@ -411,7 +411,27 @@ func varcharSuggestions(columns []sqlitereader.ColumnInfo) map[string]int {
 // accepting the suggestion as shown can never itself abort a COPY on
 // length; declaredN stays in the rationale so a reviewer can still see the
 // original schema intent even when the tool corrected it.
+// maxPostgresVarcharLen is PostgreSQL's hard limit on varchar(n) — n may
+// not exceed 10485760. SQLite has no such limit, so a widened target past
+// it (a single >10 MB value in a VARCHAR(N) column) would make CREATE
+// TABLE fail outright with "length for type varchar cannot exceed
+// 10485760" (issue #116 / L7).
+const maxPostgresVarcharLen = 10485760
+
 func varcharFinding(declaredN, target int) profiler.Finding {
+	if target > maxPostgresVarcharLen {
+		// Fall back to text (unbounded — what the column would have been
+		// without this heuristic) rather than emitting a varchar(n)
+		// CREATE TABLE would reject.
+		return profiler.Finding{
+			SuggestedType: "text",
+			Confidence:    0.5,
+			Rationale: fmt.Sprintf(
+				"declared VARCHAR(%d), but a full-table scan found a value of length %d — past PostgreSQL's varchar(n) limit of %d — so text (unbounded) instead; SQLite never enforced the declared length",
+				declaredN, target, maxPostgresVarcharLen),
+			Heuristic: "varchar_length_preservation",
+		}
+	}
 	rationale := fmt.Sprintf("declared VARCHAR(%d), and this table's VARCHAR column lengths vary rather than sharing one blanket value — the length looks like a real constraint, but SQLite never enforced it, so confirm before keeping it", declaredN)
 	if target > declaredN {
 		rationale = fmt.Sprintf("%s (widened to %d: a full-table scan found a value longer than the declared %d, which SQLite never enforced)", rationale, target, declaredN)

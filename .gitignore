@@ -13,6 +13,9 @@
 # goreleaser local build output
 /dist/
 
+# verify-all-fixtures.sh campaign results table
+/verify-all-fixtures-results.md
+
 # Go build/test artifacts
 *.out
 
