@@ -294,6 +294,12 @@ func (e *errWriter) Write(p []byte) (int, error) {
 		return 0, e.err
 	}
 	n, err := e.w.Write(p)
+	if err == nil && n < len(p) {
+		// A short write with no error violates the io.Writer contract;
+		// treat it as truncation rather than pass it up for fmt to
+		// convert to io.ErrShortWrite (which writeVerifyReport drops).
+		err = io.ErrShortWrite
+	}
 	e.err = err
 	return n, err
 }

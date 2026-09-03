@@ -2,23 +2,28 @@ package main
 
 import (
 	"errors"
+	"io"
 	"testing"
 
 	"sqlite2pg/internal/pipeline"
 )
 
+// failingWriter accepts afterN bytes, then fails. The write that first
+// exceeds the budget returns a short count with io.ErrShortWrite (the
+// io.Writer contract requires a non-nil error on a short write).
 type failingWriter struct{ afterN int }
 
 func (f *failingWriter) Write(p []byte) (int, error) {
 	if f.afterN <= 0 {
 		return 0, errors.New("disk full")
 	}
-	n := len(p)
-	if n > f.afterN {
-		n = f.afterN
+	if len(p) > f.afterN {
+		n := f.afterN
+		f.afterN = 0
+		return n, io.ErrShortWrite
 	}
-	f.afterN -= n
-	return n, nil
+	f.afterN -= len(p)
+	return len(p), nil
 }
 
 // TestErrWriter_LatchesFirstWriteError is issue #136: writeVerifyReport
