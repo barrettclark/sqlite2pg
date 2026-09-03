@@ -703,16 +703,20 @@ func epochToInt64(transform string, v profiler.Value) (int64, error) {
 // comparison carries no precision loss.
 const maxPlausibleJulianDay = 1e12
 
-// timestamp bounds matching PostgreSQL's own timestamptz range (4713 BC
-// to 294276 AD). A converted value outside this window is either garbage
-// or has wrapped time.Time's internal seconds-since-year-1 int64 (issue
-// #111 / L2); either way Postgres cannot store it, so
-// rejectImplausibleTimestamp errors here where
-// verifyTransformAgainstFullTable can route the column to review instead
-// of the load failing (or, worse, silently round-tripping the same wrong
-// value on both sides of sqlite2pg verify).
+// timestamp bounds matching PostgreSQL's own timestamptz range (its floor
+// is Julian day 0 = 4714-11-24 BC, its ceiling 294276 AD). A converted
+// value outside this window is either garbage or has wrapped time.Time's
+// internal seconds-since-year-1 int64 (issue #111 / L2); either way
+// Postgres cannot store it, so rejectImplausibleTimestamp errors here
+// where verifyTransformAgainstFullTable can route the column to review
+// instead of the load failing (or, worse, silently round-tripping the
+// same wrong value on both sides of sqlite2pg verify).
+//
+// Go's Year() is astronomical (year 0 = 1 BC), so 4713 BC is Go year
+// -4712; -4712 as the floor rejects the whole of Go year -4713 (4714 BC),
+// of which Postgres can store only its last 38 days (issue #161).
 const (
-	minPlausibleTimestampYear = -4713
+	minPlausibleTimestampYear = -4712
 	maxPlausibleTimestampYear = 294276
 )
 
