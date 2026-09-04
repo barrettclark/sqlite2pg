@@ -12,11 +12,11 @@ jobs:
   goreleaser:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           fetch-depth: 0
 
-      - uses: actions/setup-go@v5
+      - uses: actions/setup-go@v7
         with:
           go-version: "1.26.8"
 
@@ -33,7 +33,7 @@ jobs:
           if [ -n "$out" ]; then echo "gofmt:"; echo "$out"; exit 1; fi
 
       - name: Lint
-        uses: golangci/golangci-lint-action@v8
+        uses: golangci/golangci-lint-action@v9
         with:
           version: v2.13.2
 
@@ -53,7 +53,7 @@ jobs:
       - name: Test
         run: go test ./...
 
-      - uses: goreleaser/goreleaser-action@v6
+      - uses: goreleaser/goreleaser-action@v7
         with:
           distribution: goreleaser
           # Exact version, not a floating "~> v2": a later GoReleaser
