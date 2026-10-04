@@ -573,10 +573,9 @@ func nextFlaggedColumn(flagged []flaggedColumn, current flaggedColumn, forward b
 }
 
 // validTypesForColumn returns the subset of review.TypeOptions that every
-// one of values would load successfully as (per previewValueForType),
-// always including currentType even if it fails that check — so the type
-// picker is never empty and never forces a human off their column's
-// current assignment.
+// one of cells would load successfully as (per previewValueForType). The
+// current type is not exempt: offering a type that fails the preview would
+// let a human select a type whose COPY then fails.
 func validTypesForColumn(cells []sampleCell, currentType, declaredType string) []string {
 	var result []string
 	for _, t := range review.TypeOptions {
@@ -587,7 +586,7 @@ func validTypesForColumn(cells []sampleCell, currentType, declaredType string) [
 				break
 			}
 		}
-		if ok || t == currentType {
+		if ok {
 			result = append(result, t)
 		}
 	}

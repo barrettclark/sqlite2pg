@@ -142,6 +142,37 @@ func TestValidTypesForColumn_OffersDoublePrecisionOnlyForREALInfinity(t *testing
 	}
 }
 
+// A column the full-table check sent to review can still carry a current
+// type whose preview rejects a sampled token; that type must not be offered.
+func TestValidTypesForColumn_NeverOffersInvalidCurrentType(t *testing.T) {
+	cases := []struct {
+		name        string
+		cells       []sampleCell
+		currentType string
+		declared    string
+		wantOffered bool
+	}{
+		{"TEXT +Inf sample, current double precision", []sampleCell{{value: "+Inf", isText: true}}, "double precision", "TEXT", false},
+		{"TEXT +Inf sample, current numeric", []sampleCell{{value: "+Inf", isText: true}}, "numeric", "TEXT", false},
+		{"REAL +Inf sample, current double precision", []sampleCell{{value: "+Inf", isText: false}}, "double precision", "REAL", true},
+		{"TEXT 1.5 sample, current double precision", []sampleCell{{value: "1.5", isText: true}}, "double precision", "TEXT", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validTypesForColumn(tc.cells, tc.currentType, tc.declared)
+			offered := false
+			for _, typ := range got {
+				if typ == tc.currentType {
+					offered = true
+				}
+			}
+			if offered != tc.wantOffered {
+				t.Errorf("%q offered = %v, want %v (got %v)", tc.currentType, offered, tc.wantOffered, got)
+			}
+		})
+	}
+}
+
 func TestPreviewValueForType_ValidityForNonNumericTypes(t *testing.T) {
 	cases := []struct {
 		value, targetType string
@@ -560,17 +591,13 @@ func TestPreviewValueForType_IntegerRangeCheck(t *testing.T) {
 	}
 }
 
-func TestValidTypesForColumn_AlwaysIncludesCurrentTypeEvenIfInvalid(t *testing.T) {
+func TestValidTypesForColumn_ExcludesCurrentTypeWhenInvalid(t *testing.T) {
 	values := []string{"not-a-number-at-all"}
 	got := validTypesForColumn(plainCells(values...), "integer", "")
-	found := false
 	for _, typ := range got {
 		if typ == "integer" {
-			found = true
+			t.Errorf("currentType %q offered though its preview rejects the sample, got %v", "integer", got)
 		}
-	}
-	if !found {
-		t.Errorf("expected currentType %q always included, got %v", "integer", got)
 	}
 	for _, typ := range got {
 		if typ != "integer" && typ != "text" && typ != "jsonb" && typ != "bytea" {
