@@ -92,6 +92,18 @@ func TestPreviewValueForType_IntegerPreservesExactPrecisionBeyondFloat64(t *test
 	}
 }
 
+// The picker must not offer a float type for a text value the COPY path
+// would reject as non-finite.
+func TestPreviewValueForType_RejectsNonFiniteFloatText(t *testing.T) {
+	for _, value := range []string{"NaN", "Inf", "-Infinity"} {
+		for _, targetType := range []string{"real", "double precision", "numeric"} {
+			if _, _, valid := previewValueForType(value, targetType, ""); valid {
+				t.Errorf("previewValueForType(%q, %q): expected invalid", value, targetType)
+			}
+		}
+	}
+}
+
 func TestPreviewValueForType_ValidityForNonNumericTypes(t *testing.T) {
 	cases := []struct {
 		value, targetType string

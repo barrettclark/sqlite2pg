@@ -303,7 +303,7 @@ func previewValueForType(value, targetType, declaredType string) (display, trans
 		return strconv.FormatInt(n, 10), "numeric_text_to_integer", true
 	case "real", "double precision", "numeric":
 		f, err := strconv.ParseFloat(value, 64)
-		if err != nil {
+		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
 			return value, "", false
 		}
 		formatted := strconv.FormatFloat(f, 'f', -1, 64)

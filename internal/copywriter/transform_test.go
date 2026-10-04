@@ -1,6 +1,7 @@
 package copywriter
 
 import (
+	"fmt"
 	"math"
 	"testing"
 	"time"
@@ -76,6 +77,15 @@ func TestTransform_FloatTransformsRejectNonFinite(t *testing.T) {
 			t.Run(tr+"/"+in, func(t *testing.T) {
 				if got, err := Transform(tr, in); err == nil {
 					t.Errorf("Transform(%q, %q) = %v, want error", tr, in, got)
+				}
+			})
+		}
+	}
+	for _, tr := range transforms {
+		for _, in := range []float64{math.Inf(1), math.Inf(-1), math.NaN()} {
+			t.Run(fmt.Sprintf("%s/float64/%v", tr, in), func(t *testing.T) {
+				if got, err := Transform(tr, in); err == nil {
+					t.Errorf("Transform(%q, %v) = %v, want error", tr, in, got)
 				}
 			})
 		}

@@ -111,6 +111,9 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			// finding).
 			return float64(v), nil
 		case float64:
+			if err := checkFinite(v); err != nil {
+				return nil, fmt.Errorf("strip_commas_float: %w", err)
+			}
 			return v, nil
 		default:
 			return nil, fmt.Errorf("strip_commas_float: unexpected type %T", raw)
@@ -433,6 +436,9 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		case int:
 			return float64(v), nil
 		case float64:
+			if err := checkFinite(v); err != nil {
+				return nil, fmt.Errorf("numeric_text_to_double: %w", err)
+			}
 			return v, nil
 		default:
 			return nil, fmt.Errorf("numeric_text_to_double: unexpected type %T", raw)
@@ -576,6 +582,9 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			// "unexpected type" (Copilot PR #98 finding).
 			return int64(v), nil
 		case float64:
+			if err := checkFinite(v); err != nil {
+				return nil, fmt.Errorf("nullif_sentinels: %w", err)
+			}
 			return v, nil
 		default:
 			return nil, fmt.Errorf("nullif_sentinels: unexpected type %T", raw)
@@ -657,10 +666,16 @@ func parseFiniteFloat(s string) (float64, error) {
 	if err != nil {
 		return 0, err
 	}
+	return f, checkFinite(f)
+}
+
+// checkFinite also guards float64 values that arrive already typed, e.g.
+// a REAL column holding +Inf from SQLite's 1e999.
+func checkFinite(f float64) error {
 	if math.IsNaN(f) || math.IsInf(f, 0) {
-		return 0, fmt.Errorf("%v is not a finite number", f)
+		return fmt.Errorf("%v is not a finite number", f)
 	}
-	return f, nil
+	return nil
 }
 
 func toInt64(v profiler.Value) (int64, bool) {
