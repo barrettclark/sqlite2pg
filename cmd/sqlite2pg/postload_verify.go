@@ -155,13 +155,24 @@ func readAnswerWithDeadline(r io.Reader, d time.Duration) (line string, gotAnswe
 // nothing is read past the newline, and a non-EOF error is returned even when
 // it arrives alongside data (bufio would hold that error for a later read and
 // report a complete line with a nil error).
+// maxEmptyReads matches bufio.Reader's bound on consecutive (0, nil) reads.
+const maxEmptyReads = 100
+
 func readLine(r io.Reader) (string, error) {
 	var buf [1]byte
 	var line []byte
+	empty := 0
 	for {
 		n, err := r.Read(buf[:])
-		if n == 1 {
+		switch {
+		case n == 1:
 			line = append(line, buf[0])
+			empty = 0
+		case err == nil:
+			empty++
+			if empty >= maxEmptyReads {
+				return string(line), io.ErrNoProgress
+			}
 		}
 		if err != nil {
 			return string(line), err

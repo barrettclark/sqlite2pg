@@ -310,6 +310,59 @@ func TestReadLine_StopsAtFirstNewline(t *testing.T) {
 	}
 }
 
+// emptyReadsReader yields data one byte per Read, then returns (0, nil)
+// forever, which io.Reader permits but never makes progress on.
+type emptyReadsReader struct {
+	data string
+}
+
+func (r *emptyReadsReader) Read(p []byte) (int, error) {
+	if r.data == "" {
+		return 0, nil
+	}
+	p[0] = r.data[0]
+	r.data = r.data[1:]
+	return 1, nil
+}
+
+// TestReadLine_GivesUpOnNoProgress guards against a reader that returns
+// (0, nil) indefinitely: readLine must stop with io.ErrNoProgress rather
+// than spin, as bufio.Reader does.
+func TestReadLine_GivesUpOnNoProgress(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     string
+		wantLine string
+	}{
+		{name: "no bytes ever", data: "", wantLine: ""},
+		{name: "partial line then stall", data: "y", wantLine: "y"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			type result struct {
+				line string
+				err  error
+			}
+			done := make(chan result, 1)
+			go func() {
+				line, err := readLine(&emptyReadsReader{data: tt.data})
+				done <- result{line, err}
+			}()
+			select {
+			case res := <-done:
+				if !errors.Is(res.err, io.ErrNoProgress) {
+					t.Errorf("readLine error = %v, want io.ErrNoProgress", res.err)
+				}
+				if res.line != tt.wantLine {
+					t.Errorf("readLine line = %q, want %q", res.line, tt.wantLine)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("readLine spun on a reader returning (0, nil) forever instead of returning io.ErrNoProgress")
+			}
+		})
+	}
+}
+
 // TestDetermineVerify_NonTerminalPipeImmediateEOFStillSaysNoAnswer is a
 // regression test for Copilot's PR #101 review finding: the fix for
 // issue #94 (below) correctly stopped conflating "a real blank line
