@@ -1030,39 +1030,53 @@ func TestTransform_UnixEpochMicros_RejectsNaNAndOutOfRangeValues(t *testing.T) {
 	}
 }
 
-// TestTransform_ExcelSerialToTimestamptz_NaNAndInfDoNotOverflow is a
-// regression test for Copilot's PR #98 finding: for a NaN or ±Inf serial,
-// fracSeconds itself becomes NaN (Inf - Inf is NaN under IEEE 754), and
-// time.Duration(NaN * time.Second) is the same implementation-dependent
-// conversion clampDaysToInt was already fixed to avoid for the day
-// component — must not panic and must produce a deterministic result.
-func TestTransform_ExcelSerialToTimestamptz_NaNAndInfDoNotOverflow(t *testing.T) {
-	// A NaN serial clamps both its day and fractional-second components
-	// to 0, landing exactly on excelEpoch — asserting the exact value
-	// (not just "no error/no panic") is what actually distinguishes the
-	// fix from relying on time.Duration(NaN)'s implementation-dependent
-	// conversion, which happens to also yield 0 on this architecture and
-	// so wouldn't otherwise show a difference.
-	got, err := Transform("excel_serial_to_timestamptz", math.NaN())
-	if err != nil {
-		t.Fatalf("Transform(NaN): %v", err)
+// TestTransform_ExcelSerialToTimestamptz_RejectsNonFinite covers non-finite
+// serials, which must error rather than reach excelSerialToTime (a ±Inf
+// serial clamps to a valid-looking date ~5.9M years out).
+func TestTransform_ExcelSerialToTimestamptz_RejectsNonFinite(t *testing.T) {
+	tests := []struct {
+		name   string
+		serial float64
+	}{
+		{name: "NaN", serial: math.NaN()},
+		{name: "positive infinity", serial: math.Inf(1)},
+		{name: "negative infinity", serial: math.Inf(-1)},
 	}
-	tm, ok := got.(time.Time)
-	if !ok {
-		t.Fatalf("Transform(NaN): expected time.Time, got %T", got)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got, err := Transform("excel_serial_to_timestamptz", tt.serial); err == nil {
+				t.Errorf("Transform(%v) = %v, want error", tt.serial, got)
+			}
+		})
 	}
-	if !tm.Equal(excelEpoch) {
-		t.Errorf("Transform(NaN) = %v, want exactly excelEpoch (%v)", tm, excelEpoch)
-	}
+}
 
-	for _, serial := range []float64{math.Inf(1), math.Inf(-1)} {
-		got, err := Transform("excel_serial_to_timestamptz", serial)
-		if err != nil {
-			t.Fatalf("Transform(%v): %v", serial, err)
-		}
-		if _, ok := got.(time.Time); !ok {
-			t.Fatalf("Transform(%v): expected time.Time, got %T", serial, got)
-		}
+// TestTransform_ExcelSerialToTimestamptz_Finite checks exact results for
+// finite serials, including the fractional time-of-day offset.
+func TestTransform_ExcelSerialToTimestamptz_Finite(t *testing.T) {
+	tests := []struct {
+		name   string
+		serial float64
+		want   time.Time
+	}{
+		{name: "epoch day", serial: 0, want: excelEpoch},
+		{name: "whole day", serial: 44197, want: excelEpoch.AddDate(0, 0, 44197)},
+		{name: "fractional day is noon", serial: 44197.5, want: excelEpoch.AddDate(0, 0, 44197).Add(12 * time.Hour)},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Transform("excel_serial_to_timestamptz", tt.serial)
+			if err != nil {
+				t.Fatalf("Transform(%v): %v", tt.serial, err)
+			}
+			tm, ok := got.(time.Time)
+			if !ok {
+				t.Fatalf("Transform(%v): expected time.Time, got %T", tt.serial, got)
+			}
+			if !tm.Equal(tt.want) {
+				t.Errorf("Transform(%v) = %v, want %v", tt.serial, tm, tt.want)
+			}
+		})
 	}
 }
 

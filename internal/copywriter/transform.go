@@ -449,6 +449,9 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		if !ok {
 			return nil, fmt.Errorf("excel_serial_to_timestamptz: unexpected type %T", raw)
 		}
+		if err := checkFinite(f); err != nil {
+			return nil, fmt.Errorf("excel_serial_to_timestamptz: %w", err)
+		}
 		return excelSerialToTime(f), nil
 
 	case "dayfirst_to_timestamptz":
