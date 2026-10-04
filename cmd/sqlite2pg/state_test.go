@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestLoadState_EmptyWhenFileDoesNotExist(t *testing.T) {
@@ -117,11 +118,97 @@ func TestMarkForeignKeysApplied_PersistsAndPreservesDatabaseAndCompleted(t *test
 	}
 }
 
-// TestWriteState_FailureBeforeRenameKeepsPreviousState simulates a crash
-// between the temp-file write and the rename: the previous state must stay
-// readable and no temp files may be left behind.
-func TestWriteState_FailureBeforeRenameKeepsPreviousState(t *testing.T) {
-	tests := []struct {
+// stateStage injects one failure point in writeState.
+type stateStage struct {
+	name   string
+	inject func(t *testing.T, injected error)
+}
+
+// injectTempFault wraps the real temp file so the chosen operation fails.
+func injectTempFault(t *testing.T, fault faultTempFile) {
+	t.Helper()
+	orig := openStateTemp
+	t.Cleanup(func() { openStateTemp = orig })
+	openStateTemp = func(name string) (stateTempFile, error) {
+		f, err := orig(name)
+		if err != nil {
+			return nil, err
+		}
+		fault.stateTempFile = f
+		return fault, nil
+	}
+}
+
+// faultTempFile fails the named operation after delegating to the real file.
+type faultTempFile struct {
+	stateTempFile
+	writeErr, syncErr, closeErr error
+}
+
+func (f faultTempFile) Write(p []byte) (int, error) {
+	if f.writeErr != nil {
+		return 0, f.writeErr
+	}
+	return f.stateTempFile.Write(p)
+}
+
+func (f faultTempFile) Sync() error {
+	if f.syncErr != nil {
+		return f.syncErr
+	}
+	return f.stateTempFile.Sync()
+}
+
+func (f faultTempFile) Close() error {
+	err := f.stateTempFile.Close()
+	if f.closeErr != nil {
+		return f.closeErr
+	}
+	return err
+}
+
+// TestWriteState_FailureKeepsPreviousState injects a failure at each step of
+// writeState. The previous state must stay readable and no temp file may be
+// left behind.
+func TestWriteState_FailureKeepsPreviousState(t *testing.T) {
+	injected := errors.New("injected failure")
+	stages := []stateStage{
+		{
+			name: "create temp",
+			inject: func(t *testing.T, err error) {
+				orig := openStateTemp
+				t.Cleanup(func() { openStateTemp = orig })
+				openStateTemp = func(string) (stateTempFile, error) { return nil, err }
+			},
+		},
+		{
+			name: "write",
+			inject: func(t *testing.T, err error) {
+				injectTempFault(t, faultTempFile{writeErr: err})
+			},
+		},
+		{
+			name: "sync",
+			inject: func(t *testing.T, err error) {
+				injectTempFault(t, faultTempFile{syncErr: err})
+			},
+		},
+		{
+			name: "close",
+			inject: func(t *testing.T, err error) {
+				injectTempFault(t, faultTempFile{closeErr: err})
+			},
+		},
+		{
+			name: "rename",
+			inject: func(t *testing.T, err error) {
+				orig := renameFile
+				t.Cleanup(func() { renameFile = orig })
+				renameFile = func(string, string) error { return err }
+			},
+		},
+	}
+	prevs := []struct {
 		name string
 		prev *loadState
 		next loadState
@@ -139,42 +226,120 @@ func TestWriteState_FailureBeforeRenameKeepsPreviousState(t *testing.T) {
 			want: loadState{},
 		},
 	}
+	for _, stage := range stages {
+		t.Run(stage.name, func(t *testing.T) {
+			for _, tt := range prevs {
+				t.Run(tt.name, func(t *testing.T) {
+					dir := t.TempDir()
+					path := filepath.Join(dir, "run.state.json")
+					if tt.prev != nil {
+						if err := writeState(path, *tt.prev); err != nil {
+							t.Fatalf("writeState: %v", err)
+						}
+					}
+
+					stage.inject(t, injected)
+
+					err := writeState(path, tt.next)
+					if !errors.Is(err, injected) {
+						t.Fatalf("writeState error = %v, want %v", err, injected)
+					}
+
+					got, err := readState(path)
+					if err != nil {
+						t.Fatalf("readState after failed write: %v", err)
+					}
+					if got.Database != tt.want.Database || fmt.Sprint(got.Completed) != fmt.Sprint(tt.want.Completed) {
+						t.Errorf("state after failed write = %+v, want %+v", got, tt.want)
+					}
+
+					entries, err := os.ReadDir(dir)
+					if err != nil {
+						t.Fatalf("ReadDir: %v", err)
+					}
+					for _, e := range entries {
+						if e.Name() != "run.state.json" {
+							t.Errorf("leftover file after failed write: %s", e.Name())
+						}
+					}
+				})
+			}
+		})
+	}
+}
+
+// overlapBarrier releases callers once n have arrived. The timeout keeps a
+// locked implementation from deadlocking: its callers arrive one at a time.
+type overlapBarrier struct {
+	mu      sync.Mutex
+	arrived int
+	n       int
+	release chan struct{}
+}
+
+func newOverlapBarrier(n int) *overlapBarrier {
+	return &overlapBarrier{n: n, release: make(chan struct{})}
+}
+
+func (b *overlapBarrier) wait() {
+	b.mu.Lock()
+	b.arrived++
+	if b.arrived == b.n {
+		close(b.release)
+	}
+	b.mu.Unlock()
+	select {
+	case <-b.release:
+	case <-time.After(250 * time.Millisecond):
+	}
+}
+
+// TestMarkTableCompleted_OverlappingReadsKeepAllEntries forces every caller to
+// read the same snapshot before any caller writes. Without stateMu, the last
+// write wins and drops the other entries.
+func TestMarkTableCompleted_OverlappingReadsKeepAllEntries(t *testing.T) {
+	tests := []struct {
+		name   string
+		tables []string
+	}{
+		{name: "two writers", tables: []string{"albums", "artists"}},
+		{name: "three writers", tables: []string{"albums", "artists", "tracks"}},
+	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			dir := t.TempDir()
-			path := filepath.Join(dir, "run.state.json")
-			if tt.prev != nil {
-				if err := writeState(path, *tt.prev); err != nil {
-					t.Fatalf("writeState: %v", err)
+			path := filepath.Join(t.TempDir(), "run.state.json")
+			if err := writeState(path, loadState{Database: "chinook_o"}); err != nil {
+				t.Fatalf("writeState: %v", err)
+			}
+
+			bar := newOverlapBarrier(len(tt.tables))
+			orig := afterStateRead
+			t.Cleanup(func() { afterStateRead = orig })
+			afterStateRead = bar.wait
+
+			var wg sync.WaitGroup
+			errs := make(chan error, len(tt.tables))
+			for _, table := range tt.tables {
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					errs <- markTableCompleted(path, table)
+				}()
+			}
+			wg.Wait()
+			close(errs)
+			for err := range errs {
+				if err != nil {
+					t.Fatalf("markTableCompleted: %v", err)
 				}
 			}
 
-			injected := errors.New("injected crash before rename")
-			orig := renameFile
-			renameFile = func(string, string) error { return injected }
-			t.Cleanup(func() { renameFile = orig })
-
-			err := writeState(path, tt.next)
-			if !errors.Is(err, injected) {
-				t.Fatalf("writeState error = %v, want %v", err, injected)
-			}
-
-			got, err := readState(path)
+			st, err := readState(path)
 			if err != nil {
-				t.Fatalf("readState after failed write: %v", err)
+				t.Fatalf("readState: %v", err)
 			}
-			if got.Database != tt.want.Database || fmt.Sprint(got.Completed) != fmt.Sprint(tt.want.Completed) {
-				t.Errorf("state after failed write = %+v, want %+v", got, tt.want)
-			}
-
-			entries, err := os.ReadDir(dir)
-			if err != nil {
-				t.Fatalf("ReadDir: %v", err)
-			}
-			for _, e := range entries {
-				if e.Name() != "run.state.json" {
-					t.Errorf("leftover file after failed write: %s", e.Name())
-				}
+			if len(st.Completed) != len(tt.tables) {
+				t.Errorf("completed = %v, want %d entries (lost update)", st.Completed, len(tt.tables))
 			}
 		})
 	}
@@ -182,7 +347,6 @@ func TestWriteState_FailureBeforeRenameKeepsPreviousState(t *testing.T) {
 
 // TestMarkTableCompleted_ConcurrentCallsKeepAllEntries checks that
 // simultaneous markTableCompleted calls do not lose each other's updates.
-// Without stateMu, two goroutines reading the same snapshot lose one table.
 func TestMarkTableCompleted_ConcurrentCallsKeepAllEntries(t *testing.T) {
 	tests := []struct {
 		name    string
