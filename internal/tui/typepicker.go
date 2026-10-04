@@ -16,8 +16,8 @@ func (m *model) openTypePicker(columnName string) {
 	m.pickerColumn = columnName
 	tv := findTable(m.summary, m.selectedTable)
 	col := columnByName(tv, columnName)
-	values := columnSampleValues(tv, columnName)
-	types := validTypesForColumn(values, col.TargetType, col.DeclaredType)
+	cells := columnSampleCells(tv, columnName)
+	types := validTypesForColumn(cells, col.TargetType, col.DeclaredType)
 
 	list := tview.NewList()
 	list.ShowSecondaryText(true)
@@ -25,11 +25,11 @@ func (m *model) openTypePicker(columnName string) {
 	list.SetTitle(fmt.Sprintf(" Edit type: %s ", columnName))
 	list.SetInputCapture(m.pickerKeyCapture)
 	list.SetSelectedFunc(m.onTypeSelected)
-	sample := firstNonNullValue(values)
+	sample := firstNonNullCell(cells)
 	for i, t := range types {
 		secondary := ""
-		if sample != "" {
-			display, _, _ := previewValueForType(sample, t, col.DeclaredType)
+		if sample.value != "" {
+			display, _, _ := previewValueForType(sample.value, t, col.DeclaredType, sample.isText)
 			// Escaped for the same reason as the grid's header/cell text:
 			// tview treats literal "[...]" in rendered text as a tag, and
 			// real sample data can contain brackets.
@@ -115,7 +115,7 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 	if typeName == col.TargetType {
 		transform = col.Transform
 	} else {
-		t, ok := commonTransformForType(columnSampleValues(tv, m.pickerColumn), typeName, col.DeclaredType)
+		t, ok := commonTransformForType(columnSampleCells(tv, m.pickerColumn), typeName, col.DeclaredType)
 		if !ok {
 			m.closePicker()
 			m.showError(fmt.Sprintf("%s: sample rows need different %s transforms (e.g. ISO 8601 and YYYYMMDD dates); a single transform can't cover them — leave the column as %s or split it",

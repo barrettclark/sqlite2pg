@@ -26,7 +26,7 @@ func TestPreviewValueForType_IntegerAcceptsScientificNotationWholeNumber(t *test
 		{"1.712345678e+02", "integer", false, ""}, // 171.23… has a real fraction
 	}
 	for _, c := range cases {
-		display, transform, valid := previewValueForType(c.value, c.targetType, "REAL")
+		display, transform, valid := previewValueForType(c.value, c.targetType, "REAL", false)
 		if valid != c.wantValid {
 			t.Errorf("previewValueForType(%q, %q, REAL) valid = %v, want %v", c.value, c.targetType, valid, c.wantValid)
 			continue
@@ -47,7 +47,7 @@ func TestPreviewValueForType_IntegerAcceptsScientificNotationWholeNumber(t *test
 // string has no exponent and must still take the exact-parse path
 // unchanged.
 func TestPreviewValueForType_ScientificNormalizationLeavesExactDigitStringsAlone(t *testing.T) {
-	display, _, valid := previewValueForType("2124037125711300644", "bigint", "REAL")
+	display, _, valid := previewValueForType("2124037125711300644", "bigint", "REAL", false)
 	if !valid || display != "2124037125711300644" {
 		t.Errorf("previewValueForType(19-digit) = (%q, %v), want (%q, true)", display, valid, "2124037125711300644")
 	}
@@ -56,7 +56,7 @@ func TestPreviewValueForType_ScientificNormalizationLeavesExactDigitStringsAlone
 // issue #139, picker-level: integer/bigint must reappear in the offered
 // list for a scientific-notation sample on a REAL-affinity column.
 func TestValidTypesForColumn_OffersIntegerTypesForScientificNotationSample(t *testing.T) {
-	got := validTypesForColumn([]string{"1.712345678e+09"}, "double precision", "REAL")
+	got := validTypesForColumn(plainCells("1.712345678e+09"), "double precision", "REAL")
 	var haveBigint, haveInteger bool
 	for _, typ := range got {
 		switch typ {

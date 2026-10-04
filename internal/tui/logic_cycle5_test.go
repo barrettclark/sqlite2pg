@@ -16,7 +16,7 @@ func TestPreviewValueForType_IntegerRejectsScientificNotationOnTextAffinityColum
 	for _, declared := range []string{"TEXT", "VARCHAR(20)", "BLOB", ""} {
 		for _, v := range []string{"1e+06", "1.5e3", "1.712345678e+09", "1.23e+05"} {
 			for _, typ := range []string{"integer", "bigint", "smallint"} {
-				if _, _, valid := previewValueForType(v, typ, declared); valid {
+				if _, _, valid := previewValueForType(v, typ, declared, false); valid {
 					t.Errorf("previewValueForType(%q, %q, %q) = valid; a TEXT-affinity row stores the string literally and COPY rejects it", v, typ, declared)
 				}
 			}
@@ -36,7 +36,7 @@ func TestPreviewValueForType_IntegerAcceptsScientificNotationOnRealAffinityColum
 		{"1.712345678e+09", "DOUBLE PRECISION", "1712345678"},
 		{"1e+06", "NUMERIC", "1000000"},
 	} {
-		display, transform, valid := previewValueForType(c.value, "bigint", c.declared)
+		display, transform, valid := previewValueForType(c.value, "bigint", c.declared, false)
 		if !valid || display != c.want || transform != "numeric_text_to_integer" {
 			t.Errorf("previewValueForType(%q, bigint, %q) = (%q, %q, %v), want (%q, numeric_text_to_integer, true)",
 				c.value, c.declared, display, transform, valid, c.want)
@@ -65,7 +65,7 @@ func TestSqliteNumericAffinity(t *testing.T) {
 // any affinity.
 func TestPreviewValueForType_IntegerPlainDigitStringsUnaffectedByCycle5Guard(t *testing.T) {
 	for _, declared := range []string{"TEXT", "REAL", "INTEGER", ""} {
-		display, _, valid := previewValueForType("2124037125711300644", "bigint", declared)
+		display, _, valid := previewValueForType("2124037125711300644", "bigint", declared, false)
 		if !valid || display != "2124037125711300644" {
 			t.Errorf("previewValueForType(19-digit, bigint, %q) = (%q, %v), want (%q, true)", declared, display, valid, "2124037125711300644")
 		}

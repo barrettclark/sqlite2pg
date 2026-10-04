@@ -161,9 +161,17 @@ func findTable(summary review.ReviewSummary, name string) review.TableView {
 	return review.TableView{}
 }
 
-// columnSampleValues extracts one column's sample values (in row order)
+// sampleCell is one sampled value as shown in the preview grid, plus
+// whether SQLite stored it as TEXT (the grid's string is ambiguous: a REAL
+// +Inf and the text "+Inf" both render as "+Inf").
+type sampleCell struct {
+	value  string
+	isText bool
+}
+
+// columnSampleCells extracts one column's sample cells (in row order)
 // from tv's preview grid, for display and validity checking.
-func columnSampleValues(tv review.TableView, columnName string) []string {
+func columnSampleCells(tv review.TableView, columnName string) []sampleCell {
 	idx := -1
 	for i, c := range tv.Columns {
 		if c.Column == columnName {
@@ -174,11 +182,24 @@ func columnSampleValues(tv review.TableView, columnName string) []string {
 	if idx == -1 {
 		return nil
 	}
-	values := make([]string, 0, len(tv.Rows))
-	for _, row := range tv.Rows {
+	cells := make([]sampleCell, 0, len(tv.Rows))
+	for r, row := range tv.Rows {
 		if idx < len(row) {
-			values = append(values, row[idx])
+			cell := sampleCell{value: row[idx]}
+			if r < len(tv.IsText) && idx < len(tv.IsText[r]) {
+				cell.isText = tv.IsText[r][idx]
+			}
+			cells = append(cells, cell)
 		}
+	}
+	return cells
+}
+
+// sampleValues returns the display strings of cells, in order.
+func sampleValues(cells []sampleCell) []string {
+	values := make([]string, len(cells))
+	for i, c := range cells {
+		values[i] = c.value
 	}
 	return values
 }
@@ -243,7 +264,9 @@ func sqliteNumericAffinity(declaredType string) bool {
 // tell a float64 the driver returned (rendered by %v, possibly in
 // scientific notation) from a string the row literally stores that
 // happens to look the same — see the integer arm (issue #156).
-func previewValueForType(value, targetType, declaredType string) (display, transform string, valid bool) {
+// isText is the sample's SQLite storage class; only a TEXT token with a
+// non-finite spelling is refused by the float arms.
+func previewValueForType(value, targetType, declaredType string, isText bool) (display, transform string, valid bool) {
 	if value == "NULL" {
 		return value, "", true
 	}
@@ -303,8 +326,17 @@ func previewValueForType(value, targetType, declaredType string) (display, trans
 		return strconv.FormatInt(n, 10), "numeric_text_to_integer", true
 	case "real", "double precision", "numeric":
 		f, err := strconv.ParseFloat(value, 64)
-		if err != nil || math.IsNaN(f) || math.IsInf(f, 0) {
+		if err != nil {
 			return value, "", false
+		}
+		// Only a text token can't be trusted as a float; a REAL +Inf is a
+		// valid float8 and the grid renders it as "+Inf" too. numeric has
+		// no infinity before PG14, so it still refuses any non-finite value.
+		if math.IsNaN(f) || (math.IsInf(f, 0) && (isText || targetType == "numeric")) {
+			return value, "", false
+		}
+		if math.IsInf(f, 0) {
+			return strconv.FormatFloat(f, 'f', -1, 64), "", true
 		}
 		formatted := strconv.FormatFloat(f, 'f', -1, 64)
 		if !strings.Contains(formatted, ".") {
@@ -395,17 +427,17 @@ func previewValueForType(value, targetType, declaredType string) (display, trans
 	}
 }
 
-// firstNonNullValue returns the first value in values that isn't the
-// preview grid's "NULL" placeholder or empty, or "" if none qualify — used
+// firstNonNullCell returns the first cell in cells that isn't the preview
+// grid's "NULL" placeholder or empty, or a zero cell if none qualify — used
 // to pick one representative sample to preview under each candidate type
 // in the picker.
-func firstNonNullValue(values []string) string {
-	for _, v := range values {
-		if v != "NULL" && v != "" {
-			return v
+func firstNonNullCell(cells []sampleCell) sampleCell {
+	for _, c := range cells {
+		if c.value != "NULL" && c.value != "" {
+			return c
 		}
 	}
-	return ""
+	return sampleCell{}
 }
 
 // commonTransformForType derives the transform previewValueForType would
@@ -429,13 +461,13 @@ func firstNonNullValue(values []string) string {
 // NULL). Non-date types are unaffected: previewValueForType returns a
 // fixed transform per type ("" for text/integer, uuid_format for uuid), so
 // those always agree.
-func commonTransformForType(values []string, typeName, declaredType string) (transform string, ok bool) {
+func commonTransformForType(cells []sampleCell, typeName, declaredType string) (transform string, ok bool) {
 	seen := false
-	for _, v := range values {
-		if v == "NULL" || v == "" {
+	for _, c := range cells {
+		if c.value == "NULL" || c.value == "" {
 			continue
 		}
-		_, t, valid := previewValueForType(v, typeName, declaredType)
+		_, t, valid := previewValueForType(c.value, typeName, declaredType, c.isText)
 		if !valid {
 			return "", false
 		}
@@ -544,12 +576,12 @@ func nextFlaggedColumn(flagged []flaggedColumn, current flaggedColumn, forward b
 // always including currentType even if it fails that check — so the type
 // picker is never empty and never forces a human off their column's
 // current assignment.
-func validTypesForColumn(values []string, currentType, declaredType string) []string {
+func validTypesForColumn(cells []sampleCell, currentType, declaredType string) []string {
 	var result []string
 	for _, t := range review.TypeOptions {
 		ok := true
-		for _, v := range values {
-			if _, _, valueValid := previewValueForType(v, t, declaredType); !valueValid {
+		for _, c := range cells {
+			if _, _, valueValid := previewValueForType(c.value, t, declaredType, c.isText); !valueValid {
 				ok = false
 				break
 			}

@@ -1,6 +1,7 @@
 package review
 
 import (
+	"database/sql"
 	"path/filepath"
 	"testing"
 	"unicode/utf8"
@@ -113,5 +114,42 @@ func TestFormatSampleValue_TruncatesOnRuneBoundary(t *testing.T) {
 	}
 	if got != "Museo Nacional Centro de Arte Reina Sofí…" {
 		t.Errorf("unexpected truncation result: %q", got)
+	}
+}
+
+func TestSampleGridData_RecordsWhetherEachCellIsText(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "src.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.Exec(`CREATE TABLE m (r REAL, t TEXT); INSERT INTO m VALUES (1e999, '+Inf');`); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	db.Close()
+
+	cfg := &config.MigrationConfig{
+		Source: config.SourceInfo{Path: path, Kind: "sqlite"},
+		Tables: map[string]config.TableConfig{
+			"m": {
+				Include:     true,
+				ColumnOrder: []string{"r", "t"},
+				Columns: map[string]config.ColumnConfig{
+					"r": {DeclaredType: "REAL"},
+					"t": {DeclaredType: "TEXT"},
+				},
+			},
+		},
+	}
+
+	preview := sampleGridData(cfg, 5)["m"]
+	if len(preview.Rows) != 1 || len(preview.IsText) != 1 {
+		t.Fatalf("expected one row with one IsText row, got rows=%v isText=%v", preview.Rows, preview.IsText)
+	}
+	if preview.Rows[0][0] != "+Inf" || preview.Rows[0][1] != "+Inf" {
+		t.Fatalf("expected both cells to render as +Inf, got %v", preview.Rows[0])
+	}
+	if preview.IsText[0][0] || !preview.IsText[0][1] {
+		t.Errorf("IsText = %v, want [false true] (REAL +Inf, TEXT +Inf)", preview.IsText[0])
 	}
 }
