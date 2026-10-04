@@ -1,12 +1,18 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"sqlite2pg/internal/config"
 )
 
 // --- resolveVerifyMode -------------------------------------------------
@@ -505,5 +511,50 @@ func TestRun_LoadUsageStringListsEveryFlag(t *testing.T) {
 		if !strings.Contains(err.Error(), flag) {
 			t.Errorf("expected load's usage string to mention %s, got %q", flag, err.Error())
 		}
+	}
+}
+
+// TestRunPostLoadVerify_StdinReadFailurePropagates covers the non-terminal
+// *os.File path end to end: a failed stdin read must come back wrapped
+// through runPostLoadVerify, and must never reach a Postgres connection.
+func TestRunPostLoadVerify_StdinReadFailurePropagates(t *testing.T) {
+	tests := []struct {
+		name string
+		mode verifyMode
+	}{
+		{name: "prompt mode reads a broken pipe", mode: verifyPrompt},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The write end of a pipe is not readable: Read fails with EBADF.
+			_, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("os.Pipe: %v", err)
+			}
+			defer w.Close()
+
+			// Unreachable address: if verification wrongly proceeds it fails
+			// with the connecting error, which the assertions below reject.
+			connCfg, err := pgx.ParseConfig("postgres://127.0.0.1:1/x?connect_timeout=1")
+			if err != nil {
+				t.Fatalf("pgx.ParseConfig: %v", err)
+			}
+
+			var out strings.Builder
+			err = runPostLoadVerify(context.Background(), &config.MigrationConfig{}, connCfg, tt.mode, w, &out)
+			if err == nil {
+				t.Fatal("expected an error from a failing stdin read, got nil")
+			}
+			if strings.Contains(err.Error(), "connecting to Postgres") {
+				t.Fatalf("verification attempted a database connection after a stdin read failure: %v", err)
+			}
+			var pathErr *fs.PathError
+			if !errors.As(err, &pathErr) {
+				t.Errorf("expected the returned error to wrap the *fs.PathError from the read, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "reading verify answer from stdin") {
+				t.Errorf("expected the error to name the stdin read, got %q", err.Error())
+			}
+		})
 	}
 }
