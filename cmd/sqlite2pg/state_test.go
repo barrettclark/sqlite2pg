@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -115,6 +116,26 @@ func TestMarkForeignKeysApplied_PersistsAndPreservesDatabaseAndCompleted(t *test
 	}
 	if len(st.Completed) != 1 || st.Completed[0] != "albums" {
 		t.Errorf("expected completed-tables list to survive markForeignKeysApplied, got %v", st.Completed)
+	}
+}
+
+// TestWriteState_LongBasenameSucceeds guards against temp names that grow
+// with the target basename and overflow NAME_MAX (255 bytes).
+func TestWriteState_LongBasenameSucceeds(t *testing.T) {
+	dir := t.TempDir()
+	name := strings.Repeat("s", 245) + ".json" // 250-byte basename
+	path := filepath.Join(dir, name)
+
+	want := loadState{Database: "chinook_20260830_120000", Completed: []string{"albums"}}
+	if err := writeState(path, want); err != nil {
+		t.Fatalf("writeState with 250-byte basename: %v", err)
+	}
+	got, err := readState(path)
+	if err != nil {
+		t.Fatalf("readState: %v", err)
+	}
+	if got.Database != want.Database || len(got.Completed) != 1 || got.Completed[0] != "albums" {
+		t.Errorf("round trip mismatch: got %+v, want %+v", got, want)
 	}
 }
 

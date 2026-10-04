@@ -76,7 +76,8 @@ func readState(path string) (loadState, error) {
 
 // writeState replaces the state file with st. It writes a temp file in the
 // same directory, fsyncs it, and renames it over path, so a crash never
-// leaves a truncated file. Holds stateMu.
+// leaves a truncated file. Holds stateMu. The replace is crash-safe on Unix;
+// on Windows it depends on the platform's rename behavior.
 //
 // The rename is not durable across power loss without a directory fsync, so
 // the old state can reappear and a completed table is re-run; that is safe
@@ -126,7 +127,7 @@ func createStateTemp(path string) (stateTempFile, string, error) {
 	if _, err := rand.Read(b[:]); err != nil {
 		return nil, "", err
 	}
-	name := filepath.Join(filepath.Dir(path), filepath.Base(path)+".tmp-"+hex.EncodeToString(b[:]))
+	name := filepath.Join(filepath.Dir(path), ".sqlite2pg-state-"+hex.EncodeToString(b[:]))
 	f, err := openStateTemp(name)
 	return f, name, err
 }
