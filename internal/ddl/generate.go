@@ -100,17 +100,26 @@ func GenerateCreateTable(table string, tc config.TableConfig) (string, error) {
 // rowid. AUTOINCREMENT tables match too, since PRAGMA table_info reports
 // the same declared type for them.
 func RowIDAliasColumn(tc config.TableConfig) (string, bool) {
-	pk := PrimaryKeyColumns(tc)
-	if len(pk) != 1 {
+	// Count over every source column, dropped ones included: a composite PK
+	// with a dropped member is still composite in SQLite.
+	var pkCount int
+	var pkName string
+	for name, col := range tc.Columns {
+		if col.PrimaryKeySeq > 0 {
+			pkCount++
+			pkName = name
+		}
+	}
+	if pkCount != 1 {
 		return "", false
 	}
-	col := tc.Columns[pk[0]]
+	col := tc.Columns[pkName]
 	if !strings.EqualFold(col.DeclaredType, "INTEGER") {
 		return "", false
 	}
 	switch col.TargetType {
 	case "smallint", "integer", "bigint":
-		return pk[0], true
+		return pkName, true
 	}
 	return "", false
 }

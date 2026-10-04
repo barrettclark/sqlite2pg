@@ -17,12 +17,23 @@ func postLoadTable(ctx context.Context, conn *pgx.Conn, pgTable string, tc confi
 	qualified := pgx.Identifier{pgTable}.Sanitize()
 	if name, ok := ddl.RowIDAliasColumn(tc); ok {
 		col := ddl.PostgresColumnNames(tc)[name]
-		// GREATEST(..., 1): a table with only non-positive rowids would
-		// otherwise ask setval for a value below the sequence minimum.
+		// pg_get_serial_sequence returns NULL when the live column has no
+		// identity; setval is STRICT and would silently skip, so check here.
+		var seq *string
+		if err := conn.QueryRow(ctx, "SELECT pg_get_serial_sequence($1, $2)", qualified, col).Scan(&seq); err != nil {
+			return fmt.Errorf("looking up identity sequence for %s.%s: %w", pgTable, col, err)
+		}
+		if seq == nil {
+			return fmt.Errorf("%s.%s: expected an identity sequence for rowid-alias column, found none", pgTable, col)
+		}
+		// Advance via is_called rather than MAX+1, which overflows at the
+		// column type's maximum (2147483647 for integer). MAX is NULL on an
+		// empty table: GREATEST ignores it, so the value is 1 with is_called
+		// false, and the first nextval returns 1.
 		q := fmt.Sprintf(
-			"SELECT setval(pg_get_serial_sequence($1, $2), GREATEST(COALESCE(MAX(%s), 0) + 1, 1), false) FROM %s",
+			"SELECT setval($1, GREATEST(MAX(%[1]s), 1), COALESCE(MAX(%[1]s) >= 1, false)) FROM %[2]s",
 			pgx.Identifier{col}.Sanitize(), qualified)
-		if _, err := conn.Exec(ctx, q, qualified, col); err != nil {
+		if _, err := conn.Exec(ctx, q, *seq); err != nil {
 			return fmt.Errorf("resetting identity sequence for %s: %w", pgTable, err)
 		}
 	}

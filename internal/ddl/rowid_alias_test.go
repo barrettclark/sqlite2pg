@@ -67,6 +67,28 @@ func TestGenerateCreateTable_RowIDAliasIdentity(t *testing.T) {
 			wantLine: "",
 		},
 		{
+			name: "composite PK with dropped second member gets no identity",
+			tc: config.TableConfig{
+				ColumnOrder: []string{"a", "b"},
+				Columns: map[string]config.ColumnConfig{
+					"a": {DeclaredType: "INTEGER", TargetType: "integer", PrimaryKeySeq: 1},
+					"b": {DeclaredType: "INTEGER", TargetType: DropSentinel, PrimaryKeySeq: 2},
+				},
+			},
+			wantLine: "",
+		},
+		{
+			name: "composite PK with dropped first member gets no identity",
+			tc: config.TableConfig{
+				ColumnOrder: []string{"a", "b"},
+				Columns: map[string]config.ColumnConfig{
+					"a": {DeclaredType: "INTEGER", TargetType: DropSentinel, PrimaryKeySeq: 1},
+					"b": {DeclaredType: "INTEGER", TargetType: "integer", PrimaryKeySeq: 2},
+				},
+			},
+			wantLine: "",
+		},
+		{
 			name: "INTEGER PK retargeted to uuid gets no identity",
 			tc: config.TableConfig{
 				ColumnOrder: []string{"id"},
