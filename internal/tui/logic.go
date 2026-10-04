@@ -266,8 +266,8 @@ func sqliteNumericAffinity(declaredType string) bool {
 // tell a float64 the driver returned (rendered by %v, possibly in
 // scientific notation) from a string the row literally stores that
 // happens to look the same — see the integer arm (issue #156).
-// isText is the sample's SQLite storage class; only a TEXT token with a
-// non-finite spelling is refused by the float arms.
+// isText is the sample's SQLite storage class. A TEXT non-finite spelling is
+// refused by the float arms, and numeric refuses any ±Inf (see the comment at the float arm).
 func previewValueForType(value, targetType, declaredType string, isText bool) (display, transform string, valid bool) {
 	if value == "NULL" {
 		return value, "", true
