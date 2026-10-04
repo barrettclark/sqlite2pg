@@ -605,7 +605,11 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 					return fmt.Errorf("checking whether existing %s (Postgres table %q) has any rows: %w", tableName, pgTable, err)
 				}
 				if hasRows {
-					if err := postLoadTable(ctx, conn, pgTable, tc); err != nil {
+					hw, err := sourceHighWater(sourceDB, tableName, tc)
+					if err != nil {
+						return err
+					}
+					if err := postLoadTable(ctx, conn, pgTable, tc, hw); err != nil {
 						return err
 					}
 					if err := markTableCompleted(statePath, tableName); err != nil {
@@ -648,7 +652,12 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 			progress.abort()
 			return err
 		}
-		if err := postLoadTable(ctx, conn, pgTable, tc); err != nil {
+		hw, err := sourceHighWater(sourceDB, tableName, tc)
+		if err != nil {
+			progress.abort()
+			return err
+		}
+		if err := postLoadTable(ctx, conn, pgTable, tc, hw); err != nil {
 			progress.abort()
 			return err
 		}

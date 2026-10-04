@@ -2,18 +2,30 @@ package main
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
 
 	"sqlite2pg/internal/config"
 	"sqlite2pg/internal/ddl"
+	"sqlite2pg/internal/sqlitereader"
 )
 
+// sourceHighWater returns the AUTOINCREMENT high-water mark to seed pgTable's
+// identity with, or 0 for a table that isn't AUTOINCREMENT.
+func sourceHighWater(db *sql.DB, table string, tc config.TableConfig) (int64, error) {
+	if !tc.Autoincrement {
+		return 0, nil
+	}
+	return sqlitereader.ReadSequenceHighWater(db, table)
+}
+
 // postLoadTable advances a rowid-alias identity sequence past the loaded
-// rows and refreshes planner stats. Idempotent, so it's also safe on a
-// --resume that finds the table already loaded but not yet marked.
-func postLoadTable(ctx context.Context, conn *pgx.Conn, pgTable string, tc config.TableConfig) error {
+// rows and past highWater, and refreshes planner stats. Idempotent, so it's
+// also safe on a --resume that finds the table already loaded but not yet
+// marked.
+func postLoadTable(ctx context.Context, conn *pgx.Conn, pgTable string, tc config.TableConfig, highWater int64) error {
 	qualified := pgx.Identifier{pgTable}.Sanitize()
 	if name, ok := ddl.RowIDAliasColumn(tc); ok {
 		col := ddl.PostgresColumnNames(tc)[name]
@@ -28,12 +40,15 @@ func postLoadTable(ctx context.Context, conn *pgx.Conn, pgTable string, tc confi
 		}
 		// Advance via is_called rather than MAX+1, which overflows at the
 		// column type's maximum (2147483647 for integer). MAX is NULL on an
-		// empty table: GREATEST ignores it, so the value is 1 with is_called
-		// false, and the first nextval returns 1.
+		// empty table and GREATEST ignores NULLs; highWater is 0 for a table
+		// with no sqlite_sequence row. With nothing loaded or recorded the
+		// value is 1 with is_called false, so the first nextval returns 1.
+		// The highWater cast keeps a source mark above int4 from being
+		// narrowed to the column's type.
 		q := fmt.Sprintf(
-			"SELECT setval($1, GREATEST(MAX(%[1]s), 1), COALESCE(MAX(%[1]s) >= 1, false)) FROM %[2]s",
+			"SELECT setval($1, GREATEST(MAX(%[1]s), $2::bigint, 1), GREATEST(MAX(%[1]s), $2::bigint) >= 1) FROM %[2]s",
 			pgx.Identifier{col}.Sanitize(), qualified)
-		if _, err := conn.Exec(ctx, q, *seq); err != nil {
+		if _, err := conn.Exec(ctx, q, *seq, highWater); err != nil {
 			return fmt.Errorf("resetting identity sequence for %s: %w", pgTable, err)
 		}
 	}

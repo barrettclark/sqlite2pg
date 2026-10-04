@@ -521,3 +521,96 @@ func TestReadSchema_DropsUnresolvableImplicitForeignKeyRatherThanAborting(t *tes
 		t.Errorf("expected child's unresolvable FK to be absent, got: %+v", child.ForeignKeys)
 	}
 }
+
+func TestHasAutoincrement(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+		want bool
+	}{
+		{name: "AUTOINCREMENT", sql: `CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)`, want: true},
+		{name: "autoincrement lowercase", sql: `CREATE TABLE t (id integer primary key autoincrement)`, want: true},
+		{name: "column named autoincrement_count", sql: `CREATE TABLE t (id INTEGER PRIMARY KEY, autoincrement_count INTEGER)`, want: false},
+		{name: "INTEGER PRIMARY KEY without keyword", sql: `CREATE TABLE t (id INTEGER PRIMARY KEY)`, want: false},
+		{name: "quoted column named autoincrement", sql: `CREATE TABLE t (id INTEGER PRIMARY KEY, "autoincrement" TEXT)`, want: false},
+		{name: "keyword in comment", sql: "CREATE TABLE t (id INTEGER PRIMARY KEY -- AUTOINCREMENT\n)", want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasAutoincrement(tt.sql); got != tt.want {
+				t.Errorf("hasAutoincrement(%q) = %v, want %v", tt.sql, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadSchema_DetectsAutoincrement(t *testing.T) {
+	db := openTestDB(t, `
+		CREATE TABLE plain (id INTEGER PRIMARY KEY);
+		CREATE TABLE auto (id INTEGER PRIMARY KEY AUTOINCREMENT);
+	`)
+	tables, _, _, err := ReadSchema(db)
+	if err != nil {
+		t.Fatalf("ReadSchema: %v", err)
+	}
+	got := map[string]bool{}
+	for _, tb := range tables {
+		got[tb.Name] = tb.Autoincrement
+	}
+	if got["plain"] || !got["auto"] {
+		t.Errorf("Autoincrement flags = %v, want plain=false auto=true", got)
+	}
+}
+
+func TestReadSequenceHighWater(t *testing.T) {
+	tests := []struct {
+		name string
+		// setup runs against the table; wantHW is the mark after it.
+		setup  []string
+		wantHW int64
+	}{
+		{name: "no rows ever inserted", setup: nil, wantHW: 0},
+		{name: "rows inserted", setup: []string{`INSERT INTO t (id) VALUES (1), (2), (3)`}, wantHW: 3},
+		{name: "newest rows deleted", setup: []string{`INSERT INTO t (id) VALUES (1), (2), (3)`, `DELETE FROM t WHERE id >= 2`}, wantHW: 3},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openTestDB(t, `CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)`)
+			for _, stmt := range tt.setup {
+				if _, err := db.Exec(stmt); err != nil {
+					t.Fatalf("setup %q: %v", stmt, err)
+				}
+			}
+			got, err := ReadSequenceHighWater(db, "t")
+			if err != nil {
+				t.Fatalf("ReadSequenceHighWater: %v", err)
+			}
+			if got != tt.wantHW {
+				t.Errorf("high-water = %d, want %d", got, tt.wantHW)
+			}
+		})
+	}
+}
+
+func TestReadSchema_DetectsWithoutRowID(t *testing.T) {
+	tests := []struct {
+		name string
+		ddl  string
+		want bool
+	}{
+		{name: "rowid table", ddl: `CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)`, want: false},
+		{name: "WITHOUT ROWID table", ddl: `CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT) WITHOUT ROWID`, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openTestDB(t, tt.ddl)
+			tables, _, _, err := ReadSchema(db)
+			if err != nil {
+				t.Fatalf("ReadSchema: %v", err)
+			}
+			if len(tables) != 1 || tables[0].WithoutRowID != tt.want {
+				t.Errorf("WithoutRowID = %v, want %v", tables[0].WithoutRowID, tt.want)
+			}
+		})
+	}
+}

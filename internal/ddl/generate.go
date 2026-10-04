@@ -100,6 +100,9 @@ func GenerateCreateTable(table string, tc config.TableConfig) (string, error) {
 // rowid. AUTOINCREMENT tables match too, since PRAGMA table_info reports
 // the same declared type for them.
 func RowIDAliasColumn(tc config.TableConfig) (string, bool) {
+	if tc.WithoutRowID {
+		return "", false
+	}
 	// Count over every source column, dropped ones included: a composite PK
 	// with a dropped member is still composite in SQLite.
 	var pkCount int

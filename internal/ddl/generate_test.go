@@ -348,3 +348,37 @@ func TestGenerateCreateTable_ErrorsWhenNoColumnsAtAll(t *testing.T) {
 		t.Errorf("expected not to be classified as a missing-column_order bug, got: %v", err)
 	}
 }
+
+func TestRowIDAliasColumn(t *testing.T) {
+	intPK := func(withoutRowID bool) config.TableConfig {
+		return config.TableConfig{
+			Include:      true,
+			ColumnOrder:  []string{"id", "label"},
+			WithoutRowID: withoutRowID,
+			Columns: map[string]config.ColumnConfig{
+				"id":    {DeclaredType: "INTEGER", TargetType: "integer", PrimaryKeySeq: 1},
+				"label": {DeclaredType: "TEXT", TargetType: "text"},
+			},
+		}
+	}
+	tests := []struct {
+		name     string
+		tc       config.TableConfig
+		wantName string
+		wantOK   bool
+	}{
+		{name: "rowid table with INTEGER PRIMARY KEY", tc: intPK(false), wantName: "id", wantOK: true},
+		// The INTEGER PK of a WITHOUT ROWID table isn't a rowid alias, so
+		// SQLite rejects inserts that omit it and an identity would change
+		// source semantics.
+		{name: "WITHOUT ROWID table with INTEGER PRIMARY KEY", tc: intPK(true), wantOK: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			name, ok := RowIDAliasColumn(tt.tc)
+			if ok != tt.wantOK || name != tt.wantName {
+				t.Errorf("RowIDAliasColumn() = (%q, %v), want (%q, %v)", name, ok, tt.wantName, tt.wantOK)
+			}
+		})
+	}
+}

@@ -105,7 +105,7 @@ func TestPostLoadTable_IdentitySequence(t *testing.T) {
 			defer conn.Close(ctx)
 
 			// A --resume that finds t loaded but unmarked re-runs postLoadTable.
-			if err := postLoadTable(ctx, conn, "t", tc); err != nil {
+			if err := postLoadTable(ctx, conn, "t", tc, 0); err != nil {
 				t.Fatalf("resume postLoadTable failed: %v", err)
 			}
 
@@ -167,7 +167,7 @@ func TestPostLoadTable_MissingIdentityErrors(t *testing.T) {
 		t.Fatalf("creating t: %v", err)
 	}
 
-	err = postLoadTable(ctx, conn, "t", tc)
+	err = postLoadTable(ctx, conn, "t", tc, 0)
 	if err == nil {
 		t.Fatal("expected error for rowid-alias column without an identity")
 	}

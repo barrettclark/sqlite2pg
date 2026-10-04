@@ -84,6 +84,15 @@ type TableConfig struct {
 	// generation depends on this for a deterministic CREATE TABLE.
 	ColumnOrder []string `yaml:"column_order,omitempty"`
 
+	// Autoincrement mirrors sqlitereader.TableInfo.Autoincrement. Table-level
+	// because SQLite's sqlite_sequence high-water mark is per table. Recorded
+	// so a load doesn't re-read the source schema to decide it.
+	Autoincrement bool `yaml:"autoincrement,omitempty"`
+
+	// WithoutRowID mirrors sqlitereader.TableInfo.WithoutRowID. Its INTEGER
+	// PRIMARY KEY isn't a rowid alias, so it must not get an identity.
+	WithoutRowID bool `yaml:"without_rowid,omitempty"`
+
 	// ForeignKeys are the source table's declared foreign key constraints,
 	// carried forward as-is — this is preserved source truth, not an
 	// inference, so it's applied automatically rather than requiring human

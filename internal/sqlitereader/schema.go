@@ -7,6 +7,7 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 )
 
@@ -53,6 +54,57 @@ type TableInfo struct {
 	Name        string
 	Columns     []ColumnInfo
 	ForeignKeys []ForeignKeyInfo
+
+	// Autoincrement reports whether the CREATE TABLE declares AUTOINCREMENT.
+	// PRAGMA table_info doesn't expose it, so it's read from sqlite_master.sql.
+	Autoincrement bool
+
+	// WithoutRowID reports whether the table is WITHOUT ROWID, per PRAGMA
+	// table_list. Its INTEGER PRIMARY KEY is then not a rowid alias.
+	WithoutRowID bool
+}
+
+// readWithoutRowID reports whether table is declared WITHOUT ROWID.
+func readWithoutRowID(db *sql.DB, table string) (bool, error) {
+	var (
+		schema, name, typ string
+		ncol, wr, strict  int
+	)
+	err := db.QueryRow(fmt.Sprintf(`PRAGMA table_list(%s)`, quoteIdent(table))).
+		Scan(&schema, &name, &typ, &ncol, &wr, &strict)
+	if err != nil {
+		return false, fmt.Errorf("reading table_list for %s: %w", table, err)
+	}
+	return wr != 0, nil
+}
+
+var (
+	// sqlNonCodeRE matches string literals, quoted identifiers, and comments,
+	// so a column named "autoincrement" or a comment mentioning it isn't
+	// mistaken for the keyword. Not a full tokenizer: a bare keyword inside
+	// some other construct SQLite accepts could still false-match.
+	sqlNonCodeRE    = regexp.MustCompile("(?s)'(?:[^']|'')*'|\"(?:[^\"]|\"\")*\"|`[^`]*`|\\[[^\\]]*\\]|--[^\n]*|/\\*.*?\\*/")
+	autoincrementRE = regexp.MustCompile(`(?i)\bAUTOINCREMENT\b`)
+)
+
+// hasAutoincrement reports whether createSQL declares the AUTOINCREMENT keyword.
+func hasAutoincrement(createSQL string) bool {
+	return autoincrementRE.MatchString(sqlNonCodeRE.ReplaceAllString(createSQL, " "))
+}
+
+// ReadSequenceHighWater returns the AUTOINCREMENT high-water mark SQLite
+// keeps for table, or 0 if it has none yet. The mark isn't lowered when the
+// newest rows are deleted, so it can exceed MAX(id) and must be read here.
+func ReadSequenceHighWater(db *sql.DB, table string) (int64, error) {
+	var seq int64
+	err := db.QueryRow(`SELECT seq FROM sqlite_sequence WHERE name = ?`, table).Scan(&seq)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, nil
+	}
+	if err != nil {
+		return 0, fmt.Errorf("reading sqlite_sequence for %s: %w", table, err)
+	}
+	return seq, nil
 }
 
 // SkippedTable records a table ReadSchema deliberately left out of its
@@ -130,19 +182,22 @@ func isUnsupportedVirtualTableModuleError(err error) bool {
 // error instead — issue #29: it must never look like a clean, complete
 // migration when a table went unread for an unrelated reason.
 func ReadSchema(db *sql.DB) ([]TableInfo, []SkippedTable, []SkippedForeignKey, error) {
-	rows, err := db.Query(`SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
+	rows, err := db.Query(`SELECT name, sql FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name`)
 	if err != nil {
 		return nil, nil, nil, fmt.Errorf("listing tables: %w", err)
 	}
 	defer rows.Close()
 
 	var tableNames []string
+	createSQL := map[string]string{}
 	for rows.Next() {
 		var name string
-		if err := rows.Scan(&name); err != nil {
+		var ddl sql.NullString
+		if err := rows.Scan(&name, &ddl); err != nil {
 			return nil, nil, nil, fmt.Errorf("scanning table name: %w", err)
 		}
 		tableNames = append(tableNames, name)
+		createSQL[name] = ddl.String
 	}
 	if err := rows.Err(); err != nil {
 		return nil, nil, nil, err
@@ -165,7 +220,17 @@ func ReadSchema(db *sql.DB) ([]TableInfo, []SkippedTable, []SkippedForeignKey, e
 			return nil, nil, nil, fmt.Errorf("reading foreign keys for %s: %w", name, err)
 		}
 		skippedFKs = append(skippedFKs, fkSkipped...)
-		tables = append(tables, TableInfo{Name: name, Columns: cols, ForeignKeys: fks})
+		withoutRowID, err := readWithoutRowID(db, name)
+		if err != nil {
+			return nil, nil, nil, err
+		}
+		tables = append(tables, TableInfo{
+			Name:          name,
+			Columns:       cols,
+			ForeignKeys:   fks,
+			Autoincrement: hasAutoincrement(createSQL[name]),
+			WithoutRowID:  withoutRowID,
+		})
 	}
 	return tables, skipped, skippedFKs, nil
 }

@@ -113,6 +113,8 @@ func ProfileDatabase(db *sql.DB, sourcePath string, sampleSize int, threshold fl
 		tc := config.TableConfig{
 			Include:              true,
 			Columns:              map[string]config.ColumnConfig{},
+			Autoincrement:        table.Autoincrement,
+			WithoutRowID:         table.WithoutRowID,
 			ForeignKeys:          convertForeignKeys(table.ForeignKeys),
 			SuggestedForeignKeys: suggestedFKs[table.Name],
 		}
