@@ -540,16 +540,10 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		if resume && completed[tableName] {
 			fmt.Printf("%s: skipping (already completed)\n", tableName)
 			// A run finished under a binary that seeded identities from
-			// MAX(id) never reseeded them, so reseed without reloading.
-			// Idempotent, and a no-op for tables without a rowid-alias identity.
-			if _, ok := ddl.RowIDAliasColumn(tc); ok {
-				hw, err := sourceHighWater(sourceDB, tableName, tc)
-				if err != nil {
-					return err
-				}
-				if err := postLoadTable(ctx, conn, pgTableNames[tableName], tc, hw); err != nil {
-					return err
-				}
+			// MAX(id) never reseeded them. The data is already in place, so
+			// a failed reseed warns rather than aborting before the FK step.
+			if err := reseedCompletedTable(ctx, conn, sourceDB, tableName, pgTableNames[tableName]); err != nil {
+				warnReseed(tableName, err)
 			}
 			continue
 		}
@@ -617,11 +611,10 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 					return fmt.Errorf("checking whether existing %s (Postgres table %q) has any rows: %w", tableName, pgTable, err)
 				}
 				if hasRows {
-					hw, err := sourceHighWater(sourceDB, tableName, tc)
-					if err != nil {
-						return err
+					if err := reseedCompletedTable(ctx, conn, sourceDB, tableName, pgTable); err != nil {
+						warnReseed(tableName, err)
 					}
-					if err := postLoadTable(ctx, conn, pgTable, tc, hw); err != nil {
+					if err := analyzeTable(ctx, conn, pgTable); err != nil {
 						return err
 					}
 					if err := markTableCompleted(statePath, tableName); err != nil {
@@ -650,6 +643,16 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 				}
 			}
 		}
+		// Checked before any DDL or COPY: an identity that can't hold the
+		// source's high-water mark fails the table with nothing loaded, so
+		// a retry hits the same clear error instead of a half-finished table.
+		hw, err := sourceHighWater(sourceDB, tableName, tc)
+		if err != nil {
+			return err
+		}
+		if err := checkTableIdentityRange(pgTable, tc, hw); err != nil {
+			return err
+		}
 		stmt, err := ddl.GenerateCreateTable(pgTable, tc)
 		if err != nil {
 			return fmt.Errorf("generating DDL for %s: %w", tableName, err)
@@ -660,11 +663,6 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		progress.startTable(tableName)
 		src := copywriter.NewTableSource(sourceDB, tableName, tc).OnRow(progress.row)
 		n, err := copywriter.LoadTable(ctx, conn, pgTable, tc, src)
-		if err != nil {
-			progress.abort()
-			return err
-		}
-		hw, err := sourceHighWater(sourceDB, tableName, tc)
 		if err != nil {
 			progress.abort()
 			return err
