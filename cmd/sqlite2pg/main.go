@@ -605,6 +605,9 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 					return fmt.Errorf("checking whether existing %s (Postgres table %q) has any rows: %w", tableName, pgTable, err)
 				}
 				if hasRows {
+					if err := postLoadTable(ctx, conn, pgTable, tc); err != nil {
+						return err
+					}
 					if err := markTableCompleted(statePath, tableName); err != nil {
 						return err
 					}
@@ -642,6 +645,10 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		src := copywriter.NewTableSource(sourceDB, tableName, tc).OnRow(progress.row)
 		n, err := copywriter.LoadTable(ctx, conn, pgTable, tc, src)
 		if err != nil {
+			progress.abort()
+			return err
+		}
+		if err := postLoadTable(ctx, conn, pgTable, tc); err != nil {
 			progress.abort()
 			return err
 		}
