@@ -4,7 +4,16 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path/filepath"
+	"sync"
 )
+
+// stateMu serializes read-modify-write cycles on state files within this
+// process. It does not coordinate separate sqlite2pg processes.
+var stateMu sync.Mutex
+
+// renameFile is a seam so tests can simulate a failure between the temp write and the rename.
+var renameFile = os.Rename
 
 // loadState is the schema of the per-run state file `sqlite2pg load --resume`
 // consults: which database the run provisioned (so a later --resume
@@ -42,13 +51,40 @@ func readState(path string) (loadState, error) {
 	return st, nil
 }
 
-// writeState overwrites the state file with st in full.
-func writeState(path string, st loadState) error {
+// writeState replaces the state file with st. It writes a temp file in the
+// same directory, fsyncs it, and renames it over path, so a crash leaves
+// either the old or the new file intact, never a truncated one.
+func writeState(path string, st loadState) (err error) {
 	data, err := json.Marshal(st)
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(path, data, 0o644)
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("creating temp state file for %s: %w", path, err)
+	}
+	defer func() {
+		if err != nil {
+			_ = tmp.Close()
+			_ = os.Remove(tmp.Name())
+		}
+	}()
+	if _, err = tmp.Write(data); err != nil {
+		return fmt.Errorf("writing temp state file %s: %w", tmp.Name(), err)
+	}
+	if err = tmp.Chmod(0o644); err != nil {
+		return fmt.Errorf("setting mode on %s: %w", tmp.Name(), err)
+	}
+	if err = tmp.Sync(); err != nil {
+		return fmt.Errorf("syncing temp state file %s: %w", tmp.Name(), err)
+	}
+	if err = tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp state file %s: %w", tmp.Name(), err)
+	}
+	if err = renameFile(tmp.Name(), path); err != nil {
+		return fmt.Errorf("replacing state file %s: %w", path, err)
+	}
+	return nil
 }
 
 // loadCompletedTables reads the state file and returns the set of tables
@@ -71,6 +107,8 @@ func loadCompletedTables(path string) (map[string]bool, error) {
 // Unlike pgloader's all-or-nothing LOAD DATABASE, each table's COPY is its
 // own unit of resumable work.
 func markTableCompleted(path, table string) error {
+	stateMu.Lock()
+	defer stateMu.Unlock()
 	st, err := readState(path)
 	if err != nil {
 		return err
@@ -96,6 +134,8 @@ func markTableCompleted(path, table string) error {
 // read-modify-write shape as markTableCompleted, for the same reason: a
 // later --resume needs both pieces of information intact.
 func markForeignKeysApplied(path string) error {
+	stateMu.Lock()
+	defer stateMu.Unlock()
 	st, err := readState(path)
 	if err != nil {
 		return err
