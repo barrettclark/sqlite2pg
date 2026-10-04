@@ -64,13 +64,20 @@ func resolveVerifyMode(verify, noverify bool) (verifyMode, error) {
 // data and can be time-consuming for a large import, so the safe default
 // for an unconsidered answer is to skip it rather than silently commit the
 // user to a potentially long extra pass.
-func determineVerify(mode verifyMode, in io.Reader, out io.Writer) bool {
+//
+// A read failure returns an error rather than an empty answer, so a broken
+// stdin is never reported as a deliberate skip.
+func determineVerify(mode verifyMode, in io.Reader, out io.Writer) (bool, error) {
 	switch mode {
 	case verifyAlways:
-		return true
+		return true, nil
 	case verifyNever:
-		return false
+		return false, nil
 	}
+
+	// One buffered reader for the whole decision: a fresh bufio.Reader per
+	// read can consume bytes past the first line and drop them.
+	br := bufio.NewReader(in)
 
 	// stdin is not an interactive terminal. It might carry a scripted
 	// answer (`echo y | sqlite2pg load ...`) or it might be an open pipe a
@@ -91,64 +98,60 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) bool {
 		// (issue #120 / L11) — the same lines an interactive session
 		// would show.
 		fmt.Fprint(out, "Run sqlite2pg verify now? [y/N]: ")
-		if raw, gotAnswer := readAnswerWithDeadline(f, 250*time.Millisecond); gotAnswer {
+		raw, gotAnswer, err := readAnswerWithDeadline(br, 250*time.Millisecond)
+		if err != nil {
+			return false, fmt.Errorf("reading verify answer from stdin: %w", err)
+		}
+		if gotAnswer {
 			trimmed := strings.TrimSpace(raw)
 			fmt.Fprintln(out, trimmed) // echo the answer verbatim, as an interactive terminal would
 			answer := strings.ToLower(trimmed)
-			return answer == "y" || answer == "yes"
+			return answer == "y" || answer == "yes", nil
 		}
 		fmt.Fprintln(out, "\nstdin is not a terminal and no answer was provided — skipping verification (pass --verify to run it, or --noverify to silence this)")
-		return false
+		return false, nil
 	}
 
 	fmt.Fprint(out, "Run sqlite2pg verify now? [y/N]: ")
-	line, _ := bufio.NewReader(in).ReadString('\n')
+	line, err := br.ReadString('\n')
+	if err != nil && !errors.Is(err, io.EOF) {
+		return false, fmt.Errorf("reading verify answer from stdin: %w", err)
+	}
 	answer := strings.ToLower(strings.TrimSpace(line))
-	return answer == "y" || answer == "yes"
+	return answer == "y" || answer == "yes", nil
 }
 
 // readAnswerWithDeadline reads the first line from r, giving up after d if
-// nothing arrives. determineVerify calls term.IsTerminal(f.Fd()) just
-// above, and File.Fd() puts the descriptor back into blocking mode and
-// detaches it from the runtime poller — so SetReadDeadline would silently
-// no-op here. Instead the read runs on its own goroutine and we race it
-// against a timer: a scripted answer (`echo y | sqlite2pg load ...`) or a
-// closed empty pipe returns at once; a CI runner's open, unwritten stdin
-// leaves that goroutine parked on Read until the process exits, which is
-// harmless (it's a one-shot, not a loop, and nothing else reads stdin
-// after this point).
-func readAnswerWithDeadline(r io.Reader, d time.Duration) (string, bool) {
+// nothing arrives. File.Fd() (called by term.IsTerminal) detaches the
+// descriptor from the runtime poller, so SetReadDeadline would no-op; the
+// read runs on a goroutine raced against a timer instead. A goroutine left
+// parked on a silent stdin is harmless: it is one-shot and nothing else
+// reads stdin afterwards.
+//
+// gotAnswer is false when no bytes arrived (immediate EOF or deadline). A
+// non-EOF read error is returned as err.
+func readAnswerWithDeadline(r *bufio.Reader, d time.Duration) (line string, gotAnswer bool, err error) {
 	type result struct {
 		line string
 		ok   bool
+		err  error
 	}
 	ch := make(chan result, 1)
 	go func() {
-		line, _ := bufio.NewReader(r).ReadString('\n')
-		// gotAnswer is true whenever any bytes actually arrived — checked
-		// on the raw, untrimmed line (a real blank line reads as "\n",
-		// length 1, before TrimRight below reduces it to "") — and false
-		// only when zero bytes were ever read at all: an immediate EOF
-		// (stdin redirected from /dev/null, or a closed-before-writing
-		// pipe) or any other zero-byte read error. Basing this purely on
-		// byte count, not on the specific error value, is what actually
-		// matches "any bytes arrived" — an earlier version of this fix
-		// special-cased err == io.EOF specifically, which left a
-		// non-EOF zero-byte read error still reporting gotAnswer=true,
-		// contradicting that same intent (Copilot PR #101 finding). And
-		// before that: the original fix for issue #94's audit (finding
-		// L8) used "which select case fired" alone, which correctly
-		// separated "no answer before the deadline" from "a real blank
-		// line," but didn't yet distinguish a real blank line from a
-		// genuine zero-byte EOF at all.
-		ch <- result{strings.TrimRight(line, "\r\n"), line != ""}
+		raw, readErr := r.ReadString('\n')
+		if readErr != nil && !errors.Is(readErr, io.EOF) {
+			ch <- result{err: readErr}
+			return
+		}
+		// Checked on the raw line: a real blank line is "\n", length 1.
+		ch <- result{strings.TrimRight(raw, "\r\n"), raw != "", nil}
 	}()
 
 	select {
 	case res := <-ch:
-		return res.line, res.ok
+		return res.line, res.ok, res.err
 	case <-time.After(d):
-		return "", false
+		return "", false, nil
 	}
 }
 
@@ -171,7 +174,11 @@ func readAnswerWithDeadline(r io.Reader, d time.Duration) (string, bool) {
 // message printed makes the LOAD-succeeded/VERIFICATION-failed distinction
 // explicit for exactly that reason.
 func runPostLoadVerify(ctx context.Context, cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, mode verifyMode, in io.Reader, out io.Writer) error {
-	if !determineVerify(mode, in, out) {
+	verify, err := determineVerify(mode, in, out)
+	if err != nil {
+		return fmt.Errorf("post-load verification prompt: %w", err)
+	}
+	if !verify {
 		return nil
 	}
 

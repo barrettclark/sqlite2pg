@@ -1,7 +1,9 @@
 package main
 
 import (
+	"bufio"
 	"errors"
+	"io"
 	"os"
 	"strings"
 	"testing"
@@ -52,15 +54,26 @@ func TestResolveVerifyMode_NeitherFlagDefaultsToPrompt(t *testing.T) {
 
 // --- determineVerify (the interactive stdin prompt) ---------------------
 
+// mustDetermineVerify wraps determineVerify for tests that expect no read
+// error. It reports via t.Error, so it is safe to call from goroutines.
+func mustDetermineVerify(t *testing.T, mode verifyMode, in io.Reader, out io.Writer) bool {
+	t.Helper()
+	got, err := determineVerify(mode, in, out)
+	if err != nil {
+		t.Errorf("determineVerify: unexpected error: %v", err)
+	}
+	return got
+}
+
 func TestDetermineVerify_NonPromptModesNeverTouchStdin(t *testing.T) {
 	// A reader that errors if read from at all — proves verifyAlways and
 	// verifyNever never consult stdin.
 	poison := &poisonReader{t: t}
 
-	if !determineVerify(verifyAlways, poison, &strings.Builder{}) {
+	if !mustDetermineVerify(t, verifyAlways, poison, &strings.Builder{}) {
 		t.Error("expected verifyAlways to report true without reading stdin")
 	}
-	if determineVerify(verifyNever, poison, &strings.Builder{}) {
+	if mustDetermineVerify(t, verifyNever, poison, &strings.Builder{}) {
 		t.Error("expected verifyNever to report false without reading stdin")
 	}
 }
@@ -76,7 +89,7 @@ func TestDetermineVerify_PromptModeParsesAffirmativeAnswers(t *testing.T) {
 	affirmative := []string{"y", "Y", "yes", "Yes", "YES", "  y  \n", "y\r\n"}
 	for _, answer := range affirmative {
 		var out strings.Builder
-		got := determineVerify(verifyPrompt, strings.NewReader(answer), &out)
+		got := mustDetermineVerify(t, verifyPrompt, strings.NewReader(answer), &out)
 		if !got {
 			t.Errorf("input %q: expected determineVerify to return true", answer)
 		}
@@ -90,7 +103,7 @@ func TestDetermineVerify_PromptModeDefaultsToNoOnAnythingElse(t *testing.T) {
 	negativeOrAmbiguous := []string{"n", "N", "no", "", "\n", "maybe", "yesnt", "yep"}
 	for _, answer := range negativeOrAmbiguous {
 		var out strings.Builder
-		got := determineVerify(verifyPrompt, strings.NewReader(answer), &out)
+		got := mustDetermineVerify(t, verifyPrompt, strings.NewReader(answer), &out)
 		if got {
 			t.Errorf("input %q: expected determineVerify to return false (safe default)", answer)
 		}
@@ -118,7 +131,7 @@ func TestDetermineVerify_NonTerminalFileSkipsPromptWithoutBlocking(t *testing.T)
 
 	done := make(chan bool, 1)
 	go func() {
-		done <- determineVerify(verifyPrompt, r, &strings.Builder{})
+		done <- mustDetermineVerify(t, verifyPrompt, r, &strings.Builder{})
 	}()
 
 	select {
@@ -150,7 +163,7 @@ func TestDetermineVerify_NonTerminalPipeHonoursAScriptedAnswer(t *testing.T) {
 	w.Close()
 
 	done := make(chan bool, 1)
-	go func() { done <- determineVerify(verifyPrompt, r, &strings.Builder{}) }()
+	go func() { done <- mustDetermineVerify(t, verifyPrompt, r, &strings.Builder{}) }()
 
 	select {
 	case got := <-done:
@@ -175,7 +188,7 @@ func TestDetermineVerify_NonTerminalPipeSaysWhyItSkipped(t *testing.T) {
 
 	var out strings.Builder
 	done := make(chan bool, 1)
-	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+	go func() { done <- mustDetermineVerify(t, verifyPrompt, r, &out) }()
 
 	select {
 	case got := <-done:
@@ -198,7 +211,7 @@ func TestDetermineVerify_NonTerminalPipeSaysWhyItSkipped(t *testing.T) {
 type zeroByteErrReader struct{}
 
 func (zeroByteErrReader) Read([]byte) (int, error) {
-	return 0, errors.New("simulated read error")
+	return 0, errSimulatedRead
 }
 
 // TestReadAnswerWithDeadline_NonEOFZeroByteErrorStillReportsNoAnswer is a
@@ -208,9 +221,54 @@ func (zeroByteErrReader) Read([]byte) (int, error) {
 // reported gotAnswer=true — contradicting the "true whenever any bytes
 // actually arrived" intent the code's own comment stated.
 func TestReadAnswerWithDeadline_NonEOFZeroByteErrorStillReportsNoAnswer(t *testing.T) {
-	_, gotAnswer := readAnswerWithDeadline(zeroByteErrReader{}, 2*time.Second)
+	_, gotAnswer, err := readAnswerWithDeadline(bufio.NewReader(zeroByteErrReader{}), 2*time.Second)
 	if gotAnswer {
-		t.Error("expected a non-EOF, zero-byte read error to report gotAnswer=false, same as an immediate EOF")
+		t.Error("expected a non-EOF, zero-byte read error to report gotAnswer=false")
+	}
+	if !errors.Is(err, errSimulatedRead) {
+		t.Errorf("expected the read error to be returned, got %v", err)
+	}
+}
+
+// errSimulatedRead is the sentinel returned by the failing readers below.
+var errSimulatedRead = errors.New("simulated read error")
+
+// failingReader yields data, then fails with errSimulatedRead instead of EOF.
+type failingReader struct {
+	data string
+}
+
+func (r *failingReader) Read(p []byte) (int, error) {
+	if r.data == "" {
+		return 0, errSimulatedRead
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// TestDetermineVerify_ReadErrorIsReported covers issue #14: a stdin read
+// failure must surface as an error, not as an empty answer that skips
+// verification with exit 0.
+func TestDetermineVerify_ReadErrorIsReported(t *testing.T) {
+	tests := []struct {
+		name string
+		in   io.Reader
+	}{
+		{name: "error before any bytes", in: zeroByteErrReader{}},
+		{name: "error after a partial answer", in: &failingReader{data: "y"}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out strings.Builder
+			got, err := determineVerify(verifyPrompt, tt.in, &out)
+			if !errors.Is(err, errSimulatedRead) {
+				t.Fatalf("expected errSimulatedRead, got %v", err)
+			}
+			if got {
+				t.Error("expected verification not to run when the read fails")
+			}
+		})
 	}
 }
 
@@ -232,7 +290,7 @@ func TestDetermineVerify_NonTerminalPipeImmediateEOFStillSaysNoAnswer(t *testing
 
 	var out strings.Builder
 	done := make(chan bool, 1)
-	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+	go func() { done <- mustDetermineVerify(t, verifyPrompt, r, &out) }()
 
 	select {
 	case got := <-done:
@@ -269,7 +327,7 @@ func TestDetermineVerify_NonTerminalPipeDistinguishesEmptyAnswerFromNoAnswer(t *
 
 	var out strings.Builder
 	done := make(chan bool, 1)
-	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+	go func() { done <- mustDetermineVerify(t, verifyPrompt, r, &out) }()
 
 	select {
 	case got := <-done:
