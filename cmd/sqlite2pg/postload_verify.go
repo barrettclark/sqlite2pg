@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"context"
 	"database/sql"
 	"errors"
@@ -75,10 +74,6 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) (bool, error)
 		return false, nil
 	}
 
-	// One buffered reader for the whole decision: a fresh bufio.Reader per
-	// read can consume bytes past the first line and drop them.
-	br := bufio.NewReader(in)
-
 	// stdin is not an interactive terminal. It might carry a scripted
 	// answer (`echo y | sqlite2pg load ...`) or it might be an open pipe a
 	// CI runner never writes to and never closes — a plain blocking read
@@ -98,7 +93,7 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) (bool, error)
 		// (issue #120 / L11) — the same lines an interactive session
 		// would show.
 		fmt.Fprint(out, "Run sqlite2pg verify now? [y/N]: ")
-		raw, gotAnswer, err := readAnswerWithDeadline(br, 250*time.Millisecond)
+		raw, gotAnswer, err := readAnswerWithDeadline(in, 250*time.Millisecond)
 		if err != nil {
 			return false, fmt.Errorf("reading verify answer from stdin: %w", err)
 		}
@@ -113,7 +108,7 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) (bool, error)
 	}
 
 	fmt.Fprint(out, "Run sqlite2pg verify now? [y/N]: ")
-	line, err := br.ReadString('\n')
+	line, err := readLine(in)
 	if err != nil && !errors.Is(err, io.EOF) {
 		return false, fmt.Errorf("reading verify answer from stdin: %w", err)
 	}
@@ -130,7 +125,7 @@ func determineVerify(mode verifyMode, in io.Reader, out io.Writer) (bool, error)
 //
 // gotAnswer is false when no bytes arrived (immediate EOF or deadline). A
 // non-EOF read error is returned as err.
-func readAnswerWithDeadline(r *bufio.Reader, d time.Duration) (line string, gotAnswer bool, err error) {
+func readAnswerWithDeadline(r io.Reader, d time.Duration) (line string, gotAnswer bool, err error) {
 	type result struct {
 		line string
 		ok   bool
@@ -138,7 +133,7 @@ func readAnswerWithDeadline(r *bufio.Reader, d time.Duration) (line string, gotA
 	}
 	ch := make(chan result, 1)
 	go func() {
-		raw, readErr := r.ReadString('\n')
+		raw, readErr := readLine(r)
 		if readErr != nil && !errors.Is(readErr, io.EOF) {
 			ch <- result{err: readErr}
 			return
@@ -152,6 +147,27 @@ func readAnswerWithDeadline(r *bufio.Reader, d time.Duration) (line string, gotA
 		return res.line, res.ok, res.err
 	case <-time.After(d):
 		return "", false, nil
+	}
+}
+
+// readLine is ReadString('\n') without bufio: it reads one byte at a time so
+// nothing is read past the newline, and a non-EOF error is returned even when
+// it arrives alongside data (bufio would hold that error for a later read and
+// report a complete line with a nil error).
+func readLine(r io.Reader) (string, error) {
+	var buf [1]byte
+	var line []byte
+	for {
+		n, err := r.Read(buf[:])
+		if n == 1 {
+			line = append(line, buf[0])
+			if buf[0] == '\n' {
+				return string(line), nil
+			}
+		}
+		if err != nil {
+			return string(line), err
+		}
 	}
 }
 

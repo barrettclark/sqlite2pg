@@ -247,7 +247,20 @@ func (r *failingReader) Read(p []byte) (int, error) {
 	return n, nil
 }
 
-// TestDetermineVerify_ReadErrorIsReported covers issue #14: a stdin read
+// bytesWithErrReader returns all of data and err together on the first Read
+// that has room for them, then err on every later Read.
+type bytesWithErrReader struct {
+	data string
+	err  error
+}
+
+func (r *bytesWithErrReader) Read(p []byte) (int, error) {
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, r.err
+}
+
+// TestDetermineVerify_ReadErrorIsReported covers issue #186: a stdin read
 // failure must surface as an error, not as an empty answer that skips
 // verification with exit 0.
 func TestDetermineVerify_ReadErrorIsReported(t *testing.T) {
@@ -257,6 +270,7 @@ func TestDetermineVerify_ReadErrorIsReported(t *testing.T) {
 	}{
 		{name: "error before any bytes", in: zeroByteErrReader{}},
 		{name: "error after a partial answer", in: &failingReader{data: "y"}},
+		{name: "complete answer returned with error", in: &bytesWithErrReader{data: "y\n", err: errSimulatedRead}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
