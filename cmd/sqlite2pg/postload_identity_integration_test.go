@@ -12,12 +12,14 @@ import (
 	"context"
 	"database/sql"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
 	"github.com/jackc/pgx/v5"
 
 	"sqlite2pg/internal/config"
+	"sqlite2pg/internal/ddl"
 )
 
 func TestPostLoadTable_IdentitySequence(t *testing.T) {
@@ -173,5 +175,77 @@ func TestPostLoadTable_MissingIdentityErrors(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "t.id") {
 		t.Errorf("error should name table and column t.id, got: %v", err)
+	}
+}
+
+func TestPostLoadTable_HighWaterAboveIdentityRange(t *testing.T) {
+	tests := []struct {
+		name      string
+		target    string
+		highWater int64
+		colMax    string
+	}{
+		{name: "integer", target: "integer", highWater: 2147483648, colMax: "2147483647"},
+		{name: "smallint", target: "smallint", highWater: 32768, colMax: "32767"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			pgURL := identityTestPgURL(t)
+
+			tc := config.TableConfig{
+				Include:     true,
+				ColumnOrder: []string{"id"},
+				Columns: map[string]config.ColumnConfig{
+					"id": identityColumns("INTEGER", tt.target, 1),
+				},
+			}
+			dir := t.TempDir()
+			statePath := filepath.Join(dir, "state.json")
+			connCfg, err := connectForLoad(ctx, pgURL, filepath.Join(dir, "range.db"), false, statePath)
+			if err != nil {
+				t.Skipf("no Postgres available at %s: %v", pgURL, err)
+			}
+			dbName := connCfg.Database
+			t.Cleanup(func() {
+				maintCfg, err := pgx.ParseConfig(pgURL)
+				if err != nil {
+					return
+				}
+				maintCfg.Database = "postgres"
+				conn, err := pgx.ConnectConfig(ctx, maintCfg)
+				if err != nil {
+					return
+				}
+				defer conn.Close(ctx)
+				conn.Exec(ctx, "DROP DATABASE IF EXISTS "+pgx.Identifier{dbName}.Sanitize())
+			})
+
+			conn, err := pgx.ConnectConfig(ctx, connCfg)
+			if err != nil {
+				t.Fatalf("connecting: %v", err)
+			}
+			defer conn.Close(ctx)
+			stmt, err := ddl.GenerateCreateTable("t", tc)
+			if err != nil {
+				t.Fatalf("GenerateCreateTable: %v", err)
+			}
+			if _, err := conn.Exec(ctx, stmt); err != nil {
+				t.Fatalf("creating t: %v", err)
+			}
+
+			err = postLoadTable(ctx, conn, "t", tc, tt.highWater)
+			if err == nil {
+				t.Fatal("expected error for a high-water mark above the identity column's range")
+			}
+			for _, want := range []string{"t.id", tt.target, strconv.FormatInt(tt.highWater, 10), tt.colMax} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("error should contain %q, got: %v", want, err)
+				}
+			}
+			if strings.Contains(err.Error(), "out of bounds") {
+				t.Errorf("error should be the clear range check, not the Postgres setval message: %v", err)
+			}
+		})
 	}
 }

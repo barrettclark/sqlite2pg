@@ -119,8 +119,12 @@ func TestAutoincrement_InsertWithoutIDAfterLoad(t *testing.T) {
 		setup []string
 		// wantNext is SQLite's next AUTOINCREMENT id: high-water mark + 1.
 		wantNext int64
+		// predatesFlag clears the Autoincrement flag, as a config generated
+		// before the flag existed would have it.
+		predatesFlag bool
 	}{
 		{name: "newest rows deleted", setup: tenRowsDeleteNewest, wantNext: 11},
+		{name: "newest rows deleted, config predates autoincrement flag", setup: tenRowsDeleteNewest, wantNext: 11, predatesFlag: true},
 		{name: "never inserted", setup: nil, wantNext: 1},
 		{
 			name: "all rows deleted",
@@ -134,6 +138,9 @@ func TestAutoincrement_InsertWithoutIDAfterLoad(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), tt.setup)
+			if tt.predatesFlag {
+				clearAutoincrementFlag(cfg)
+			}
 			if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
 				t.Fatalf("load failed: %v", err)
 			}
@@ -161,4 +168,38 @@ func TestAutoincrement_ResumeReseedsFromHighWater(t *testing.T) {
 	if got := insertWithoutID(t, connCfg); got != 11 {
 		t.Errorf("first generated id after resume = %d, want 11", got)
 	}
+}
+
+// TestAutoincrement_ResumeReseedsCompletedTable: a run finished under a binary
+// that seeded from MAX(id) leaves the sequence at 9. A --resume must reseed
+// that already-completed table from sqlite_sequence, not skip it.
+func TestAutoincrement_ResumeReseedsCompletedTable(t *testing.T) {
+	ctx := context.Background()
+	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), tenRowsDeleteNewest)
+	clearAutoincrementFlag(cfg)
+	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+
+	conn, err := pgx.ConnectConfig(ctx, connCfg)
+	if err != nil {
+		t.Fatalf("connecting: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `SELECT setval(pg_get_serial_sequence('t', 'id'), 8)`); err != nil {
+		t.Fatalf("simulating pre-fix sequence: %v", err)
+	}
+	conn.Close(ctx)
+
+	if err := executeLoad(cfg, connCfg, true, statePath); err != nil {
+		t.Fatalf("resume failed: %v", err)
+	}
+	if got := insertWithoutID(t, connCfg); got != 11 {
+		t.Errorf("first generated id after resume = %d, want 11", got)
+	}
+}
+
+func clearAutoincrementFlag(cfg *config.MigrationConfig) {
+	tc := cfg.Tables["t"]
+	tc.Autoincrement = false
+	cfg.Tables["t"] = tc
 }

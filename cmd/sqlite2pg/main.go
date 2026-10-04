@@ -502,6 +502,17 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		}
 	}
 
+	// The identifier CREATE TABLE and COPY must actually target for each
+	// table (see ddl.PostgresTableNames/issue #44) — computed once here
+	// (schema-wide, over the full config, not just the tables this run
+	// will touch) so DDL, COPY, and the foreign key/index step below all
+	// agree on the same disambiguated name for the same table. tableName
+	// (the source name) is still what's used for progress reporting, the
+	// state file, and error messages below — those stay human-readable
+	// and are unaffected by truncation since source table names are never
+	// themselves ambiguous, only their Postgres-truncated form can be.
+	pgTableNames := ddl.PostgresTableNames(cfg)
+
 	// Count every table this run will actually load up front, so the
 	// progress bar has a real grand total from its very first draw
 	// instead of growing as tables are discovered. Tables already
@@ -528,22 +539,23 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		}
 		if resume && completed[tableName] {
 			fmt.Printf("%s: skipping (already completed)\n", tableName)
+			// A run finished under a binary that seeded identities from
+			// MAX(id) never reseeded them, so reseed without reloading.
+			// Idempotent, and a no-op for tables without a rowid-alias identity.
+			if _, ok := ddl.RowIDAliasColumn(tc); ok {
+				hw, err := sourceHighWater(sourceDB, tableName, tc)
+				if err != nil {
+					return err
+				}
+				if err := postLoadTable(ctx, conn, pgTableNames[tableName], tc, hw); err != nil {
+					return err
+				}
+			}
 			continue
 		}
 		tableNames = append(tableNames, tableName)
 	}
 	sort.Strings(tableNames)
-
-	// The identifier CREATE TABLE and COPY must actually target for each
-	// table (see ddl.PostgresTableNames/issue #44) — computed once here
-	// (schema-wide, over the full config, not just the tables this run
-	// will touch) so DDL, COPY, and the foreign key/index step below all
-	// agree on the same disambiguated name for the same table. tableName
-	// (the source name) is still what's used for progress reporting, the
-	// state file, and error messages below — those stay human-readable
-	// and are unaffected by truncation since source table names are never
-	// themselves ambiguous, only their Postgres-truncated form can be.
-	pgTableNames := ddl.PostgresTableNames(cfg)
 
 	var totalRows int64
 	sourceRowCounts := make(map[string]int64, len(tableNames))

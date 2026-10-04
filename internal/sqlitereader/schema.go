@@ -70,7 +70,7 @@ func readWithoutRowID(db *sql.DB, table string) (bool, error) {
 		schema, name, typ string
 		ncol, wr, strict  int
 	)
-	err := db.QueryRow(fmt.Sprintf(`PRAGMA table_list(%s)`, quoteIdent(table))).
+	err := db.QueryRow(fmt.Sprintf(`PRAGMA main.table_list(%s)`, quoteIdent(table))).
 		Scan(&schema, &name, &typ, &ncol, &wr, &strict)
 	if err != nil {
 		return false, fmt.Errorf("reading table_list for %s: %w", table, err)
@@ -96,6 +96,15 @@ func hasAutoincrement(createSQL string) bool {
 // keeps for table, or 0 if it has none yet. The mark isn't lowered when the
 // newest rows are deleted, so it can exceed MAX(id) and must be read here.
 func ReadSequenceHighWater(db *sql.DB, table string) (int64, error) {
+	// SQLite creates sqlite_sequence with the first AUTOINCREMENT table, so a
+	// source can declare AUTOINCREMENT without having the table.
+	var present int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'`).Scan(&present); err != nil {
+		return 0, fmt.Errorf("checking for sqlite_sequence: %w", err)
+	}
+	if present == 0 {
+		return 0, nil
+	}
 	var seq int64
 	err := db.QueryRow(`SELECT seq FROM sqlite_sequence WHERE name = ?`, table).Scan(&seq)
 	if errors.Is(err, sql.ErrNoRows) {
