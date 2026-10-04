@@ -106,10 +106,10 @@ func TestResume_CompletedTableWarnsOnRangeAndFinishes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume should finish despite the reseed warning, got: %v", err)
 	}
-	assertOverflowWarning(t, stderr)
+	assertOverflowWarning(t, stderr, "sequence left unchanged")
 	assertFKsApplied(t, statePath)
 	if got := insertWithoutID(t, connCfg); got != 6 {
-		t.Errorf("first generated id after resume = %d, want 6 (sequence advanced to loaded maximum)", got)
+		t.Errorf("first generated id after resume = %d, want 6", got)
 	}
 }
 
@@ -125,13 +125,21 @@ func TestResume_HasRowsUnmarkedOverflowMarksCompleted(t *testing.T) {
 	if err := writeState(statePath, loadState{}); err != nil {
 		t.Fatalf("clearing state: %v", err)
 	}
+	conn := pgConnFor(t, connCfg)
+	var seq string
+	if err := conn.QueryRow(context.Background(), `SELECT pg_get_serial_sequence('"t"', 'id')`).Scan(&seq); err != nil {
+		t.Fatalf("looking up sequence: %v", err)
+	}
+	if _, err := conn.Exec(context.Background(), `SELECT setval($1::regclass, 1, true)`, seq); err != nil {
+		t.Fatalf("setting sequence behind the loaded maximum: %v", err)
+	}
 	overflowSource(t, cfg.Source.Path)
 
 	stderr, err := withStderr(t, func() error { return executeLoad(cfg, connCfg, true, statePath) })
 	if err != nil {
 		t.Fatalf("resume should finish despite the reseed warning, got: %v", err)
 	}
-	assertOverflowWarning(t, stderr)
+	assertOverflowWarning(t, stderr, "sequence set to 5")
 	done, err := loadCompletedTables(statePath)
 	if err != nil {
 		t.Fatalf("reading state: %v", err)
@@ -145,10 +153,61 @@ func TestResume_HasRowsUnmarkedOverflowMarksCompleted(t *testing.T) {
 	}
 }
 
-// TestReseedCompletedTable_DriftWithUnincludedAliasErrors: a rowid-alias
-// column that isn't among the included Postgres columns has no name to warn
-// about, so the drift check must error rather than print "t.:".
-func TestReseedCompletedTable_DriftWithUnincludedAliasErrors(t *testing.T) {
+// TestResume_OverflowNeverMovesSequenceBackward: the app has issued ids 6..10
+// and deleted them, so MAX(id) is 5 but the sequence is at 10. An overflowing
+// resume must leave the sequence there, not reset it to 5.
+func TestResume_OverflowNeverMovesSequenceBackward(t *testing.T) {
+	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), fiveRowsSetup)
+	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	conn := pgConnFor(t, connCfg)
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, `INSERT INTO "t" (label) SELECT 'app' FROM generate_series(1, 5)`); err != nil {
+		t.Fatalf("app inserts: %v", err)
+	}
+	if _, err := conn.Exec(ctx, `DELETE FROM "t" WHERE id > 5`); err != nil {
+		t.Fatalf("app deletes: %v", err)
+	}
+	overflowSource(t, cfg.Source.Path)
+
+	stderr, err := withStderr(t, func() error { return executeLoad(cfg, connCfg, true, statePath) })
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	assertOverflowWarning(t, stderr, "sequence left unchanged")
+	if got := insertWithoutID(t, connCfg); got != 11 {
+		t.Errorf("first generated id after resume = %d, want 11 (sequence must not move backward)", got)
+	}
+}
+
+// TestResume_EmptyTableOverflowSaysUnchanged: with no loaded rows and an
+// overflowing high-water mark, nothing is written, and the warning must not
+// claim the sequence was set.
+func TestResume_EmptyTableOverflowSaysUnchanged(t *testing.T) {
+	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), nil)
+	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	overflowSource(t, cfg.Source.Path)
+
+	stderr, err := withStderr(t, func() error { return executeLoad(cfg, connCfg, true, statePath) })
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	assertOverflowWarning(t, stderr, "sequence left unchanged")
+	if strings.Contains(stderr, "sequence set to") {
+		t.Errorf("warning claims the sequence was set on an empty table: %q", stderr)
+	}
+	if got := insertWithoutID(t, connCfg); got != 1 {
+		t.Errorf("first generated id on empty table after resume = %d, want 1", got)
+	}
+}
+
+// TestReseedCompletedTable_AliasExcludedFromColumnOrderIsNotDrift: a PK
+// column left out of ColumnOrder isn't created, so the config doesn't claim
+// an alias for it, and a table without an identity is not drift.
+func TestReseedCompletedTable_AliasExcludedFromColumnOrderIsNotDrift(t *testing.T) {
 	connCfg, err := connectForLoad(context.Background(), identityTestPgURL(t), filepath.Join(t.TempDir(), "drift.db"), false, filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
 		t.Skipf("no Postgres available: %v", err)
@@ -169,11 +228,11 @@ func TestReseedCompletedTable_DriftWithUnincludedAliasErrors(t *testing.T) {
 	stderr, err := withStderr(t, func() error {
 		return reseedCompletedTable(context.Background(), conn, nil, "t", "t", tc)
 	})
-	if err == nil || !strings.Contains(err.Error(), "not among the included Postgres columns") {
-		t.Fatalf("expected an error for the unnamed alias column, got: %v", err)
+	if err != nil {
+		t.Fatalf("expected no error, got: %v", err)
 	}
-	if strings.Contains(stderr, "warning") {
-		t.Errorf("expected no warning when the column name is unknown, got: %q", stderr)
+	if stderr != "" {
+		t.Errorf("expected no warning, got: %q", stderr)
 	}
 }
 
@@ -197,9 +256,9 @@ func overflowSource(t *testing.T, path string) {
 	}
 }
 
-func assertOverflowWarning(t *testing.T, stderr string) {
+func assertOverflowWarning(t *testing.T, stderr, note string) {
 	t.Helper()
-	for _, want := range []string{"warning:", "t.id", "2147483648", "2147483647", "sequence advanced to the loaded maximum only", "retype the column to bigint and re-run"} {
+	for _, want := range []string{"warning:", "t.id", "2147483648", "2147483647", note, "retype the column to bigint and re-run"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("warning should contain %q, got: %q", want, stderr)
 		}

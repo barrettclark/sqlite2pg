@@ -5,6 +5,7 @@ package ddl
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sort"
 	"strings"
 
@@ -114,6 +115,10 @@ func RowIDAliasColumn(tc config.TableConfig) (string, bool) {
 		}
 	}
 	if pkCount != 1 {
+		return "", false
+	}
+	// A PK column left out of ColumnOrder isn't created, so it can't be the alias.
+	if !slices.Contains(IncludedColumns(tc), pkName) {
 		return "", false
 	}
 	col := tc.Columns[pkName]

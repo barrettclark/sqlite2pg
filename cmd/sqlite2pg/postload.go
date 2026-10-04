@@ -28,6 +28,8 @@ var identityMax = map[string]int64{
 type identityRangeError struct {
 	pgTable, column, typ string
 	highWater, max       int64
+	// note says what reseedIdentity did to the sequence, for the warning.
+	note string
 }
 
 func (e *identityRangeError) Error() string {
@@ -36,6 +38,13 @@ func (e *identityRangeError) Error() string {
 }
 
 func checkIdentityRange(pgTable, col, typ string, highWater int64) error {
+	if e := identityOverflow(pgTable, col, typ, highWater); e != nil {
+		return e
+	}
+	return nil
+}
+
+func identityOverflow(pgTable, col, typ string, highWater int64) *identityRangeError {
 	colMax, ok := identityMax[strings.ToLower(typ)]
 	if !ok || highWater <= colMax {
 		return nil
@@ -65,11 +74,12 @@ func checkTableIdentityRange(pgTable string, tc config.TableConfig, highWater in
 }
 
 // reseedIdentity advances the identity sequence of pgTable.col past the loaded
-// rows and past highWater. Idempotent. When highWater doesn't fit typ, the
-// sequence still moves to the loaded maximum and the identityRangeError is
-// returned for the caller to report.
+// rows and past highWater. It never moves the sequence backward: the app may
+// already have issued ids past the loaded maximum. When highWater doesn't fit
+// typ, the loaded maximum still applies and the identityRangeError is returned
+// with what was done to the sequence.
 func reseedIdentity(ctx context.Context, conn *pgx.Conn, pgTable, col, typ string, highWater int64) error {
-	rangeErr := checkIdentityRange(pgTable, col, typ, highWater)
+	rangeErr := identityOverflow(pgTable, col, typ, highWater)
 	if rangeErr != nil {
 		highWater = 0
 	}
@@ -83,20 +93,36 @@ func reseedIdentity(ctx context.Context, conn *pgx.Conn, pgTable, col, typ strin
 	if seq == nil {
 		return fmt.Errorf("%s.%s: expected an identity sequence for rowid-alias column, found none", pgTable, col)
 	}
-	// Advance via is_called rather than MAX+1, which overflows at the
-	// column type's maximum (2147483647 for integer). MAX is NULL on an
-	// empty table and GREATEST ignores NULLs; highWater is 0 for a table
-	// with no sqlite_sequence row. With nothing loaded or recorded the
-	// value is 1 with is_called false, so the first nextval returns 1.
-	// $2::bigint types the parameter as bigint; the range check above
-	// keeps setval from rejecting it for the column's sequence type.
-	q := fmt.Sprintf(
-		"SELECT setval($1, GREATEST(MAX(%[1]s), $2::bigint, 1), GREATEST(MAX(%[1]s), $2::bigint) >= 1) FROM %[2]s",
-		pgx.Identifier{col}.Sanitize(), qualified)
-	if _, err := conn.Exec(ctx, q, *seq, highWater); err != nil {
-		return fmt.Errorf("resetting identity sequence for %s: %w", pgTable, err)
+	// MAX is NULL on an empty table; GREATEST would ignore it, so treat it as 0.
+	var loaded *int64
+	if err := conn.QueryRow(ctx, fmt.Sprintf("SELECT MAX(%s) FROM %s", pgx.Identifier{col}.Sanitize(), qualified)).Scan(&loaded); err != nil {
+		return fmt.Errorf("reading loaded maximum of %s.%s: %w", pgTable, col, err)
 	}
-	return rangeErr
+	target := highWater
+	if loaded != nil && *loaded > target {
+		target = *loaded
+	}
+	note := "sequence left unchanged"
+	// Below 1 nothing was loaded or recorded, and the sequence's first
+	// nextval already returns 1.
+	if target >= 1 {
+		var pos *int64
+		if err := conn.QueryRow(ctx, "SELECT pg_sequence_last_value($1::regclass)", *seq).Scan(&pos); err != nil {
+			return fmt.Errorf("reading identity sequence position for %s.%s: %w", pgTable, col, err)
+		}
+		// pos is NULL until the sequence has been called.
+		if pos == nil || *pos < target {
+			if _, err := conn.Exec(ctx, "SELECT setval($1::regclass, $2::bigint, true)", *seq, target); err != nil {
+				return fmt.Errorf("resetting identity sequence for %s: %w", pgTable, err)
+			}
+			note = fmt.Sprintf("sequence set to %d", target)
+		}
+	}
+	if rangeErr != nil {
+		rangeErr.note = note
+		return rangeErr
+	}
+	return nil
 }
 
 // liveIdentityColumn returns pgTable's identity column and its type as the
@@ -127,9 +153,6 @@ func reseedCompletedTable(ctx context.Context, conn *pgx.Conn, sourceDB *sql.DB,
 	if !ok {
 		if name, alias := ddl.RowIDAliasColumn(tc); alias {
 			col := ddl.PostgresColumnNames(tc)[name]
-			if col == "" {
-				return fmt.Errorf("%s: rowid-alias column %q is not among the included Postgres columns; cannot check its identity", pgTable, name)
-			}
 			fmt.Fprintf(os.Stderr, "warning: %s.%s: config declares a rowid-alias identity but the live table has none; sequence not reseeded\n",
 				pgTable, col)
 		}
@@ -149,7 +172,7 @@ func reseedCompletedTable(ctx context.Context, conn *pgx.Conn, sourceDB *sql.DB,
 func tolerateOverflow(err error) error {
 	var rangeErr *identityRangeError
 	if err != nil && errors.As(err, &rangeErr) {
-		fmt.Fprintf(os.Stderr, "warning: %v; sequence advanced to the loaded maximum only; retype the column to bigint and re-run\n", err)
+		fmt.Fprintf(os.Stderr, "warning: %v; %s; retype the column to bigint and re-run\n", err, rangeErr.note)
 		return nil
 	}
 	return err
