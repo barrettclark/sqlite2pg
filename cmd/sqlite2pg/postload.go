@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"math"
 	"os"
+	"strings"
 
 	"github.com/jackc/pgx/v5"
 
@@ -35,7 +36,7 @@ func (e *identityRangeError) Error() string {
 }
 
 func checkIdentityRange(pgTable, col, typ string, highWater int64) error {
-	colMax, ok := identityMax[typ]
+	colMax, ok := identityMax[strings.ToLower(typ)]
 	if !ok || highWater <= colMax {
 		return nil
 	}
@@ -113,11 +114,19 @@ func liveIdentityColumn(ctx context.Context, conn *pgx.Conn, pgTable string) (co
 
 // reseedCompletedTable reseeds a table whose data is already in place, using
 // the identity the catalog has rather than the config's view of it. A table
-// with no identity is left alone.
-func reseedCompletedTable(ctx context.Context, conn *pgx.Conn, sourceDB *sql.DB, tableName, pgTable string) error {
+// the config expects to have an identity but the catalog doesn't is drift
+// (nothing in this tool produces it), so it's reported rather than skipped.
+func reseedCompletedTable(ctx context.Context, conn *pgx.Conn, sourceDB *sql.DB, tableName, pgTable string, tc config.TableConfig) error {
 	col, typ, ok, err := liveIdentityColumn(ctx, conn, pgTable)
-	if err != nil || !ok {
+	if err != nil {
 		return err
+	}
+	if !ok {
+		if name, alias := ddl.RowIDAliasColumn(tc); alias {
+			fmt.Fprintf(os.Stderr, "warning: %s.%s: config declares a rowid-alias identity but the live table has none; sequence not reseeded\n",
+				pgTable, ddl.PostgresColumnNames(tc)[name])
+		}
+		return nil
 	}
 	hw, err := sqlitereader.ReadSequenceHighWater(sourceDB, tableName)
 	if err != nil {
@@ -126,16 +135,17 @@ func reseedCompletedTable(ctx context.Context, conn *pgx.Conn, sourceDB *sql.DB,
 	return reseedIdentity(ctx, conn, pgTable, col, typ, hw)
 }
 
-// warnReseed reports a failed reseed of a table whose data is already loaded.
-// The data is in place, so the run continues rather than aborting before the
-// foreign key step.
-func warnReseed(tableName string, err error) {
+// tolerateOverflow warns and returns nil for an identityRangeError, since
+// the table's data is already in place and only its identity is stuck.
+// Any other error is returned unchanged, so the caller stops before the
+// table is marked completed.
+func tolerateOverflow(err error) error {
 	var rangeErr *identityRangeError
-	if errors.As(err, &rangeErr) {
+	if err != nil && errors.As(err, &rangeErr) {
 		fmt.Fprintf(os.Stderr, "warning: %v; retype the column to bigint and re-run\n", err)
-		return
+		return nil
 	}
-	fmt.Fprintf(os.Stderr, "warning: could not reseed identity for %s: %v\n", tableName, err)
+	return err
 }
 
 func analyzeTable(ctx context.Context, conn *pgx.Conn, pgTable string) error {

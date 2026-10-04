@@ -542,8 +542,8 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 			// A run finished under a binary that seeded identities from
 			// MAX(id) never reseeded them. The data is already in place, so
 			// a failed reseed warns rather than aborting before the FK step.
-			if err := reseedCompletedTable(ctx, conn, sourceDB, tableName, pgTableNames[tableName]); err != nil {
-				warnReseed(tableName, err)
+			if err := tolerateOverflow(reseedCompletedTable(ctx, conn, sourceDB, tableName, pgTableNames[tableName], tc)); err != nil {
+				return err
 			}
 			continue
 		}
@@ -611,8 +611,8 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 					return fmt.Errorf("checking whether existing %s (Postgres table %q) has any rows: %w", tableName, pgTable, err)
 				}
 				if hasRows {
-					if err := reseedCompletedTable(ctx, conn, sourceDB, tableName, pgTable); err != nil {
-						warnReseed(tableName, err)
+					if err := tolerateOverflow(reseedCompletedTable(ctx, conn, sourceDB, tableName, pgTable, tc)); err != nil {
+						return err
 					}
 					if err := analyzeTable(ctx, conn, pgTable); err != nil {
 						return err
@@ -630,6 +630,15 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 					// PR #99 finding).
 					progress.skipAlreadyLoadedTable(tableName, sourceRowCounts[tableName])
 					continue
+				}
+				// The range check precedes the DROP: an overflow must leave
+				// the existing (empty) table in place, not drop it and fail.
+				hw, err := sourceHighWater(sourceDB, tableName, tc)
+				if err != nil {
+					return err
+				}
+				if err := checkTableIdentityRange(pgTable, tc, hw); err != nil {
+					return err
 				}
 				// IF EXISTS even though existence was just confirmed
 				// above: makes this resilient to a race between the
