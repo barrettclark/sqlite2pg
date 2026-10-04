@@ -99,7 +99,7 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		// double precision target directly.
 		switch v := raw.(type) {
 		case string:
-			f, err := strconv.ParseFloat(strings.ReplaceAll(v, ",", ""), 64)
+			f, err := parseFiniteFloat(strings.ReplaceAll(v, ",", ""))
 			if err != nil {
 				return nil, fmt.Errorf("strip_commas_float: %q: %w", v, err)
 			}
@@ -423,7 +423,7 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			if v == "" {
 				return nil, nil
 			}
-			f, err := strconv.ParseFloat(v, 64)
+			f, err := parseFiniteFloat(v)
 			if err != nil {
 				return nil, fmt.Errorf("numeric_text_to_double: %q: %w", v, err)
 			}
@@ -562,7 +562,7 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			// straight to pgx's float8 codec, which can't binary-encode
 			// it (issue #85's audit, finding M6). Try float64 before
 			// falling back.
-			if f, err := strconv.ParseFloat(cleaned, 64); err == nil {
+			if f, err := parseFiniteFloat(cleaned); err == nil {
 				return f, nil
 			}
 			return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel token and not numeric", v)
@@ -648,6 +648,19 @@ func parseWholeNumberText(s string) (int64, error) {
 		intPart = s[:i]
 	}
 	return strconv.ParseInt(intPart, 10, 64)
+}
+
+// parseFiniteFloat rejects NaN and ±Inf, which ParseFloat accepts from text
+// ("NaN", "inf", "Infinity") and which would load as float8 specials.
+func parseFiniteFloat(s string) (float64, error) {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return 0, err
+	}
+	if math.IsNaN(f) || math.IsInf(f, 0) {
+		return 0, fmt.Errorf("%v is not a finite number", f)
+	}
+	return f, nil
 }
 
 func toInt64(v profiler.Value) (int64, bool) {

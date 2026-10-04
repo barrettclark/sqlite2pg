@@ -69,6 +69,25 @@ func TestTransform_StripCommasFloat_RejectsUnparsable(t *testing.T) {
 	}
 }
 
+func TestTransform_FloatTransformsRejectNonFinite(t *testing.T) {
+	transforms := []string{"strip_commas_float", "numeric_text_to_double", "nullif_sentinels"}
+	for _, tr := range transforms {
+		for _, in := range []string{"NaN", "nan", "Inf", "-Infinity", "infinity"} {
+			t.Run(tr+"/"+in, func(t *testing.T) {
+				if got, err := Transform(tr, in); err == nil {
+					t.Errorf("Transform(%q, %q) = %v, want error", tr, in, got)
+				}
+			})
+		}
+	}
+	t.Run("finite still parses", func(t *testing.T) {
+		got, err := Transform("numeric_text_to_double", "-1.5e3")
+		if err != nil || got != float64(-1500) {
+			t.Errorf("got %v, %v; want -1500, nil", got, err)
+		}
+	})
+}
+
 func TestTransform_StripCommas_ErrorsOnDecimal(t *testing.T) {
 	// Issue #23: strip_commas is only ever meant to run against
 	// comma-formatted whole numbers now that comma_number targets
