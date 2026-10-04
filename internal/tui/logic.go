@@ -266,8 +266,8 @@ func sqliteNumericAffinity(declaredType string) bool {
 // tell a float64 the driver returned (rendered by %v, possibly in
 // scientific notation) from a string the row literally stores that
 // happens to look the same — see the integer arm (issue #156).
-// isText is the sample's SQLite storage class. A TEXT non-finite spelling is
-// refused by the float arms, and numeric refuses any ±Inf (see the comment at the float arm).
+// isText is the sample's SQLite storage class; the float arms refuse a TEXT
+// non-finite spelling.
 func previewValueForType(value, targetType, declaredType string, isText bool) (display, transform string, valid bool) {
 	if value == "NULL" {
 		return value, "", true
@@ -331,11 +331,9 @@ func previewValueForType(value, targetType, declaredType string, isText bool) (d
 		if err != nil {
 			return value, "", false
 		}
-		// Only a text token can't be trusted as a float; a REAL +Inf is a
-		// valid float8 and the grid renders it as "+Inf" too. numeric also
-		// refuses ±Inf, a conservative choice beyond the text/REAL split
-		// (PG14+ accepts numeric Infinity, and the target is PG18).
-		if math.IsNaN(f) || (math.IsInf(f, 0) && (isText || targetType == "numeric")) {
+		// A REAL ±Inf is a valid float8 (and numeric on PG14+), so only a
+		// text token's infinity is refused.
+		if math.IsNaN(f) || (math.IsInf(f, 0) && isText) {
 			return value, "", false
 		}
 		if math.IsInf(f, 0) {

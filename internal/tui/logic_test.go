@@ -104,19 +104,23 @@ func TestPreviewValueForType_RejectsNonFiniteFloatText(t *testing.T) {
 	}
 }
 
-// A REAL +Inf is a valid float8 and must still preview as double precision
-// with no transform; only text tokens are refused (see RejectsNonFiniteFloatText).
-func TestPreviewValueForType_AcceptsREALInfinityAsDoublePrecision(t *testing.T) {
-	for _, value := range []string{"+Inf", "-Inf"} {
-		display, transform, valid := previewValueForType(value, "double precision", "REAL", false)
-		if !valid {
-			t.Errorf("previewValueForType(%q, double precision, non-text): expected valid", value)
-		}
-		if transform != "" {
-			t.Errorf("previewValueForType(%q, double precision, non-text) transform = %q, want none", value, transform)
-		}
-		if display != value {
-			t.Errorf("previewValueForType(%q, double precision, non-text) display = %q, want %q", value, display, value)
+// A REAL ±Inf is a valid float8 and numeric on PG14+, so it previews as
+// either with no transform; only text tokens are refused (see RejectsNonFiniteFloatText).
+func TestPreviewValueForType_AcceptsREALInfinity(t *testing.T) {
+	for _, targetType := range []string{"double precision", "numeric"} {
+		for _, value := range []string{"+Inf", "-Inf"} {
+			t.Run(targetType+"/"+value, func(t *testing.T) {
+				display, transform, valid := previewValueForType(value, targetType, "REAL", false)
+				if !valid {
+					t.Fatalf("previewValueForType(%q, %s, non-text): expected valid", value, targetType)
+				}
+				if transform != "" {
+					t.Errorf("transform = %q, want none", transform)
+				}
+				if display != value {
+					t.Errorf("display = %q, want %q", display, value)
+				}
+			})
 		}
 	}
 }
