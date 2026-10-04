@@ -146,6 +146,7 @@ func readAnswerWithDeadline(r io.Reader, d time.Duration) (line string, gotAnswe
 	case res := <-ch:
 		return res.line, res.ok, res.err
 	case <-time.After(d):
+		// The goroutine may keep reading stdin after this returns; nothing else in the process may read stdin afterwards.
 		return "", false, nil
 	}
 }
@@ -161,12 +162,12 @@ func readLine(r io.Reader) (string, error) {
 		n, err := r.Read(buf[:])
 		if n == 1 {
 			line = append(line, buf[0])
-			if buf[0] == '\n' {
-				return string(line), nil
-			}
 		}
 		if err != nil {
 			return string(line), err
+		}
+		if n == 1 && buf[0] == '\n' {
+			return string(line), nil
 		}
 	}
 }

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"errors"
 	"io"
 	"os"
@@ -221,7 +220,7 @@ func (zeroByteErrReader) Read([]byte) (int, error) {
 // reported gotAnswer=true — contradicting the "true whenever any bytes
 // actually arrived" intent the code's own comment stated.
 func TestReadAnswerWithDeadline_NonEOFZeroByteErrorStillReportsNoAnswer(t *testing.T) {
-	_, gotAnswer, err := readAnswerWithDeadline(bufio.NewReader(zeroByteErrReader{}), 2*time.Second)
+	_, gotAnswer, err := readAnswerWithDeadline(zeroByteErrReader{}, 2*time.Second)
 	if gotAnswer {
 		t.Error("expected a non-EOF, zero-byte read error to report gotAnswer=false")
 	}
@@ -270,7 +269,8 @@ func TestDetermineVerify_ReadErrorIsReported(t *testing.T) {
 	}{
 		{name: "error before any bytes", in: zeroByteErrReader{}},
 		{name: "error after a partial answer", in: &failingReader{data: "y"}},
-		{name: "complete answer returned with error", in: &bytesWithErrReader{data: "y\n", err: errSimulatedRead}},
+		{name: "partial answer returned with error", in: &bytesWithErrReader{data: "y", err: errSimulatedRead}},
+		{name: "newline returned with error", in: &bytesWithErrReader{data: "\n", err: errSimulatedRead}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -281,6 +281,30 @@ func TestDetermineVerify_ReadErrorIsReported(t *testing.T) {
 			}
 			if got {
 				t.Error("expected verification not to run when the read fails")
+			}
+		})
+	}
+}
+
+// TestReadLine_StopsAtFirstNewline pins that readLine never reads past the
+// first newline, so a second call sees the next line intact.
+func TestReadLine_StopsAtFirstNewline(t *testing.T) {
+	r := strings.NewReader("y\nn\n")
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "first line", want: "y\n"},
+		{name: "second line", want: "n\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readLine(r)
+			if err != nil {
+				t.Fatalf("readLine: unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("readLine = %q, want %q", got, tt.want)
 			}
 		})
 	}
