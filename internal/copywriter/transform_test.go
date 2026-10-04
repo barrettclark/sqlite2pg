@@ -2,6 +2,7 @@ package copywriter
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 
@@ -471,6 +472,70 @@ func TestTransform_IntToBool(t *testing.T) {
 	zero, err := Transform("int_to_bool", int64(0))
 	if err != nil || zero != false {
 		t.Errorf("expected false, got %v, err %v", zero, err)
+	}
+}
+
+// TestTransform_NonFiniteFloatsRejected covers NaN and ±Inf for the
+// integer-shaped transforms. NaN has no defined int64 conversion, so each
+// arm must reject it explicitly rather than rely on the trunc check.
+func TestTransform_NonFiniteFloatsRejected(t *testing.T) {
+	tests := []struct {
+		name      string
+		transform string
+		in        float64
+	}{
+		{"int_to_bool +Inf", "int_to_bool", math.Inf(1)},
+		{"int_to_bool -Inf", "int_to_bool", math.Inf(-1)},
+		{"int_to_bool NaN", "int_to_bool", math.NaN()},
+		{"strip_commas +Inf", "strip_commas", math.Inf(1)},
+		{"strip_commas -Inf", "strip_commas", math.Inf(-1)},
+		{"strip_commas NaN", "strip_commas", math.NaN()},
+		{"numeric_text_to_integer +Inf", "numeric_text_to_integer", math.Inf(1)},
+		{"numeric_text_to_integer -Inf", "numeric_text_to_integer", math.Inf(-1)},
+		{"numeric_text_to_integer NaN", "numeric_text_to_integer", math.NaN()},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Transform(tt.transform, tt.in)
+			if err == nil {
+				t.Fatalf("expected an error, got %v", got)
+			}
+			if !strings.Contains(err.Error(), "not finite") {
+				t.Errorf("expected a \"not finite\" error, got %q", err)
+			}
+		})
+	}
+}
+
+func TestTransform_IntToBoolWholeFloats(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      float64
+		want    bool
+		wantErr bool
+	}{
+		{name: "zero float is false", in: 0.0, want: false},
+		{name: "one float is true", in: 1.0, want: true},
+		{name: "fractional below one is rejected", in: 0.5, wantErr: true},
+		{name: "fractional above one is rejected", in: 1.7, wantErr: true},
+		{name: "infinity is rejected", in: math.Inf(1), wantErr: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := Transform("int_to_bool", tt.in)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("expected an error for %v, got %v", tt.in, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("Transform: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("expected %v, got %v", tt.want, got)
+			}
+		})
 	}
 }
 

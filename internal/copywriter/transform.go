@@ -76,6 +76,9 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			// "unexpected type" (Copilot PR #98 finding).
 			return int64(v), nil
 		case float64:
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				return nil, fmt.Errorf("strip_commas: %v is not finite", v)
+			}
 			if v != math.Trunc(v) {
 				return nil, fmt.Errorf("strip_commas: %v is not a whole number", v)
 			}
@@ -283,6 +286,16 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 				return nil, fmt.Errorf("int_to_bool: unexpected string %q", s)
 			}
 		}
+		// toInt64 would truncate 0.5 to false and 1.7 to true.
+		if f, ok := raw.(float64); ok {
+			if math.IsNaN(f) || math.IsInf(f, 0) {
+				return nil, fmt.Errorf("int_to_bool: %v is not finite", f)
+			}
+			if f != math.Trunc(f) {
+				return nil, fmt.Errorf("int_to_bool: %v is not a whole number", f)
+			}
+			return f != 0, nil
+		}
 		n, ok := toInt64(raw)
 		if !ok {
 			return nil, fmt.Errorf("int_to_bool: unexpected type %T", raw)
@@ -404,6 +417,9 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 		case int:
 			return int64(v), nil
 		case float64:
+			if math.IsNaN(v) || math.IsInf(v, 0) {
+				return nil, fmt.Errorf("numeric_text_to_integer: %v is not finite", v)
+			}
 			if v != math.Trunc(v) {
 				return nil, fmt.Errorf("numeric_text_to_integer: %v is not a whole number", v)
 			}
