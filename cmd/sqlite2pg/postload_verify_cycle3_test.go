@@ -29,7 +29,7 @@ func TestDetermineVerify_NonTerminalPipeEchoesPromptAndAnswer(t *testing.T) {
 
 	var out strings.Builder
 	done := make(chan bool, 1)
-	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+	go func() { done <- mustDetermineVerify(t, verifyPrompt, r, &out) }()
 
 	select {
 	case got := <-done:

@@ -1,11 +1,18 @@
 package main
 
 import (
+	"context"
 	"errors"
+	"io"
+	"io/fs"
 	"os"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/jackc/pgx/v5"
+
+	"sqlite2pg/internal/config"
 )
 
 // --- resolveVerifyMode -------------------------------------------------
@@ -52,15 +59,26 @@ func TestResolveVerifyMode_NeitherFlagDefaultsToPrompt(t *testing.T) {
 
 // --- determineVerify (the interactive stdin prompt) ---------------------
 
+// mustDetermineVerify wraps determineVerify for tests that expect no read
+// error. It reports via t.Error, so it is safe to call from goroutines.
+func mustDetermineVerify(t *testing.T, mode verifyMode, in io.Reader, out io.Writer) bool {
+	t.Helper()
+	got, err := determineVerify(mode, in, out)
+	if err != nil {
+		t.Errorf("determineVerify: unexpected error: %v", err)
+	}
+	return got
+}
+
 func TestDetermineVerify_NonPromptModesNeverTouchStdin(t *testing.T) {
 	// A reader that errors if read from at all — proves verifyAlways and
 	// verifyNever never consult stdin.
 	poison := &poisonReader{t: t}
 
-	if !determineVerify(verifyAlways, poison, &strings.Builder{}) {
+	if !mustDetermineVerify(t, verifyAlways, poison, &strings.Builder{}) {
 		t.Error("expected verifyAlways to report true without reading stdin")
 	}
-	if determineVerify(verifyNever, poison, &strings.Builder{}) {
+	if mustDetermineVerify(t, verifyNever, poison, &strings.Builder{}) {
 		t.Error("expected verifyNever to report false without reading stdin")
 	}
 }
@@ -76,7 +94,7 @@ func TestDetermineVerify_PromptModeParsesAffirmativeAnswers(t *testing.T) {
 	affirmative := []string{"y", "Y", "yes", "Yes", "YES", "  y  \n", "y\r\n"}
 	for _, answer := range affirmative {
 		var out strings.Builder
-		got := determineVerify(verifyPrompt, strings.NewReader(answer), &out)
+		got := mustDetermineVerify(t, verifyPrompt, strings.NewReader(answer), &out)
 		if !got {
 			t.Errorf("input %q: expected determineVerify to return true", answer)
 		}
@@ -90,7 +108,7 @@ func TestDetermineVerify_PromptModeDefaultsToNoOnAnythingElse(t *testing.T) {
 	negativeOrAmbiguous := []string{"n", "N", "no", "", "\n", "maybe", "yesnt", "yep"}
 	for _, answer := range negativeOrAmbiguous {
 		var out strings.Builder
-		got := determineVerify(verifyPrompt, strings.NewReader(answer), &out)
+		got := mustDetermineVerify(t, verifyPrompt, strings.NewReader(answer), &out)
 		if got {
 			t.Errorf("input %q: expected determineVerify to return false (safe default)", answer)
 		}
@@ -118,7 +136,7 @@ func TestDetermineVerify_NonTerminalFileSkipsPromptWithoutBlocking(t *testing.T)
 
 	done := make(chan bool, 1)
 	go func() {
-		done <- determineVerify(verifyPrompt, r, &strings.Builder{})
+		done <- mustDetermineVerify(t, verifyPrompt, r, &strings.Builder{})
 	}()
 
 	select {
@@ -150,7 +168,7 @@ func TestDetermineVerify_NonTerminalPipeHonoursAScriptedAnswer(t *testing.T) {
 	w.Close()
 
 	done := make(chan bool, 1)
-	go func() { done <- determineVerify(verifyPrompt, r, &strings.Builder{}) }()
+	go func() { done <- mustDetermineVerify(t, verifyPrompt, r, &strings.Builder{}) }()
 
 	select {
 	case got := <-done:
@@ -175,7 +193,7 @@ func TestDetermineVerify_NonTerminalPipeSaysWhyItSkipped(t *testing.T) {
 
 	var out strings.Builder
 	done := make(chan bool, 1)
-	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+	go func() { done <- mustDetermineVerify(t, verifyPrompt, r, &out) }()
 
 	select {
 	case got := <-done:
@@ -198,7 +216,7 @@ func TestDetermineVerify_NonTerminalPipeSaysWhyItSkipped(t *testing.T) {
 type zeroByteErrReader struct{}
 
 func (zeroByteErrReader) Read([]byte) (int, error) {
-	return 0, errors.New("simulated read error")
+	return 0, errSimulatedRead
 }
 
 // TestReadAnswerWithDeadline_NonEOFZeroByteErrorStillReportsNoAnswer is a
@@ -208,9 +226,146 @@ func (zeroByteErrReader) Read([]byte) (int, error) {
 // reported gotAnswer=true — contradicting the "true whenever any bytes
 // actually arrived" intent the code's own comment stated.
 func TestReadAnswerWithDeadline_NonEOFZeroByteErrorStillReportsNoAnswer(t *testing.T) {
-	_, gotAnswer := readAnswerWithDeadline(zeroByteErrReader{}, 2*time.Second)
+	_, gotAnswer, err := readAnswerWithDeadline(zeroByteErrReader{}, 2*time.Second)
 	if gotAnswer {
-		t.Error("expected a non-EOF, zero-byte read error to report gotAnswer=false, same as an immediate EOF")
+		t.Error("expected a non-EOF, zero-byte read error to report gotAnswer=false")
+	}
+	if !errors.Is(err, errSimulatedRead) {
+		t.Errorf("expected the read error to be returned, got %v", err)
+	}
+}
+
+// errSimulatedRead is the sentinel returned by the failing readers below.
+var errSimulatedRead = errors.New("simulated read error")
+
+// failingReader yields data, then fails with errSimulatedRead instead of EOF.
+type failingReader struct {
+	data string
+}
+
+func (r *failingReader) Read(p []byte) (int, error) {
+	if r.data == "" {
+		return 0, errSimulatedRead
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+// bytesWithErrReader returns all of data and err together on the first Read
+// that has room for them, then err on every later Read.
+type bytesWithErrReader struct {
+	data string
+	err  error
+}
+
+func (r *bytesWithErrReader) Read(p []byte) (int, error) {
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, r.err
+}
+
+// TestDetermineVerify_ReadErrorIsReported covers issue #186: a stdin read
+// failure must surface as an error, not as an empty answer that skips
+// verification with exit 0.
+func TestDetermineVerify_ReadErrorIsReported(t *testing.T) {
+	tests := []struct {
+		name string
+		in   io.Reader
+	}{
+		{name: "error before any bytes", in: zeroByteErrReader{}},
+		{name: "error after a partial answer", in: &failingReader{data: "y"}},
+		{name: "partial answer returned with error", in: &bytesWithErrReader{data: "y", err: errSimulatedRead}},
+		{name: "newline returned with error", in: &bytesWithErrReader{data: "\n", err: errSimulatedRead}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var out strings.Builder
+			got, err := determineVerify(verifyPrompt, tt.in, &out)
+			if !errors.Is(err, errSimulatedRead) {
+				t.Fatalf("expected errSimulatedRead, got %v", err)
+			}
+			if got {
+				t.Error("expected verification not to run when the read fails")
+			}
+		})
+	}
+}
+
+// TestReadLine_StopsAtFirstNewline pins that readLine never reads past the
+// first newline, so a second call sees the next line intact.
+func TestReadLine_StopsAtFirstNewline(t *testing.T) {
+	r := strings.NewReader("y\nn\n")
+	tests := []struct {
+		name string
+		want string
+	}{
+		{name: "first line", want: "y\n"},
+		{name: "second line", want: "n\n"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got, err := readLine(r)
+			if err != nil {
+				t.Fatalf("readLine: unexpected error: %v", err)
+			}
+			if got != tt.want {
+				t.Errorf("readLine = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+// emptyReadsReader yields data one byte per Read, then returns (0, nil)
+// forever, which io.Reader permits but never makes progress on.
+type emptyReadsReader struct {
+	data string
+}
+
+func (r *emptyReadsReader) Read(p []byte) (int, error) {
+	if r.data == "" {
+		return 0, nil
+	}
+	p[0] = r.data[0]
+	r.data = r.data[1:]
+	return 1, nil
+}
+
+// TestReadLine_GivesUpOnNoProgress guards against a reader that returns
+// (0, nil) indefinitely: readLine must stop with io.ErrNoProgress rather
+// than spin, as bufio.Reader does.
+func TestReadLine_GivesUpOnNoProgress(t *testing.T) {
+	tests := []struct {
+		name     string
+		data     string
+		wantLine string
+	}{
+		{name: "no bytes ever", data: "", wantLine: ""},
+		{name: "partial line then stall", data: "y", wantLine: "y"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			type result struct {
+				line string
+				err  error
+			}
+			done := make(chan result, 1)
+			go func() {
+				line, err := readLine(&emptyReadsReader{data: tt.data})
+				done <- result{line, err}
+			}()
+			select {
+			case res := <-done:
+				if !errors.Is(res.err, io.ErrNoProgress) {
+					t.Errorf("readLine error = %v, want io.ErrNoProgress", res.err)
+				}
+				if res.line != tt.wantLine {
+					t.Errorf("readLine line = %q, want %q", res.line, tt.wantLine)
+				}
+			case <-time.After(2 * time.Second):
+				t.Fatal("readLine spun on a reader returning (0, nil) forever instead of returning io.ErrNoProgress")
+			}
+		})
 	}
 }
 
@@ -232,7 +387,7 @@ func TestDetermineVerify_NonTerminalPipeImmediateEOFStillSaysNoAnswer(t *testing
 
 	var out strings.Builder
 	done := make(chan bool, 1)
-	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+	go func() { done <- mustDetermineVerify(t, verifyPrompt, r, &out) }()
 
 	select {
 	case got := <-done:
@@ -269,7 +424,7 @@ func TestDetermineVerify_NonTerminalPipeDistinguishesEmptyAnswerFromNoAnswer(t *
 
 	var out strings.Builder
 	done := make(chan bool, 1)
-	go func() { done <- determineVerify(verifyPrompt, r, &out) }()
+	go func() { done <- mustDetermineVerify(t, verifyPrompt, r, &out) }()
 
 	select {
 	case got := <-done:
@@ -356,5 +511,50 @@ func TestRun_LoadUsageStringListsEveryFlag(t *testing.T) {
 		if !strings.Contains(err.Error(), flag) {
 			t.Errorf("expected load's usage string to mention %s, got %q", flag, err.Error())
 		}
+	}
+}
+
+// TestRunPostLoadVerify_StdinReadFailurePropagates covers the non-terminal
+// *os.File path end to end: a failed stdin read must come back wrapped
+// through runPostLoadVerify, and must never reach a Postgres connection.
+func TestRunPostLoadVerify_StdinReadFailurePropagates(t *testing.T) {
+	tests := []struct {
+		name string
+		mode verifyMode
+	}{
+		{name: "prompt mode reads a broken pipe", mode: verifyPrompt},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			// The write end of a pipe is not readable: Read fails with EBADF.
+			_, w, err := os.Pipe()
+			if err != nil {
+				t.Fatalf("os.Pipe: %v", err)
+			}
+			defer w.Close()
+
+			// Unreachable address: if verification wrongly proceeds it fails
+			// with the connecting error, which the assertions below reject.
+			connCfg, err := pgx.ParseConfig("postgres://127.0.0.1:1/x?connect_timeout=1")
+			if err != nil {
+				t.Fatalf("pgx.ParseConfig: %v", err)
+			}
+
+			var out strings.Builder
+			err = runPostLoadVerify(context.Background(), &config.MigrationConfig{}, connCfg, tt.mode, w, &out)
+			if err == nil {
+				t.Fatal("expected an error from a failing stdin read, got nil")
+			}
+			if strings.Contains(err.Error(), "connecting to Postgres") {
+				t.Fatalf("verification attempted a database connection after a stdin read failure: %v", err)
+			}
+			var pathErr *fs.PathError
+			if !errors.As(err, &pathErr) {
+				t.Errorf("expected the returned error to wrap the *fs.PathError from the read, got %v", err)
+			}
+			if !strings.Contains(err.Error(), "reading verify answer from stdin") {
+				t.Errorf("expected the error to name the stdin read, got %q", err.Error())
+			}
+		})
 	}
 }
