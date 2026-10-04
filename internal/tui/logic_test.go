@@ -584,3 +584,61 @@ func plainCells(values ...string) []sampleCell {
 	}
 	return cells
 }
+
+// A missing or mismatched IsText must fail closed: the cell counts as text,
+// so a TEXT "+Inf" is never offered double precision.
+func TestColumnSampleCells_MissingIsTextFailsClosed(t *testing.T) {
+	cols := []review.ColumnView{{Column: "x"}}
+	cases := []struct {
+		name       string
+		tv         review.TableView
+		wantDouble bool
+	}{
+		{
+			name:       "nil IsText with TEXT +Inf",
+			tv:         review.TableView{Columns: cols, Rows: [][]string{{"+Inf"}}},
+			wantDouble: false,
+		},
+		{
+			name: "ragged IsText shorter than Rows",
+			tv: review.TableView{
+				Columns: cols,
+				Rows:    [][]string{{"+Inf"}, {"1"}},
+				IsText:  [][]bool{{false}},
+			},
+			wantDouble: false,
+		},
+		{
+			name: "IsText row entry shorter than column index",
+			tv: review.TableView{
+				Columns: []review.ColumnView{{Column: "a"}, {Column: "x"}},
+				Rows:    [][]string{{"1", "+Inf"}},
+				IsText:  [][]bool{{false}},
+			},
+			wantDouble: false,
+		},
+		{
+			name: "correct IsText with REAL +Inf",
+			tv: review.TableView{
+				Columns: cols,
+				Rows:    [][]string{{"+Inf"}},
+				IsText:  [][]bool{{false}},
+			},
+			wantDouble: true,
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validTypesForColumn(columnSampleCells(tc.tv, "x"), "text", "REAL")
+			has := false
+			for _, typ := range got {
+				if typ == "double precision" {
+					has = true
+				}
+			}
+			if has != tc.wantDouble {
+				t.Errorf("double precision offered = %v, want %v (types %v)", has, tc.wantDouble, got)
+			}
+		})
+	}
+}

@@ -182,11 +182,13 @@ func columnSampleCells(tv review.TableView, columnName string) []sampleCell {
 	if idx == -1 {
 		return nil
 	}
+	// Fail closed: without a matching IsText, every cell is treated as text.
+	textKnown := len(tv.IsText) == len(tv.Rows)
 	cells := make([]sampleCell, 0, len(tv.Rows))
 	for r, row := range tv.Rows {
 		if idx < len(row) {
-			cell := sampleCell{value: row[idx]}
-			if r < len(tv.IsText) && idx < len(tv.IsText[r]) {
+			cell := sampleCell{value: row[idx], isText: true}
+			if textKnown && idx < len(tv.IsText[r]) {
 				cell.isText = tv.IsText[r][idx]
 			}
 			cells = append(cells, cell)
@@ -330,8 +332,9 @@ func previewValueForType(value, targetType, declaredType string, isText bool) (d
 			return value, "", false
 		}
 		// Only a text token can't be trusted as a float; a REAL +Inf is a
-		// valid float8 and the grid renders it as "+Inf" too. numeric has
-		// no infinity before PG14, so it still refuses any non-finite value.
+		// valid float8 and the grid renders it as "+Inf" too. numeric also
+		// refuses ±Inf, a conservative choice beyond the text/REAL split
+		// (PG14+ accepts numeric Infinity, and the target is PG18).
 		if math.IsNaN(f) || (math.IsInf(f, 0) && (isText || targetType == "numeric")) {
 			return value, "", false
 		}
