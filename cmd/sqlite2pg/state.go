@@ -77,7 +77,9 @@ func readState(path string) (loadState, error) {
 // writeState replaces the state file with st. It writes a temp file in the
 // same directory, fsyncs it, and renames it over path, so a crash never
 // leaves a truncated file. Holds stateMu. The replace is crash-safe on Unix;
-// on Windows it depends on the platform's rename behavior.
+// on Windows it depends on the platform's rename behavior. A crash between
+// temp creation and rename leaves a .sqlite2pg-state-* file behind; nothing
+// removes it.
 //
 // The rename is not durable across power loss without a directory fsync, so
 // the old state can reappear and a completed table is re-run; that is safe
