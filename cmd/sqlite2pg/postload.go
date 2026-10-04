@@ -65,10 +65,13 @@ func checkTableIdentityRange(pgTable string, tc config.TableConfig, highWater in
 }
 
 // reseedIdentity advances the identity sequence of pgTable.col past the loaded
-// rows and past highWater. Idempotent.
+// rows and past highWater. Idempotent. When highWater doesn't fit typ, the
+// sequence still moves to the loaded maximum and the identityRangeError is
+// returned for the caller to report.
 func reseedIdentity(ctx context.Context, conn *pgx.Conn, pgTable, col, typ string, highWater int64) error {
-	if err := checkIdentityRange(pgTable, col, typ, highWater); err != nil {
-		return err
+	rangeErr := checkIdentityRange(pgTable, col, typ, highWater)
+	if rangeErr != nil {
+		highWater = 0
 	}
 	qualified := pgx.Identifier{pgTable}.Sanitize()
 	// pg_get_serial_sequence returns NULL when the live column has no
@@ -93,7 +96,7 @@ func reseedIdentity(ctx context.Context, conn *pgx.Conn, pgTable, col, typ strin
 	if _, err := conn.Exec(ctx, q, *seq, highWater); err != nil {
 		return fmt.Errorf("resetting identity sequence for %s: %w", pgTable, err)
 	}
-	return nil
+	return rangeErr
 }
 
 // liveIdentityColumn returns pgTable's identity column and its type as the
@@ -123,8 +126,12 @@ func reseedCompletedTable(ctx context.Context, conn *pgx.Conn, sourceDB *sql.DB,
 	}
 	if !ok {
 		if name, alias := ddl.RowIDAliasColumn(tc); alias {
+			col := ddl.PostgresColumnNames(tc)[name]
+			if col == "" {
+				return fmt.Errorf("%s: rowid-alias column %q is not among the included Postgres columns; cannot check its identity", pgTable, name)
+			}
 			fmt.Fprintf(os.Stderr, "warning: %s.%s: config declares a rowid-alias identity but the live table has none; sequence not reseeded\n",
-				pgTable, ddl.PostgresColumnNames(tc)[name])
+				pgTable, col)
 		}
 		return nil
 	}
@@ -142,7 +149,7 @@ func reseedCompletedTable(ctx context.Context, conn *pgx.Conn, sourceDB *sql.DB,
 func tolerateOverflow(err error) error {
 	var rangeErr *identityRangeError
 	if err != nil && errors.As(err, &rangeErr) {
-		fmt.Fprintf(os.Stderr, "warning: %v; retype the column to bigint and re-run\n", err)
+		fmt.Fprintf(os.Stderr, "warning: %v; sequence advanced to the loaded maximum only; retype the column to bigint and re-run\n", err)
 		return nil
 	}
 	return err

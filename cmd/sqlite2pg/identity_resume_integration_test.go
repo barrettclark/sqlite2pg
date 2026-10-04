@@ -17,6 +17,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 
+	"sqlite2pg/internal/config"
 	"sqlite2pg/internal/ddl"
 )
 
@@ -95,12 +96,96 @@ func TestFresh_HighWaterAboveIdentityRangeLoadsNothing(t *testing.T) {
 // whose source high-water mark now exceeds the identity's range must warn,
 // not abort, and the resume must still reach the foreign key step.
 func TestResume_CompletedTableWarnsOnRangeAndFinishes(t *testing.T) {
-	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), []string{`INSERT INTO t (id, label) VALUES (1,'a')`})
+	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), fiveRowsSetup)
 	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
 		t.Fatalf("load failed: %v", err)
 	}
+	overflowSource(t, cfg.Source.Path)
 
-	src, err := sql.Open("sqlite", cfg.Source.Path)
+	stderr, err := withStderr(t, func() error { return executeLoad(cfg, connCfg, true, statePath) })
+	if err != nil {
+		t.Fatalf("resume should finish despite the reseed warning, got: %v", err)
+	}
+	assertOverflowWarning(t, stderr)
+	assertFKsApplied(t, statePath)
+	if got := insertWithoutID(t, connCfg); got != 6 {
+		t.Errorf("first generated id after resume = %d, want 6 (sequence advanced to loaded maximum)", got)
+	}
+}
+
+// TestResume_HasRowsUnmarkedOverflowMarksCompleted: a table with rows but no
+// state entry (a run that died after COPY) whose high-water mark overflows
+// must warn, mark the table completed, run the FK step, and advance the
+// sequence to the loaded maximum.
+func TestResume_HasRowsUnmarkedOverflowMarksCompleted(t *testing.T) {
+	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), fiveRowsSetup)
+	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if err := writeState(statePath, loadState{}); err != nil {
+		t.Fatalf("clearing state: %v", err)
+	}
+	overflowSource(t, cfg.Source.Path)
+
+	stderr, err := withStderr(t, func() error { return executeLoad(cfg, connCfg, true, statePath) })
+	if err != nil {
+		t.Fatalf("resume should finish despite the reseed warning, got: %v", err)
+	}
+	assertOverflowWarning(t, stderr)
+	done, err := loadCompletedTables(statePath)
+	if err != nil {
+		t.Fatalf("reading state: %v", err)
+	}
+	if !done["t"] {
+		t.Error("table with rows was not marked completed")
+	}
+	assertFKsApplied(t, statePath)
+	if got := insertWithoutID(t, connCfg); got != 6 {
+		t.Errorf("first generated id after resume = %d, want 6", got)
+	}
+}
+
+// TestReseedCompletedTable_DriftWithUnincludedAliasErrors: a rowid-alias
+// column that isn't among the included Postgres columns has no name to warn
+// about, so the drift check must error rather than print "t.:".
+func TestReseedCompletedTable_DriftWithUnincludedAliasErrors(t *testing.T) {
+	connCfg, err := connectForLoad(context.Background(), identityTestPgURL(t), filepath.Join(t.TempDir(), "drift.db"), false, filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Skipf("no Postgres available: %v", err)
+	}
+	conn := pgConnFor(t, connCfg)
+	if _, err := conn.Exec(context.Background(), `CREATE TABLE "t" (id integer PRIMARY KEY, v text)`); err != nil {
+		t.Fatalf("creating t: %v", err)
+	}
+	tc := config.TableConfig{
+		Include:     true,
+		ColumnOrder: []string{"v"},
+		Columns: map[string]config.ColumnConfig{
+			"id": identityColumns("INTEGER", "integer", 1),
+			"v":  identityColumns("TEXT", "text", 0),
+		},
+	}
+
+	stderr, err := withStderr(t, func() error {
+		return reseedCompletedTable(context.Background(), conn, nil, "t", "t", tc)
+	})
+	if err == nil || !strings.Contains(err.Error(), "not among the included Postgres columns") {
+		t.Fatalf("expected an error for the unnamed alias column, got: %v", err)
+	}
+	if strings.Contains(stderr, "warning") {
+		t.Errorf("expected no warning when the column name is unknown, got: %q", stderr)
+	}
+}
+
+// fiveRowsSetup loads ids 1..5 so the next generated id after a correct
+// reseed is 6.
+var fiveRowsSetup = []string{`INSERT INTO t (id, label) VALUES (1,'a'),(2,'a'),(3,'a'),(4,'a'),(5,'a')`}
+
+// overflowSource leaves the source's sqlite_sequence high-water mark at
+// 2147483648 without changing its live rows.
+func overflowSource(t *testing.T, path string) {
+	t.Helper()
+	src, err := sql.Open("sqlite", path)
 	if err != nil {
 		t.Fatalf("open source: %v", err)
 	}
@@ -110,16 +195,19 @@ func TestResume_CompletedTableWarnsOnRangeAndFinishes(t *testing.T) {
 			t.Fatalf("source %q: %v", stmt, err)
 		}
 	}
+}
 
-	stderr, err := withStderr(t, func() error { return executeLoad(cfg, connCfg, true, statePath) })
-	if err != nil {
-		t.Fatalf("resume should finish despite the reseed warning, got: %v", err)
-	}
-	for _, want := range []string{"warning:", "t.id", "2147483648", "2147483647", "retype the column to bigint and re-run"} {
+func assertOverflowWarning(t *testing.T, stderr string) {
+	t.Helper()
+	for _, want := range []string{"warning:", "t.id", "2147483648", "2147483647", "sequence advanced to the loaded maximum only", "retype the column to bigint and re-run"} {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("warning should contain %q, got: %q", want, stderr)
 		}
 	}
+}
+
+func assertFKsApplied(t *testing.T, statePath string) {
+	t.Helper()
 	st, err := readState(statePath)
 	if err != nil {
 		t.Fatalf("reading state: %v", err)
