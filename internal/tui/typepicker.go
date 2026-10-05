@@ -40,7 +40,7 @@ func (m *model) openTypePicker(columnName string) {
 			if secondary != "" {
 				secondary += "; "
 			}
-			secondary += tview.Escape(emptyNullWarning)
+			secondary += tview.Escape(emptyNullMarker)
 		}
 		list.AddItem(t, secondary, typeShortcuts[t], nil)
 		if t == col.TargetType {
@@ -155,7 +155,7 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 	m.grid.Select(0, selectedColumn)
 	m.gridSelectionChanged(0, selectedColumn)
 	if emptyRowsBecomeNull(columnSampleCells(tv, m.pickerColumn), transform) {
-		m.status.SetText(tview.Escape(m.status.GetText(true) + " | " + emptyNullWarning))
+		m.status.SetText(m.status.GetText(false) + " | " + tview.Escape(emptyNullStatus))
 	}
 	// Keeps the table list's needs-review/auto-approved counts and title
 	// in sync with the decision just applied (issue #93's audit, finding

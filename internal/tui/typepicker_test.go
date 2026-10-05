@@ -1,7 +1,9 @@
 package tui
 
 import (
+	"fmt"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -838,7 +840,7 @@ func TestOnTypeSelected_NotNullColumnRefusesNullProducingTransform(t *testing.T)
 	}
 }
 
-// secondaryOf returns the picker item's secondary text for typ, or "" if absent.
+// secondaryOf returns the picker item's secondary text for typ, if listed.
 func secondaryOf(m *model, typ string) (string, bool) {
 	for i := 0; i < m.picker.GetItemCount(); i++ {
 		if text, secondary := m.picker.GetItemText(i); text == typ {
@@ -848,18 +850,58 @@ func secondaryOf(m *model, typ string) (string, bool) {
 	return "", false
 }
 
-func TestOpenTypePicker_EmptyRowWarningOnNullProducingType(t *testing.T) {
+// offeredTypes returns the picker's items in display order.
+func offeredTypes(m *model) []string {
+	var types []string
+	for i := 0; i < m.picker.GetItemCount(); i++ {
+		text, _ := m.picker.GetItemText(i)
+		types = append(types, text)
+	}
+	return types
+}
+
+func TestOpenTypePicker_EmptyRowWarning(t *testing.T) {
+	const marker = `SQLite "" is not NULL; "" rows load as NULL`
 	cases := []struct {
-		name       string
-		values     []string
-		rejectNull bool
-		typ        string
-		wantOffer  bool
-		wantWarn   bool
+		name        string
+		declared    string
+		values      []string
+		rejectNull  bool
+		wantOffered []string
+		wantWarned  []string
 	}{
-		{"nullable integer with empty row warns", []string{"1", ""}, false, "integer", true, true},
-		{"NOT NULL integer with empty row omits integer, no warning", []string{"1", ""}, true, "integer", false, false},
-		{"integer without empty row has no warning", []string{"1", "2"}, false, "integer", true, false},
+		{
+			name:        "nullable INTEGER with empty row warns on the NULL-producing integer types",
+			declared:    "INTEGER",
+			values:      []string{"1", ""},
+			wantOffered: []string{"text", "integer", "bigint", "smallint", "bytea"},
+			wantWarned:  []string{"integer", "bigint", "smallint"},
+		},
+		{
+			name:        "NOT NULL INTEGER with empty row offers no NULL-producing type and no warning",
+			declared:    "INTEGER",
+			values:      []string{"1", ""},
+			rejectNull:  true,
+			wantOffered: []string{"text", "bytea"},
+		},
+		{
+			name:        "INTEGER without empty row has no warning",
+			declared:    "INTEGER",
+			values:      []string{"1", "2"},
+			wantOffered: []string{"text", "integer", "bigint", "smallint", "double precision", "real", "numeric", "jsonb", "bytea"},
+		},
+		{
+			name:        "TEXT with empty row keeps its list and shows no warning",
+			declared:    "TEXT",
+			values:      []string{"abc", ""},
+			wantOffered: []string{"text", "bytea"},
+		},
+		{
+			name:        "TEXT without empty row keeps the same list",
+			declared:    "TEXT",
+			values:      []string{"abc", "def"},
+			wantOffered: []string{"text", "bytea"},
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -869,17 +911,26 @@ func TestOpenTypePicker_EmptyRowWarningOnNullProducingType(t *testing.T) {
 				for j := range m.summary.Tables[i].Columns {
 					if m.summary.Tables[i].Columns[j].Column == "is_installed" {
 						m.summary.Tables[i].Columns[j].RejectNull = tc.rejectNull
+						m.summary.Tables[i].Columns[j].DeclaredType = tc.declared
 					}
 				}
 			}
 			m.openTypePicker("is_installed")
 
-			secondary, offered := secondaryOf(m, tc.typ)
-			if offered != tc.wantOffer {
-				t.Fatalf("%q offered = %v, want %v", tc.typ, offered, tc.wantOffer)
+			if got := offeredTypes(m); !slices.Equal(got, tc.wantOffered) {
+				t.Errorf("offered = %v, want %v", got, tc.wantOffered)
 			}
-			if got := strings.Contains(secondary, "stored as NULL"); got != tc.wantWarn {
-				t.Errorf("%q warning = %v, want %v (secondary %q)", tc.typ, got, tc.wantWarn, secondary)
+			for _, typ := range offeredTypes(m) {
+				secondary, _ := secondaryOf(m, typ)
+				warned := slices.Contains(tc.wantWarned, typ)
+				if warned {
+					want := fmt.Sprintf(`e.g. %s; %s`, tc.values[0], marker)
+					if secondary != want {
+						t.Errorf("%q secondary = %q, want %q", typ, secondary, want)
+					}
+				} else if strings.Contains(secondary, marker) {
+					t.Errorf("%q secondary %q carries the empty-row note, want none", typ, secondary)
+				}
 			}
 		})
 	}
@@ -899,7 +950,11 @@ func TestOnTypeSelected_EmptyRowWarningShownInStatus(t *testing.T) {
 	if col := loaded.Tables["bikes"].Columns["is_installed"]; col.TargetType != "bigint" || col.Transform != "numeric_text_to_integer" {
 		t.Fatalf("expected bigint/numeric_text_to_integer persisted, got (%q, %q)", col.TargetType, col.Transform)
 	}
-	if status := m.status.GetText(true); !strings.Contains(status, "stored as NULL") {
-		t.Errorf("status %q does not show the empty-string warning", status)
+	status := m.status.GetText(false)
+	if !strings.Contains(status, "confidence") {
+		t.Errorf("status %q lost the column status line", status)
+	}
+	if !strings.Contains(status, "empty-string rows load as NULL (SQLite \"\" is not NULL)") {
+		t.Errorf("status %q does not show the empty-string note", status)
 	}
 }

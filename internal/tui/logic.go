@@ -643,10 +643,14 @@ func transformAcceptsEmpty(typeName, transform string, rejectNull bool) bool {
 	return out != nil || !rejectNull
 }
 
-// emptyNullWarning is shown when a chosen transform stores "" as NULL.
-const emptyNullWarning = `empty strings stored as NULL (SQLite "" is not NULL); only these rows change`
+// emptyNullMarker is the picker row note; emptyNullStatus is the full status-bar line.
+const (
+	emptyNullMarker = `SQLite "" is not NULL; "" rows load as NULL`
+	emptyNullStatus = `empty-string rows load as NULL (SQLite "" is not NULL)`
+)
 
-// emptyRowsBecomeNull reports whether transform stores a "" sample as NULL.
+// emptyRowsBecomeNull reports whether transform stores a "" sample as NULL. It
+// only sees "" rows inside the preview sample, so rows past it can be missed.
 func emptyRowsBecomeNull(cells []sampleCell, transform string) bool {
 	if transform == "" || !hasEmptyCell(cells) {
 		return false
