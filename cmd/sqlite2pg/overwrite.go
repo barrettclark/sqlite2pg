@@ -33,7 +33,7 @@ func confirmOverwrite(path string, force bool, in io.Reader, w io.Writer, intera
 	if !interactive {
 		return false, fmt.Errorf("%s already exists; pass --force to overwrite it", path)
 	}
-	fmt.Fprintf(w, "warning: %s already exists. Regenerating it discards reviewed column decisions and transform overrides, and removes its load state %s.state.json.\n", path, path)
+	fmt.Fprintf(w, "warning: %s already exists. Regenerating it discards reviewed column decisions and transform overrides, and removes any load state.\n", path)
 	fmt.Fprintf(w, "Overwrite %s? [y/N] ", path)
 	line, err := bufio.NewReader(in).ReadString('\n')
 	if errors.Is(err, io.EOF) {
@@ -51,10 +51,10 @@ func confirmOverwrite(path string, force bool, in io.Reader, w io.Writer, intera
 	return false, nil
 }
 
-// discardStaleState removes the load state beside configPath as the config is
-// written. The state records which database a prior load filled from that
-// config; a --resume against a regenerated config would skip tables by name
-// and reconnect to the old database, so the state must not outlive it.
+// discardStaleState removes the load state beside configPath once the config
+// has been written. A --resume against a regenerated config would skip tables
+// by name and reconnect to the old database, so the state must not outlive it.
+// A symlink at the state path is unlinked, never followed; that is intended.
 func discardStaleState(configPath string, w io.Writer) error {
 	statePath := configPath + ".state.json"
 	err := os.Remove(statePath)

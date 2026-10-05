@@ -112,10 +112,10 @@ func runRun(args []string) error {
 		return err
 	}
 
-	if err := discardStaleState(configPath, os.Stdout); err != nil {
+	if err := config.Save(result.Config, configPath); err != nil {
 		return err
 	}
-	if err := config.Save(result.Config, configPath); err != nil {
+	if err := discardStaleState(configPath, os.Stdout); err != nil {
 		return err
 	}
 	fmt.Printf("profiled %s: %d table(s), %d column(s) need review\n", sourcePath, len(result.Config.Tables), len(result.Unresolved))
@@ -134,7 +134,7 @@ func runRun(args []string) error {
 
 	switch st.Outcome() {
 	case review.OutcomeCancelled:
-		fmt.Println("cancelled — nothing was imported")
+		fmt.Println("cancelled — nothing was imported; the config was already regenerated")
 		return nil
 	case review.OutcomeConfirmed:
 		// fall through to load below
@@ -298,10 +298,10 @@ func runProfileIO(args []string, in io.Reader, w io.Writer, interactive bool) er
 	if err != nil {
 		return err
 	}
-	if err := discardStaleState(*out, w); err != nil {
+	if err := config.Save(result.Config, *out); err != nil {
 		return err
 	}
-	if err := config.Save(result.Config, *out); err != nil {
+	if err := discardStaleState(*out, w); err != nil {
 		return err
 	}
 	fmt.Printf("wrote draft config to %s (%d table(s))\n", *out, len(result.Config.Tables))

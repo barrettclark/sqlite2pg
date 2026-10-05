@@ -40,6 +40,10 @@ func TestRunProfileIO_OverwriteConfirmation(t *testing.T) {
 			if err := os.WriteFile(out, []byte(sentinel), 0o644); err != nil {
 				t.Fatalf("seeding --out: %v", err)
 			}
+			state := out + ".state.json"
+			if err := writeState(state, loadState{Database: "old_db", Completed: []string{"t"}}); err != nil {
+				t.Fatalf("seeding state: %v", err)
+			}
 
 			args := []string{"--out", out}
 			if tt.force {
@@ -61,14 +65,21 @@ func TestRunProfileIO_OverwriteConfirmation(t *testing.T) {
 			if err != nil {
 				t.Fatalf("reading --out: %v", err)
 			}
+			_, stateErr := os.Stat(state)
 			if tt.wantWrite {
 				if _, err := config.Load(out); err != nil {
 					t.Fatalf("expected --out to be rewritten as a config, got: %v (bytes %q)", err, got)
+				}
+				if !os.IsNotExist(stateErr) {
+					t.Errorf("state survived a written config: %v", stateErr)
 				}
 				return
 			}
 			if string(got) != sentinel {
 				t.Errorf("--out was changed without confirmation: %q", got)
+			}
+			if stateErr != nil {
+				t.Errorf("a refused overwrite removed the load state: %v", stateErr)
 			}
 			if tt.wantOut != "" && !strings.Contains(prompt.String(), tt.wantOut) {
 				t.Errorf("expected output to contain %q, got %q", tt.wantOut, prompt.String())
@@ -173,6 +184,9 @@ func TestRunRun_RefusesExistingConfigWithoutTerminal(t *testing.T) {
 	if err := os.WriteFile(cfgPath, []byte("sentinel"), 0o644); err != nil {
 		t.Fatalf("seeding config: %v", err)
 	}
+	if err := writeState(cfgPath+".state.json", loadState{Database: "old_db"}); err != nil {
+		t.Fatalf("seeding state: %v", err)
+	}
 
 	// runRun reads os.Stdin for its prompt; /dev/null is not a terminal, so the
 	// refusal path is taken without any risk of blocking on a developer's tty.
@@ -193,6 +207,9 @@ func TestRunRun_RefusesExistingConfigWithoutTerminal(t *testing.T) {
 	if err != nil || string(got) != "sentinel" {
 		t.Errorf("config changed by a refused run: %q, %v", got, err)
 	}
+	if _, err := os.Stat(cfgPath + ".state.json"); err != nil {
+		t.Errorf("a refused run removed the load state: %v", err)
+	}
 }
 
 func TestIsTerminal_CharacterDevicesAreNotTerminals(t *testing.T) {
@@ -207,5 +224,57 @@ func TestIsTerminal_CharacterDevicesAreNotTerminals(t *testing.T) {
 				t.Errorf("%s reported as a terminal", dev)
 			}
 		})
+	}
+}
+
+// A failed config write must keep the state: the state is only discarded once
+// the new config is on disk.
+func TestRunProfileIO_StateSurvivesFailedSave(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src.db")
+	makeSQLiteFile(t, src)
+	// A directory at --out makes the write fail, while --force still proceeds.
+	out := filepath.Join(dir, "out.migration.yaml")
+	if err := os.Mkdir(out, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	state := out + ".state.json"
+	if err := writeState(state, loadState{Database: "old_db", Completed: []string{"t"}}); err != nil {
+		t.Fatalf("seeding state: %v", err)
+	}
+
+	if err := runProfileIO([]string{"--force", "--out", out, src}, strings.NewReader(""), &bytes.Buffer{}, false); err == nil {
+		t.Fatal("expected the config write to fail")
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Errorf("failed save removed the load state: %v", err)
+	}
+}
+
+// A profile that fails before any write must leave the config and state alone.
+func TestRunProfileIO_StateSurvivesFailedProfile(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "not-sqlite.db")
+	if err := os.WriteFile(src, []byte("this is not a sqlite database, just text padding padding padding"), 0o644); err != nil {
+		t.Fatalf("writing source: %v", err)
+	}
+	out := filepath.Join(dir, "out.migration.yaml")
+	if err := os.WriteFile(out, []byte("sentinel"), 0o644); err != nil {
+		t.Fatalf("seeding config: %v", err)
+	}
+	state := out + ".state.json"
+	if err := writeState(state, loadState{Database: "old_db", Completed: []string{"t"}}); err != nil {
+		t.Fatalf("seeding state: %v", err)
+	}
+
+	if err := runProfileIO([]string{"--force", "--out", out, src}, strings.NewReader(""), &bytes.Buffer{}, false); err == nil {
+		t.Fatal("expected profiling a non-SQLite file to fail")
+	}
+	if _, err := os.Stat(state); err != nil {
+		t.Errorf("failed profile removed the load state: %v", err)
+	}
+	got, err := os.ReadFile(out)
+	if err != nil || string(got) != "sentinel" {
+		t.Errorf("failed profile changed the config: %q, %v", got, err)
 	}
 }
