@@ -1263,22 +1263,18 @@ func TestValidTypesForColumn_TextNumericNotOfferedForLongDecimal(t *testing.T) {
 	}
 }
 
-// A stored transform that still converts every sample is kept on re-confirm.
-func TestOnTypeSelected_ReconfirmKeepsStoredTransformThatFitsSamples(t *testing.T) {
+// Re-confirming the current type always derives the transform: a stored
+// nullif_sentinels becomes numeric_text_to_double for ordinary numbers.
+func TestOnTypeSelected_ReconfirmDerivesTransformForOrdinaryNumbers(t *testing.T) {
 	_, path, m := newColumnState(t, "double precision", "nullif_sentinels", "TEXT")
 	m.summary = withSampleCells(m.summary, "bikes", "is_installed",
-		sampleCell{value: "1.5", isText: true}, sampleCell{value: "NA", isText: true})
+		sampleCell{value: "1.5", isText: true}, sampleCell{value: "2.5", isText: true})
 	m.openTypePicker("is_installed")
-	// Not offered (the derived transform fails on "NA"), but re-confirming the current type is still allowed.
 	m.onTypeSelected(0, "double precision", "", 0)
-
-	loaded, err := config.Load(path)
-	if err != nil {
-		t.Fatalf("Load: %v", err)
+	if m.lastError != "" {
+		t.Fatalf("unexpected refusal: %q", m.lastError)
 	}
-	if got := loaded.Tables["bikes"].Columns["is_installed"].Transform; got != "nullif_sentinels" {
-		t.Errorf("persisted Transform = %q, want the stored nullif_sentinels kept", got)
-	}
+	assertPersisted(t, path, "double precision", "numeric_text_to_double")
 }
 
 // A stored transform that fails the samples is replaced by the derived one.

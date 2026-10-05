@@ -12,7 +12,6 @@ import (
 	"time"
 
 	"sqlite2pg/internal/copywriter"
-	"sqlite2pg/internal/profiler"
 	"sqlite2pg/internal/review"
 )
 
@@ -678,48 +677,4 @@ func emptyRowsBecomeNull(cells []sampleCell, transform string) bool {
 	}
 	out, err := copywriter.Transform(transform, "")
 	return err == nil && out == nil
-}
-
-// storedTransformFits reports whether a stored transform can be kept. For each
-// non-NULL sample it must convert without error, and where it yields a value,
-// previewValueForType must accept the raw sample with the same transform name
-// (so unix_epoch_micros is not kept where unix_epoch_seconds is what fits). A
-// stored "" is never kept. nullif_sentinels is exempt from the name match: it
-// only nulls sentinels and never names a converter the preview would use.
-func storedTransformFits(cells []sampleCell, typeName, declaredType, transform string, rejectNull bool) bool {
-	if transform == "" {
-		return false
-	}
-	for _, c := range cells {
-		if c.isNull() {
-			continue
-		}
-		out, err := copywriter.Transform(transform, rawSample(c))
-		if err != nil {
-			return false
-		}
-		if out == nil {
-			if rejectNull {
-				return false
-			}
-			continue
-		}
-		_, name, valid := previewValueForType(c.value, typeName, declaredType, c.isText)
-		if !valid || (name != transform && transform != "nullif_sentinels") {
-			return false
-		}
-	}
-	return true
-}
-
-// rawSample is a sample as the loader sees it: TEXT as a string, otherwise a
-// float64 when it parses.
-func rawSample(c sampleCell) profiler.Value {
-	if c.isText {
-		return c.value
-	}
-	if f, err := strconv.ParseFloat(c.value, 64); err == nil {
-		return f
-	}
-	return c.value
 }

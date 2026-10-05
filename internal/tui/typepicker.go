@@ -95,24 +95,19 @@ func centered(p tview.Primitive, width, height int) tview.Primitive {
 	return col
 }
 
-// onTypeSelected persists the derived transform for typeName, or shows a refusal
-// and leaves the stored type and transform untouched.
+// onTypeSelected always derives the transform from the samples and persists it,
+// or shows a refusal and leaves the stored type and transform untouched.
 func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortcut rune) {
 	tv := findTable(m.summary, m.selectedTable)
 	col := columnByName(tv, m.pickerColumn)
 	cells := columnSampleCells(tv, m.pickerColumn)
-	// Re-confirming the current type keeps its stored transform when that still
-	// converts every sample; otherwise the transform is re-derived and checked.
-	transform := col.Transform
-	if typeName != col.TargetType || !storedTransformFits(cells, typeName, col.DeclaredType, col.Transform, col.RejectNull) {
-		if msg := refusalMessage(m.pickerColumn, typeName, col.TargetType, cells, col.DeclaredType, col.RejectNull); msg != "" {
-			m.status.SetText(m.pickerStatusBase)
-			m.closePicker()
-			m.showError(msg)
-			return
-		}
-		transform, _ = commonTransformForType(cells, typeName, col.DeclaredType)
+	if msg := refusalMessage(m.pickerColumn, typeName, col.TargetType, cells, col.DeclaredType, col.RejectNull); msg != "" {
+		m.status.SetText(m.pickerStatusBase)
+		m.closePicker()
+		m.showError(msg)
+		return
 	}
+	transform, _ := commonTransformForType(cells, typeName, col.DeclaredType)
 
 	err := m.st.ApplyDecision(m.selectedTable, m.pickerColumn, review.DecisionRequest{
 		TargetType: typeName,
