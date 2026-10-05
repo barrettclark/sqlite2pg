@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 
@@ -276,11 +277,10 @@ func assertFKsApplied(t *testing.T, statePath string) {
 	}
 }
 
-// TestResume_CompletedTableWithoutIdentityWarnsOnDrift: the config declares a
-// rowid-alias identity but the live table has none. Nothing in this tool
-// creates an identity-less rowid table, so this is drift from outside it.
-// It must be reported, not skipped silently, and must not fail the resume.
-func TestResume_CompletedTableWithoutIdentityWarnsOnDrift(t *testing.T) {
+// TestResume_CompletedTableWithoutIdentityRepairsIdentity: a table loaded by a
+// build that never created identities (config says rowid-alias, catalog has no
+// identity) must get one on resume, so the next id-less insert succeeds.
+func TestResume_CompletedTableWithoutIdentityRepairsIdentity(t *testing.T) {
 	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), tenRowsDeleteNewest)
 	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
 		t.Fatalf("load failed: %v", err)
@@ -294,10 +294,51 @@ func TestResume_CompletedTableWithoutIdentityWarnsOnDrift(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	for _, want := range []string{"warning:", "t.id", "rowid-alias identity"} {
-		if !strings.Contains(stderr, want) {
-			t.Errorf("drift warning should contain %q, got: %q", want, stderr)
+	if strings.Contains(stderr, "warning") {
+		t.Errorf("expected no warning when the identity is repaired, got: %q", stderr)
+	}
+	if got := insertWithoutID(t, connCfg); got != 11 {
+		t.Errorf("first generated id after repair = %d, want 11", got)
+	}
+}
+
+// TestResume_CompletedTableWithoutStatsGetsAnalyzed: a resume that finds a
+// completed table with no ANALYZE on record must analyze it.
+func TestResume_CompletedTableWithoutStatsGetsAnalyzed(t *testing.T) {
+	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), fiveRowsSetup)
+	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	conn := pgConnFor(t, connCfg)
+	ctx := context.Background()
+	if _, err := conn.Exec(ctx, `SELECT pg_stat_reset_single_table_counters('"t"'::regclass)`); err != nil {
+		t.Fatalf("resetting stats: %v", err)
+	}
+	var analyzed bool
+	if err := conn.QueryRow(ctx, `SELECT last_analyze IS NOT NULL FROM pg_stat_user_tables WHERE relid = '"t"'::regclass`).Scan(&analyzed); err != nil {
+		t.Fatalf("reading stats: %v", err)
+	}
+	if analyzed {
+		t.Fatal("test setup: expected stats to be cleared before resume")
+	}
+
+	if err := executeLoad(cfg, connCfg, true, statePath); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	// Stats from the resume's session are flushed when it closes; poll briefly.
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var got bool
+		if err := conn.QueryRow(ctx, `SELECT last_analyze IS NOT NULL FROM pg_stat_user_tables WHERE relid = '"t"'::regclass`).Scan(&got); err != nil {
+			t.Fatalf("reading stats: %v", err)
 		}
+		if got {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("resume did not analyze a completed table with no stats")
+		}
+		time.Sleep(100 * time.Millisecond)
 	}
 }
 

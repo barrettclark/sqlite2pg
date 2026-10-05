@@ -391,3 +391,33 @@ func TestRowIDAliasColumn(t *testing.T) {
 		})
 	}
 }
+
+func TestGenerateCreateTable_WithoutRowIDGetsNoIdentity(t *testing.T) {
+	tests := []struct {
+		name         string
+		withoutRowID bool
+		wantIdentity bool
+	}{
+		{name: "rowid table gets identity", withoutRowID: false, wantIdentity: true},
+		{name: "WITHOUT ROWID table gets no identity", withoutRowID: true, wantIdentity: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tc := config.TableConfig{
+				Include:      true,
+				WithoutRowID: tt.withoutRowID,
+				ColumnOrder:  []string{"id"},
+				Columns: map[string]config.ColumnConfig{
+					"id": {DeclaredType: "INTEGER", TargetType: "integer", PrimaryKeySeq: 1},
+				},
+			}
+			stmt, err := GenerateCreateTable("t", tc)
+			if err != nil {
+				t.Fatalf("GenerateCreateTable: %v", err)
+			}
+			if got := strings.Contains(stmt, "IDENTITY"); got != tt.wantIdentity {
+				t.Errorf("identity in DDL = %v, want %v:\n%s", got, tt.wantIdentity, stmt)
+			}
+		})
+	}
+}

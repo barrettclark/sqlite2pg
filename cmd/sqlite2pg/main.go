@@ -545,6 +545,9 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 			if err := tolerateOverflow(reseedCompletedTable(ctx, conn, sourceDB, tableName, pgTableNames[tableName], tc)); err != nil {
 				return err
 			}
+			if err := analyzeIfNeverAnalyzed(ctx, conn, pgTableNames[tableName]); err != nil {
+				return err
+			}
 			continue
 		}
 		tableNames = append(tableNames, tableName)

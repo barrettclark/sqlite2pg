@@ -6,8 +6,10 @@ package config
 import "time"
 
 // CurrentConfigVersion is written into every newly-generated config and
-// checked by Load to detect configs from an older schema.
-const CurrentConfigVersion = 1
+// checked by Load to detect configs from an older schema. Version 2 added
+// without_rowid: a v1 config reads it as false, which would give a WITHOUT
+// ROWID table an identity it can't have.
+const CurrentConfigVersion = 2
 
 // MigrationConfig is the persisted, versioned mapping from a SQLite source
 // to a Postgres target.
