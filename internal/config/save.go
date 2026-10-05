@@ -15,7 +15,8 @@ import (
 
 // Save writes cfg to path as YAML. The write goes to a temp file beside path,
 // is fsynced, and is renamed over path, so a failed write leaves the previous
-// config intact. A symlink at path is replaced, not followed. A new file gets
+// config intact. A symlink at path is followed and the target is replaced
+// atomically, so the link stays; a dangling link is an error. A new file gets
 // 0644 before the umask, as os.WriteFile does; an existing file keeps its mode.
 func Save(cfg *MigrationConfig, path string) error {
 	data, err := yaml.Marshal(cfg)
@@ -36,6 +37,11 @@ func writeAll(f *os.File, data []byte) error {
 // writeAtomic replaces path with data via a same-directory temp file. write is
 // a parameter so tests can fail the write partway through.
 func writeAtomic(path string, data []byte, write func(*os.File, []byte) error) (err error) {
+	target, rerr := resolveTarget(path)
+	if rerr != nil {
+		return rerr
+	}
+	path = target
 	tmp, err := createTemp(path)
 	if err != nil {
 		return err
@@ -94,6 +100,27 @@ func syncDir(dir string) error {
 		return err
 	}
 	return nil
+}
+
+// resolveTarget returns the file to replace for path. A symlink is followed, so
+// writing through it updates the target and keeps the link. A dangling link
+// fails here, before any temp file or target is created.
+func resolveTarget(path string) (string, error) {
+	info, err := os.Lstat(path)
+	if errors.Is(err, fs.ErrNotExist) {
+		return path, nil
+	}
+	if err != nil {
+		return "", err
+	}
+	if info.Mode()&fs.ModeSymlink == 0 {
+		return path, nil
+	}
+	resolved, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolving symlink %s: %w", path, err)
+	}
+	return resolved, nil
 }
 
 // createTemp opens a new temp file in path's directory with os.WriteFile's

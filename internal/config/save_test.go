@@ -133,14 +133,13 @@ func TestSave_NewFileGetsUmaskedDefaultMode(t *testing.T) {
 	}
 }
 
-func TestWriteAtomic_SymlinkIsReplacedNotFollowed(t *testing.T) {
+func TestWriteAtomic_SymlinkIsFollowed(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("creating symlinks needs privileges on Windows")
 	}
 	dir := t.TempDir()
 	target := filepath.Join(dir, "real.yaml")
-	const original = "real target, must not change"
-	if err := os.WriteFile(target, []byte(original), 0o644); err != nil {
+	if err := os.WriteFile(target, []byte("old"), 0o644); err != nil {
 		t.Fatalf("seeding target: %v", err)
 	}
 	link := filepath.Join(dir, "link.migration.yaml")
@@ -148,7 +147,7 @@ func TestWriteAtomic_SymlinkIsReplacedNotFollowed(t *testing.T) {
 		t.Fatalf("symlink: %v", err)
 	}
 
-	cfg := &MigrationConfig{ConfigVersion: CurrentConfigVersion}
+	cfg := &MigrationConfig{ConfigVersion: CurrentConfigVersion, Tables: map[string]TableConfig{"bikes": {Include: true}}}
 	if err := Save(cfg, link); err != nil {
 		t.Fatalf("Save through a symlink: %v", err)
 	}
@@ -156,12 +155,41 @@ func TestWriteAtomic_SymlinkIsReplacedNotFollowed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("lstat: %v", err)
 	}
-	if info.Mode()&os.ModeSymlink != 0 {
-		t.Error("the symlink at path was not replaced")
+	if info.Mode()&os.ModeSymlink == 0 {
+		t.Error("the symlink was replaced; it must stay a link")
 	}
-	got, err := os.ReadFile(target)
-	if err != nil || string(got) != original {
-		t.Errorf("the symlink target was written through: %q, %v", got, err)
+	if _, err := Load(target); err != nil {
+		t.Errorf("the target did not get the new content: %v", err)
+	}
+	if tmps := tempFilesIn(t, dir); len(tmps) != 0 {
+		t.Errorf("temp files left behind: %v", tmps)
+	}
+}
+
+func TestWriteAtomic_DanglingSymlinkErrorsAndCreatesNothing(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("creating symlinks needs privileges on Windows")
+	}
+	dir := t.TempDir()
+	missing := filepath.Join(dir, "gone.yaml")
+	link := filepath.Join(dir, "link.migration.yaml")
+	if err := os.Symlink(missing, link); err != nil {
+		t.Fatalf("symlink: %v", err)
+	}
+
+	cfg := &MigrationConfig{ConfigVersion: CurrentConfigVersion}
+	if err := Save(cfg, link); err == nil {
+		t.Fatal("expected a dangling symlink to fail")
+	}
+	if _, err := os.Stat(missing); !os.IsNotExist(err) {
+		t.Errorf("the dangling link's target was created: %v", err)
+	}
+	info, err := os.Lstat(link)
+	if err != nil || info.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("the dangling link was altered: %v", err)
+	}
+	if tmps := tempFilesIn(t, dir); len(tmps) != 0 {
+		t.Errorf("temp files left behind: %v", tmps)
 	}
 }
 
