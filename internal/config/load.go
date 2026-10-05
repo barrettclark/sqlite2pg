@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,11 +19,20 @@ func Load(path string) (*MigrationConfig, error) {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 	if cfg.ConfigVersion != CurrentConfigVersion {
-		source := cfg.Source.Path
-		if source == "" {
-			source = "<source.db>"
+		source := "'<your SQLite file>'"
+		hint := ""
+		if cfg.Source.Path != "" {
+			source = shellQuote(cfg.Source.Path)
+		} else {
+			hint = " (replace <your SQLite file> with the path to your SQLite source)"
 		}
-		return nil, fmt.Errorf("config %s has config_version %d, but this build of sqlite2pg understands version %d; re-run `sqlite2pg profile --out %s %s` to regenerate it. That overwrites the file and discards reviewed column decisions and overrides, so back it up first and re-review the output", path, cfg.ConfigVersion, CurrentConfigVersion, path, source)
+		return nil, fmt.Errorf("config %s has config_version %d, but this build of sqlite2pg understands version %d; re-run `sqlite2pg profile --out %s %s` to regenerate it%s. That overwrites the file and discards reviewed column decisions and overrides, so back it up first and re-review the output", path, cfg.ConfigVersion, CurrentConfigVersion, shellQuote(path), source, hint)
 	}
 	return &cfg, nil
+}
+
+// shellQuote single-quotes s for a POSIX shell, so a path with spaces or quotes
+// copies correctly from the message.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

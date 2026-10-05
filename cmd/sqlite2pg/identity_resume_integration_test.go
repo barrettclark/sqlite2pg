@@ -150,10 +150,11 @@ func TestResume_HasRowsUnmarkedOverflowMarksCompleted(t *testing.T) {
 	assertInsertExhausted(t, connCfg)
 }
 
-// TestResume_OverflowNeverMovesSequenceBackward: the app has issued ids 6..10
-// and deleted them, so MAX(id) is 5 but the sequence is at 10. An overflowing
-// resume must not reset it to 5, so the next insert can't reissue 6.
-func TestResume_OverflowNeverMovesSequenceBackward(t *testing.T) {
+// TestResume_OverflowDoesNotResetToLoadedMax: the app has issued ids 6..10 and
+// deleted them, so MAX(id) is 5 but the sequence is at 10. An overflowing
+// resume must exhaust the sequence rather than reset it to MAX(id), which would
+// reissue 6.
+func TestResume_OverflowDoesNotResetToLoadedMax(t *testing.T) {
 	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), fiveRowsSetup)
 	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
 		t.Fatalf("load failed: %v", err)
@@ -173,6 +174,27 @@ func TestResume_OverflowNeverMovesSequenceBackward(t *testing.T) {
 		t.Fatalf("resume: %v", err)
 	}
 	assertOverflowWarning(t, stderr, "sequence set to 2147483647")
+	assertInsertExhausted(t, connCfg)
+}
+
+// TestResume_SequenceAlreadyAtMaxStaysExhausted: a sequence already at the
+// column maximum must stay there on an overflowing resume, reporting no change.
+func TestResume_SequenceAlreadyAtMaxStaysExhausted(t *testing.T) {
+	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), fiveRowsSetup)
+	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	conn := pgConnFor(t, connCfg)
+	if _, err := conn.Exec(context.Background(), `SELECT setval(pg_get_serial_sequence('"t"', 'id'), 2147483647, true)`); err != nil {
+		t.Fatalf("exhausting sequence: %v", err)
+	}
+	overflowSource(t, cfg.Source.Path)
+
+	stderr, err := withStderr(t, func() error { return executeLoad(cfg, connCfg, true, statePath) })
+	if err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	assertOverflowWarning(t, stderr, "sequence left unchanged")
 	assertInsertExhausted(t, connCfg)
 }
 

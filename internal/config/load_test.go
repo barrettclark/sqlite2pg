@@ -23,27 +23,64 @@ func TestLoad_AcceptsTheCurrentConfigVersion(t *testing.T) {
 	}
 }
 
-func TestLoad_RejectsV1ConfigWithoutWithoutRowID(t *testing.T) {
-	cfg := &MigrationConfig{
-		ConfigVersion: 1,
-		Source:        SourceInfo{Path: "/data/bikes.db"},
-		Tables: map[string]TableConfig{
-			"bikes": {Include: true},
+func TestLoad_RejectsV1ConfigWithRepairInstructions(t *testing.T) {
+	tests := []struct {
+		name   string
+		source string
+		// want and notWant are built from the config path the test wrote.
+		want    func(path string) []string
+		notWant []string
+	}{
+		{
+			name:   "source recorded",
+			source: "/data/bikes.db",
+			want: func(path string) []string {
+				return []string{"re-run `sqlite2pg profile --out '" + path + "' '/data/bikes.db'`", path}
+			},
+		},
+		{
+			name:   "source empty",
+			source: "",
+			want: func(path string) []string {
+				return []string{"--out '" + path + "'", "replace <your SQLite file> with the path to your SQLite source"}
+			},
+			notWant: []string{"<source.db>"},
+		},
+		{
+			name:   "path with spaces is quoted",
+			source: "/data/my bikes.db",
+			want: func(path string) []string {
+				return []string{"'/data/my bikes.db'"}
+			},
 		},
 	}
-	path := filepath.Join(t.TempDir(), "reviewed-elsewhere.yaml")
-	if err := Save(cfg, path); err != nil {
-		t.Fatalf("Save: %v", err)
-	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := &MigrationConfig{
+				ConfigVersion: 1,
+				Source:        SourceInfo{Path: tt.source},
+				Tables:        map[string]TableConfig{"bikes": {Include: true}},
+			}
+			path := filepath.Join(t.TempDir(), "reviewed elsewhere.yaml")
+			if err := Save(cfg, path); err != nil {
+				t.Fatalf("Save: %v", err)
+			}
 
-	_, err := Load(path)
-	if err == nil {
-		t.Fatal("expected Load to reject a v1 config")
-	}
-	for _, want := range []string{"re-run `sqlite2pg profile --out " + path + " /data/bikes.db`", path} {
-		if !strings.Contains(err.Error(), want) {
-			t.Errorf("expected the error to contain %q, got %q", want, err.Error())
-		}
+			_, err := Load(path)
+			if err == nil {
+				t.Fatal("expected Load to reject a v1 config")
+			}
+			for _, want := range tt.want(path) {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("expected the error to contain %q, got %q", want, err.Error())
+				}
+			}
+			for _, bad := range tt.notWant {
+				if strings.Contains(err.Error(), bad) {
+					t.Errorf("error should not contain %q, got %q", bad, err.Error())
+				}
+			}
+		})
 	}
 }
 

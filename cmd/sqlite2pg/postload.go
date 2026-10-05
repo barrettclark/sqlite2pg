@@ -73,12 +73,9 @@ func checkTableIdentityRange(pgTable string, tc config.TableConfig, highWater in
 	return checkIdentityRange(pgTable, ddl.PostgresColumnNames(tc)[name], tc.Columns[name].TargetType, highWater)
 }
 
-// reseedIdentity advances the identity sequence of pgTable.col past the loaded
-// rows and past highWater. It never moves the sequence backward: the app may
-// already have issued ids past the loaded maximum. When highWater doesn't fit
-// typ, the sequence is exhausted at the type's maximum, so the next insert
-// fails instead of reissuing an id SQLite already handed out. The
-// identityRangeError is returned with what was done to the sequence.
+// reseedIdentity moves pgTable.col's sequence forward past the loaded rows and
+// highWater, never backward. An overflowing highWater exhausts it at the type
+// maximum instead, so an id SQLite already issued is never reissued.
 func reseedIdentity(ctx context.Context, conn *pgx.Conn, pgTable, col, typ string, highWater int64) error {
 	rangeErr := identityOverflow(pgTable, col, typ, highWater)
 	qualified := pgx.Identifier{pgTable}.Sanitize()
