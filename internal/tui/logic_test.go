@@ -817,3 +817,18 @@ func TestStandardTransform_CoversEveryTypeOption(t *testing.T) {
 		})
 	}
 }
+
+// A TEXT "NULL" is a value; only a SQL NULL offers every type.
+func TestValidTypesForColumn_TextNullIsValueNotSQLNull(t *testing.T) {
+	textNull := validTypesForColumn([]sampleCell{{value: "NULL", isText: true}}, "TEXT", false)
+	if containsType(textNull, "integer") {
+		t.Errorf("integer offered for TEXT \"NULL\", got %v", textNull)
+	}
+	if !containsType(textNull, "text") {
+		t.Errorf("text not offered for TEXT \"NULL\", got %v", textNull)
+	}
+	sqlNull := validTypesForColumn([]sampleCell{{value: "NULL", isText: false}}, "INTEGER", false)
+	if !containsType(sqlNull, "integer") {
+		t.Errorf("integer not offered for SQL NULL, got %v", sqlNull)
+	}
+}

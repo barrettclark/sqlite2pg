@@ -14,8 +14,17 @@ import (
 	"sqlite2pg/internal/review"
 )
 
-// withSamples sets one column's sample values on the named table in sum.
+// withSamples sets one column's sample values; "NULL" is SQL NULL, others are TEXT.
 func withSamples(sum review.ReviewSummary, table, column string, values ...string) review.ReviewSummary {
+	cells := make([]sampleCell, len(values))
+	for i, v := range values {
+		cells[i] = sampleCell{value: v, isText: v != "NULL"}
+	}
+	return withSampleCells(sum, table, column, cells...)
+}
+
+// withSampleCells sets one column's sample cells, including their storage class.
+func withSampleCells(sum review.ReviewSummary, table, column string, cells ...sampleCell) review.ReviewSummary {
 	for i := range sum.Tables {
 		tv := &sum.Tables[i]
 		if tv.Name != table {
@@ -30,10 +39,13 @@ func withSamples(sum review.ReviewSummary, table, column string, values ...strin
 		if idx == -1 {
 			continue
 		}
-		tv.Rows = make([][]string, len(values))
-		for r, v := range values {
+		tv.Rows = make([][]string, len(cells))
+		tv.IsText = make([][]bool, len(cells))
+		for r, c := range cells {
 			tv.Rows[r] = make([]string, len(tv.Columns))
-			tv.Rows[r][idx] = v
+			tv.Rows[r][idx] = c.value
+			tv.IsText[r] = make([]bool, len(tv.Columns))
+			tv.IsText[r][idx] = c.isText
 		}
 	}
 	return sum
@@ -774,7 +786,7 @@ func TestOnTypeSelected_AllNullIntegerColumnPersistsStandardTransform(t *testing
 	cases := []struct {
 		name, choose, wantTransform string
 	}{
-		{"current integer keeps its stored transform", "integer", ""},
+		{"current integer persists the derived transform, not its stored one", "integer", "numeric_text_to_integer"},
 		{"bigint persists numeric_text_to_integer", "bigint", "numeric_text_to_integer"},
 		{"boolean persists int_to_bool", "boolean", "int_to_bool"},
 		{"text persists no transform", "text", ""},
@@ -957,4 +969,77 @@ func TestOnTypeSelected_EmptyRowWarningShownInStatus(t *testing.T) {
 	if !strings.Contains(status, "empty-string rows load as NULL (SQLite \"\" is not NULL)") {
 		t.Errorf("status %q does not show the empty-string note", status)
 	}
+}
+
+// newColumnState is a bikes config whose is_installed has the given target,
+// stored transform, and declared type.
+func newColumnState(t *testing.T, targetType, transform, declared string) (*review.State, string, *model) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
+		Tables: map[string]config.TableConfig{
+			"bikes": {
+				ColumnOrder: []string{"bike_id", "is_installed"},
+				Columns: map[string]config.ColumnConfig{
+					"bike_id":      {TargetType: "integer", Confidence: 0.99, Source: "heuristic:default_passthrough"},
+					"is_installed": {TargetType: targetType, Transform: transform, DeclaredType: declared, Confidence: 0.55, Source: "heuristic:test"},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	st, err := review.NewState(path, 0.9)
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: st.Summary()}
+	m.status = tview.NewTextView()
+	m.buildTableList()
+	m.pages.AddPage("tablelist", m.tableList, true, true)
+	m.onTableSelected(0, "bikes", "", 0)
+	return st, path, m
+}
+
+// Confirming the current type persists the transform the samples were
+// validated with, not the stored one that may not fit them.
+func TestOnTypeSelected_CurrentTypePersistsValidatedTransform(t *testing.T) {
+	t.Run("nullable integer with empty row: stored empty transform is replaced", func(t *testing.T) {
+		_, path, m := newColumnState(t, "integer", "", "INTEGER")
+		m.summary = withSamples(m.summary, "bikes", "is_installed", "1", "")
+		m.openTypePicker("is_installed")
+		if !slices.Contains(offeredTypes(m), "integer") {
+			t.Fatalf("integer not offered, got %v", offeredTypes(m))
+		}
+		m.onTypeSelected(0, "integer", "", 0)
+		loaded, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		col := loaded.Tables["bikes"].Columns["is_installed"]
+		if col.Transform != "numeric_text_to_integer" {
+			t.Errorf("persisted Transform = %q, want numeric_text_to_integer", col.Transform)
+		}
+	})
+
+	t.Run("REAL +Inf with float current type: derived transform is persisted", func(t *testing.T) {
+		_, path, m := newColumnState(t, "double precision", "numeric_text_to_double", "REAL")
+		m.summary = withSampleCells(m.summary, "bikes", "is_installed", sampleCell{value: "+Inf", isText: false})
+		m.openTypePicker("is_installed")
+		idx := slices.Index(offeredTypes(m), "double precision")
+		if idx == -1 {
+			t.Fatalf("double precision not offered, got %v", offeredTypes(m))
+		}
+		m.onTypeSelected(idx, "double precision", "", 0)
+		loaded, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		col := loaded.Tables["bikes"].Columns["is_installed"]
+		if col.Transform != "" {
+			t.Errorf("persisted Transform = %q, want \"\" (REAL +Inf passes through)", col.Transform)
+		}
+	})
 }

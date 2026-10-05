@@ -169,6 +169,11 @@ type sampleCell struct {
 	isText bool
 }
 
+// isNull reports a SQL NULL: the grid shows NULL for nil, and a TEXT "NULL" is a value.
+func (c sampleCell) isNull() bool {
+	return c.value == "NULL" && !c.isText
+}
+
 // columnSampleCells extracts one column's sample cells (in row order)
 // from tv's preview grid, for display and validity checking.
 func columnSampleCells(tv review.TableView, columnName string) []sampleCell {
@@ -269,7 +274,7 @@ func sqliteNumericAffinity(declaredType string) bool {
 // isText is the sample's SQLite storage class; the float arms refuse a TEXT
 // non-finite spelling.
 func previewValueForType(value, targetType, declaredType string, isText bool) (display, transform string, valid bool) {
-	if value == "NULL" {
+	if value == "NULL" && !isText {
 		return value, "", true
 	}
 	switch targetType {
@@ -434,7 +439,7 @@ func previewValueForType(value, targetType, declaredType string, isText bool) (d
 // in the picker.
 func firstNonNullCell(cells []sampleCell) sampleCell {
 	for _, c := range cells {
-		if c.value != "NULL" && c.value != "" {
+		if !c.isNull() && c.value != "" {
 			return c
 		}
 	}
@@ -475,7 +480,7 @@ func hasEmptyCell(cells []sampleCell) bool {
 func commonTransformForType(cells []sampleCell, typeName, declaredType string) (transform string, ok bool) {
 	seen := false
 	for _, c := range cells {
-		if c.value == "NULL" || c.value == "" {
+		if c.isNull() || c.value == "" {
 			continue
 		}
 		_, t, valid := previewValueForType(c.value, typeName, declaredType, c.isText)
@@ -608,7 +613,7 @@ func validTypesForColumn(cells []sampleCell, declaredType string, rejectNull boo
 func typeLoadsSamples(cells []sampleCell, typeName, declaredType string, emptyRows, rejectNull bool) bool {
 	sawValue := false
 	for _, c := range cells {
-		if c.value == "" || c.value == "NULL" {
+		if c.isNull() || c.value == "" {
 			continue
 		}
 		_, transform, valid := previewValueForType(c.value, typeName, declaredType, c.isText)

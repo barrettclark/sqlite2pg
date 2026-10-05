@@ -118,23 +118,19 @@ func centered(p tview.Primitive, width, height int) tview.Primitive {
 func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortcut rune) {
 	tv := findTable(m.summary, m.selectedTable)
 	col := columnByName(tv, m.pickerColumn)
-	transform := ""
-	if typeName == col.TargetType {
-		transform = col.Transform
-	} else {
-		t, ok := commonTransformForType(columnSampleCells(tv, m.pickerColumn), typeName, col.DeclaredType)
-		if !ok {
-			m.closePicker()
-			m.showError(fmt.Sprintf("%s: sample rows need different %s transforms (e.g. ISO 8601 and YYYYMMDD dates); a single transform can't cover them — leave the column as %s or split it",
-				m.pickerColumn, typeName, col.TargetType))
-			return
-		}
-		transform = t
-	}
-
-	if col.RejectNull && hasEmptyCell(columnSampleCells(tv, m.pickerColumn)) && !transformAcceptsEmpty(typeName, transform, true) {
+	cells := columnSampleCells(tv, m.pickerColumn)
+	// The persisted transform is always the derived one, never the stored one, so
+	// it is the one validated here and in validTypesForColumn.
+	transform, ok := commonTransformForType(cells, typeName, col.DeclaredType)
+	if !ok {
 		m.closePicker()
-		m.showError(fmt.Sprintf("%s: %s turns the empty-string rows of this NOT NULL column into NULL; leave it as %s", m.pickerColumn, typeName, col.TargetType))
+		m.showError(fmt.Sprintf("%s: sample rows need different %s transforms (e.g. ISO 8601 and YYYYMMDD dates); a single transform can't cover them — leave the column as %s or split it",
+			m.pickerColumn, typeName, col.TargetType))
+		return
+	}
+	if !typeLoadsSamples(cells, typeName, col.DeclaredType, hasEmptyCell(cells), col.RejectNull) {
+		m.closePicker()
+		m.showError(fmt.Sprintf("%s: %s cannot load this column's sample rows (empty strings or NULL-producing transform); leave it as %s", m.pickerColumn, typeName, col.TargetType))
 		return
 	}
 
