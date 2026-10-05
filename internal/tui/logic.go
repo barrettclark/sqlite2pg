@@ -661,9 +661,10 @@ func isFloatType(typeName string) bool {
 	return typeName == "real" || typeName == "double precision" || typeName == "numeric"
 }
 
-// floatTransform returns the one transform for a float target. A column mixing
-// TEXT and REAL samples gets numeric_text_to_double for every row, since it
-// loads both float64 and string values; REAL-only columns get "".
+// floatTransform returns the one transform for a float target. All-REAL samples
+// get "". Any TEXT sample, including a REAL-declared column whose samples are all
+// TEXT, gets numeric_text_to_double for every row, which parses both float64 and
+// string values. That transform rejects a REAL infinity, so that mix is refused.
 func floatTransform(cells []sampleCell, typeName, declaredType string) (string, bool) {
 	anyText, seen := false, false
 	for _, c := range cells {
@@ -679,8 +680,33 @@ func floatTransform(cells []sampleCell, typeName, declaredType string) (string, 
 	switch {
 	case !seen:
 		return standardTransform(typeName, declaredType)
+	case anyText && hasInfinityReal(cells):
+		return "", false
 	case anyText:
 		return "numeric_text_to_double", true
 	}
 	return "", true
+}
+
+// hasInfinityReal reports whether a non-TEXT sample is ±Inf.
+func hasInfinityReal(cells []sampleCell) bool {
+	for _, c := range cells {
+		if c.isText {
+			continue
+		}
+		if f, err := strconv.ParseFloat(c.value, 64); err == nil && math.IsInf(f, 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTextCell reports whether any non-NULL, non-empty sample is TEXT.
+func hasTextCell(cells []sampleCell) bool {
+	for _, c := range cells {
+		if c.isText && !c.isNull() && c.value != "" {
+			return true
+		}
+	}
+	return false
 }

@@ -9,8 +9,8 @@ import (
 	"sqlite2pg/internal/review"
 )
 
-// pickerWidth is the overlay width. The list border takes 2 columns, tview's "(x)"
-// shortcut prefix takes 4, and the rest fits the longest row note.
+// pickerWidth is the overlay width. It fits values of about 20 characters or
+// fewer after the border and tview's "(x)" shortcut prefix.
 const pickerWidth = 76
 
 // openTypePicker opens a centered list of the types validTypesForColumn offers,
@@ -58,8 +58,8 @@ func (m *model) openTypePicker(columnName string) {
 	current, _ := list.GetItemText(list.GetCurrentItem())
 	m.showPickerWarning(current)
 
-	// tview reserves 4 extra columns to print each item's "(x)" shortcut
-	// prefix once any item has one, so widen the overlay to match.
+	// The overlay is pickerWidth wide, which fits values of about 20 characters or
+	// fewer after tview's "(x)" shortcut prefix.
 	overlay := centered(list, pickerWidth, len(types)+2)
 	if m.pages.HasPage("picker") {
 		m.pages.RemovePage("picker")
@@ -166,6 +166,9 @@ func (m *model) pickerKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 // disagreeing transforms, a value that does not fit the type, or (with "" rows)
 // an empty string that becomes NULL on a NOT NULL column or does not load at all.
 func refusalMessage(column, typeName, targetType string, cells []sampleCell, declaredType string, rejectNull bool) string {
+	if isFloatType(typeName) && hasTextCell(cells) && hasInfinityReal(cells) {
+		return fmt.Sprintf("%s: text numbers and infinities can't share a float transform; leave the column as %s", column, targetType)
+	}
 	if _, ok := commonTransformForType(cells, typeName, declaredType); !ok {
 		if allSamplesValidate(cells, typeName, declaredType) {
 			return fmt.Sprintf("%s: sample rows need different %s transforms (e.g. ISO 8601 and YYYYMMDD dates); a single transform can't cover them — leave the column as %s or split it", column, typeName, targetType)

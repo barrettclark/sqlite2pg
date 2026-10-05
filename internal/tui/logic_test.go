@@ -879,3 +879,15 @@ func TestOnTypeSelected_AllNullTextColumnFloatTransform(t *testing.T) {
 		}
 	}
 }
+
+// A mixed TEXT and REAL column with a "" row takes numeric_text_to_double: the
+// row loads as NULL on a nullable column, and a NOT NULL column refuses it.
+func TestValidTypesForColumn_MixedFloatWithEmptyRow(t *testing.T) {
+	cells := []sampleCell{{value: "1.5", isText: true}, {value: "2.5", isText: false}, {value: ""}}
+	if got := validTypesForColumn(cells, "REAL", false); !containsType(got, "double precision") {
+		t.Errorf("nullable mixed column: double precision not offered, got %v", got)
+	}
+	if got := validTypesForColumn(cells, "REAL", true); containsType(got, "double precision") {
+		t.Errorf("NOT NULL mixed column with \"\": double precision offered, got %v", got)
+	}
+}

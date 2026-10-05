@@ -1341,3 +1341,20 @@ func TestOnTypeSelected_MixedStorageFloatPersistsTextTransform(t *testing.T) {
 	}
 	assertPersisted(t, path, "double precision", "numeric_text_to_double")
 }
+
+// A TEXT sample mixed with a REAL infinity has no single float transform, so the
+// float type is not offered and a confirm is refused with the infinity message.
+func TestOnTypeSelected_MixedTextAndRealInfinityRefusesFloat(t *testing.T) {
+	_, path, m := newColumnState(t, "double precision", "", "REAL")
+	m.summary = withSampleCells(m.summary, "bikes", "is_installed",
+		sampleCell{value: "1.5", isText: true}, sampleCell{value: "+Inf", isText: false})
+	m.openTypePicker("is_installed")
+	if slices.Contains(offeredTypes(m), "double precision") {
+		t.Fatalf("double precision offered for TEXT and REAL +Inf samples, got %v", offeredTypes(m))
+	}
+	m.onTypeSelected(0, "double precision", "", 0)
+	if !strings.Contains(m.lastError, "infinities") {
+		t.Errorf("lastError = %q, want the infinity refusal", m.lastError)
+	}
+	assertPersisted(t, path, "double precision", "")
+}
