@@ -12,6 +12,31 @@ import (
 	"sqlite2pg/internal/review"
 )
 
+// withSamples sets one column's sample values on the named table in sum.
+func withSamples(sum review.ReviewSummary, table, column string, values ...string) review.ReviewSummary {
+	for i := range sum.Tables {
+		tv := &sum.Tables[i]
+		if tv.Name != table {
+			continue
+		}
+		idx := -1
+		for j, c := range tv.Columns {
+			if c.Column == column {
+				idx = j
+			}
+		}
+		if idx == -1 {
+			continue
+		}
+		tv.Rows = make([][]string, len(values))
+		for r, v := range values {
+			tv.Rows[r] = make([]string, len(tv.Columns))
+			tv.Rows[r][idx] = v
+		}
+	}
+	return sum
+}
+
 func TestOpenTypePicker_ListsOnlyValidTypesAndSelectsCurrentType(t *testing.T) {
 	m := testModel()
 	m.onTableSelected(0, "bikes", "", 0)
@@ -28,7 +53,7 @@ func TestOpenTypePicker_ListsOnlyValidTypesAndSelectsCurrentType(t *testing.T) {
 		t.Fatal("expected a picker page to be added")
 	}
 	if m.picker.GetItemCount() == 0 {
-		t.Fatal("expected at least one type option (current type is always included)")
+		t.Fatal("expected at least one type option (a type the samples validate as)")
 	}
 	current, _ := m.picker.GetItemText(m.picker.GetCurrentItem())
 	if current != "boolean" {
@@ -109,7 +134,7 @@ func newTestState(t *testing.T) (*review.State, string) {
 
 func TestOnTypeSelected_AppliesTheDecisionAndRefreshesTheGrid(t *testing.T) {
 	st, path := newTestState(t)
-	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: st.Summary()}
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: withSamples(st.Summary(), "bikes", "is_installed", "1", "0")}
 	m.status = tview.NewTextView()
 	m.buildTableList()
 	m.pages.AddPage("tablelist", m.tableList, true, true)
@@ -137,8 +162,8 @@ func TestOnTypeSelected_AppliesTheDecisionAndRefreshesTheGrid(t *testing.T) {
 	if col.TargetType != "integer" {
 		t.Errorf("expected TargetType integer, got %q", col.TargetType)
 	}
-	if col.Transform != "" {
-		t.Errorf("expected Transform cleared, got %q", col.Transform)
+	if col.Transform != "numeric_text_to_integer" {
+		t.Errorf("expected the transform derived from the samples (numeric_text_to_integer), got %q", col.Transform)
 	}
 	if col.Source != "human_override" {
 		t.Errorf("expected source human_override, got %q", col.Source)
@@ -204,7 +229,7 @@ func TestOnTypeSelected_RebuildsTheTableListPreservingSelection(t *testing.T) {
 		t.Fatalf("NewState: %v", err)
 	}
 
-	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: st.Summary()}
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: withSamples(st.Summary(), "bikes", "is_installed", "1", "0")}
 	m.status = tview.NewTextView()
 	m.buildTableList()
 	m.pages.AddPage("tablelist", m.tableList, true, true)
@@ -271,7 +296,7 @@ func TestOnTypeSelected_ReselectingTheSameTypePreservesTheTransform(t *testing.T
 		t.Fatalf("NewState: %v", err)
 	}
 
-	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: st.Summary()}
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: withSamples(st.Summary(), "bikes", "last_reported", "1712345678", "1712345679")}
 	m.status = tview.NewTextView()
 	m.buildTableList()
 	m.pages.AddPage("tablelist", m.tableList, true, true)

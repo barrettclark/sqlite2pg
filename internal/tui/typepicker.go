@@ -11,7 +11,7 @@ import (
 
 // openTypePicker opens a centered list of the types columnName's sample
 // values actually validate as (per validTypesForColumn), with the
-// column's current target type pre-selected.
+// column's current target type pre-selected when it is in the list.
 func (m *model) openTypePicker(columnName string) {
 	m.pickerColumn = columnName
 	tv := findTable(m.summary, m.selectedTable)

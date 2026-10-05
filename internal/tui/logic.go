@@ -572,27 +572,57 @@ func nextFlaggedColumn(flagged []flaggedColumn, current flaggedColumn, forward b
 	return flagged[next], true
 }
 
-// validTypesForColumn returns the subset of review.TypeOptions that every
-// one of cells would load successfully as (per previewValueForType). NULL and
-// empty samples are skipped, as in commonTransformForType. The current type is
-// not exempt: offering a type that fails the preview would let a human select
-// a type whose COPY then fails.
+// validTypesForColumn returns the review.TypeOptions every non-NULL, non-empty
+// sample validates as (per previewValueForType). The loader runs the chosen
+// transform on every row and does not map "" to NULL, so with any "" sample a
+// type is offered only if each sample's transform accepts "". With no
+// non-NULL, non-empty sample there is no evidence for a transform, so only
+// text and bytea are offered: they load the raw value unconverted.
 func validTypesForColumn(cells []sampleCell, declaredType string) []string {
+	hasValue, hasEmpty := false, false
+	for _, c := range cells {
+		switch c.value {
+		case "NULL":
+		case "":
+			hasEmpty = true
+		default:
+			hasValue = true
+		}
+	}
 	var result []string
 	for _, t := range review.TypeOptions {
-		ok := true
-		for _, c := range cells {
-			if c.value == "" || c.value == "NULL" {
-				continue
-			}
-			if _, _, valueValid := previewValueForType(c.value, t, declaredType, c.isText); !valueValid {
-				ok = false
-				break
-			}
+		if !hasValue && t != "text" && t != "bytea" {
+			continue
 		}
-		if ok {
+		if typeLoadsSamples(cells, t, declaredType, hasEmpty) {
 			result = append(result, t)
 		}
 	}
 	return result
+}
+
+// typeLoadsSamples reports whether every non-NULL, non-empty cell validates as
+// typeName and, when hasEmpty, each cell's transform also accepts "".
+func typeLoadsSamples(cells []sampleCell, typeName, declaredType string, hasEmpty bool) bool {
+	for _, c := range cells {
+		if c.value == "" || c.value == "NULL" {
+			continue
+		}
+		_, transform, valid := previewValueForType(c.value, typeName, declaredType, c.isText)
+		if !valid || (hasEmpty && !transformAcceptsEmpty(typeName, transform)) {
+			return false
+		}
+	}
+	return true
+}
+
+// transformAcceptsEmpty reports whether a "" row loads under transform for
+// typeName. An empty transform passes "" through, which only text and bytea
+// accept as a value.
+func transformAcceptsEmpty(typeName, transform string) bool {
+	if transform == "" {
+		return typeName == "text" || typeName == "bytea"
+	}
+	_, err := copywriter.Transform(transform, "")
+	return err == nil
 }

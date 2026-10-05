@@ -142,8 +142,8 @@ func TestValidTypesForColumn_OffersDoublePrecisionOnlyForREALInfinity(t *testing
 	}
 }
 
-// A column the full-table check sent to review can still carry a current
-// type whose preview rejects a sampled token; that type must not be offered.
+// A column sent to review by the full-table check can have a type that a
+// sampled token rejects (e.g. "+Inf" in TEXT); that type must not be offered.
 func TestValidTypesForColumn_NeverOffersInvalidCurrentType(t *testing.T) {
 	cases := []struct {
 		name        string
@@ -173,21 +173,25 @@ func TestValidTypesForColumn_NeverOffersInvalidCurrentType(t *testing.T) {
 	}
 }
 
-// An empty sample is "no value on file" (commonTransformForType skips it), so it must not
-// knock numeric types out of the picker.
+// "" is skipped for validity, so a numeric-looking sample still offers the integer
+// types (numeric_text_to_integer accepts ""). The float types are excluded
+// because their pass-through transform cannot encode "" (see the empty-row test).
 func TestValidTypesForColumn_EmptySamplesAreSkipped(t *testing.T) {
-	got := validTypesForColumn([]sampleCell{{value: ""}, {value: "1.5"}, {value: "NULL"}}, "TEXT")
-	for _, want := range []string{"real", "double precision", "numeric"} {
-		found := false
-		for _, typ := range got {
-			if typ == want {
-				found = true
-			}
-		}
-		if !found {
+	got := validTypesForColumn([]sampleCell{{value: ""}, {value: "7"}, {value: "NULL"}}, "TEXT")
+	for _, want := range []string{"integer", "bigint", "smallint"} {
+		if !containsType(got, want) {
 			t.Errorf("%q not offered for samples with empty string, got %v", want, got)
 		}
 	}
+}
+
+func containsType(types []string, want string) bool {
+	for _, typ := range types {
+		if typ == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestPreviewValueForType_ValidityForNonNumericTypes(t *testing.T) {
@@ -300,7 +304,7 @@ func TestValidTypesForColumn_FiltersOutTypesAnySampleFails(t *testing.T) {
 	}
 	for typ, wantPresent := range want {
 		if gotSet[typ] != wantPresent {
-			t.Errorf("validTypesForColumn(%v, \"integer\") contains %q = %v, want %v", values, typ, gotSet[typ], wantPresent)
+			t.Errorf("validTypesForColumn(%v, \"\") contains %q = %v, want %v", values, typ, gotSet[typ], wantPresent)
 		}
 	}
 }
@@ -418,14 +422,10 @@ func TestNextFlaggedColumn_EmptyListReturnsNotOK(t *testing.T) {
 
 func TestValidTypesForColumn_OffersTimestamptzForAPlausibleUnixEpochValueNotAlreadyTimestamptz(t *testing.T) {
 	// bikes.last_reported's raw value (issue #27): a plausible Unix epoch
-	// seconds integer. currentType is deliberately "integer", not
-	// "timestamptz", to prove timestamptz is offered because
-	// unix_epoch_seconds actually converts it — not merely because it
-	// happens to already be the column's current type (the bug: the old
-	// implementation ran the raw text through date-string parsing
-	// directly, which 1712345678 could never pass, so timestamptz was
-	// missing from the picker for any column that didn't already have it
-	// as its current type).
+	// seconds integer. timestamptz must be offered because unix_epoch_seconds
+	// converts it, not because the column already has that type (the old
+	// implementation ran raw text through date-string parsing, which 1712345678
+	// could never pass).
 	values := []string{"1712345678"}
 	got := validTypesForColumn(plainCells(values...), "")
 	found := false
@@ -608,12 +608,12 @@ func TestPreviewValueForType_IntegerRangeCheck(t *testing.T) {
 	}
 }
 
-func TestValidTypesForColumn_ExcludesCurrentTypeWhenInvalid(t *testing.T) {
+func TestValidTypesForColumn_ExcludesIntegerWhenSampleIsNotAnInteger(t *testing.T) {
 	values := []string{"not-a-number-at-all"}
 	got := validTypesForColumn(plainCells(values...), "")
 	for _, typ := range got {
 		if typ == "integer" {
-			t.Errorf("currentType %q offered though its preview rejects the sample, got %v", "integer", got)
+			t.Errorf("integer offered though its preview rejects the sample, got %v", got)
 		}
 	}
 	for _, typ := range got {
@@ -686,6 +686,57 @@ func TestColumnSampleCells_MissingIsTextFailsClosed(t *testing.T) {
 			}
 			if has != tc.wantDouble {
 				t.Errorf("double precision offered = %v, want %v (types %v)", has, tc.wantDouble, got)
+			}
+		})
+	}
+}
+
+func TestValidTypesForColumn_AllEmptySamplesOfferOnlyTextAndBytea(t *testing.T) {
+	cases := []struct {
+		name  string
+		cells []sampleCell
+	}{
+		{"empty strings", []sampleCell{{value: ""}, {value: ""}}},
+		{"NULLs", []sampleCell{{value: "NULL"}, {value: "NULL"}}},
+		{"mixed NULL and empty", []sampleCell{{value: "NULL"}, {value: ""}}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validTypesForColumn(tc.cells, "TEXT")
+			if len(got) != 2 || got[0] != "text" || got[1] != "bytea" {
+				t.Errorf("validTypesForColumn = %v, want [text bytea]", got)
+			}
+		})
+	}
+}
+
+// The loader applies a column's transform to every row and does not map ""
+// to NULL, so a "" row must not reach a transform that rejects it.
+func TestValidTypesForColumn_EmptyRowsExcludeTypesWhoseTransformRejectsEmpty(t *testing.T) {
+	cases := []struct {
+		name      string
+		values    []string
+		typ       string
+		wantOffer bool
+	}{
+		{"boolean rejects \"\" via int_to_bool", []string{"0", "1", ""}, "boolean", false},
+		{"jsonb rejects \"\" via text_to_jsonb", []string{"{}", ""}, "jsonb", false},
+		{"date rejects \"\" via iso8601_to_date", []string{"2021-06-01", ""}, "date", false},
+		{"integer accepts \"\" via numeric_text_to_integer", []string{"1", "2", ""}, "integer", true},
+		{"double precision with pass-through transform rejects \"\"", []string{"1.5", ""}, "double precision", false},
+		{"text accepts \"\"", []string{"abc", ""}, "text", true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := validTypesForColumn(plainCells(tc.values...), "TEXT")
+			offered := false
+			for _, typ := range got {
+				if typ == tc.typ {
+					offered = true
+				}
+			}
+			if offered != tc.wantOffer {
+				t.Errorf("%q offered = %v, want %v (got %v)", tc.typ, offered, tc.wantOffer, got)
 			}
 		})
 	}
