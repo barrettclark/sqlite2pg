@@ -240,8 +240,8 @@ func checkSourceFile(path string) error {
 	if err != nil {
 		return fmt.Errorf("source database %s: %w", path, err)
 	}
-	if info.IsDir() {
-		return fmt.Errorf("source database %s is a directory", path)
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("source database %s is not a regular file", path)
 	}
 	return nil
 }
