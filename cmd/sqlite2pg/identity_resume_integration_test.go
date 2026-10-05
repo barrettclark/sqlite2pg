@@ -342,6 +342,66 @@ func TestResume_CompletedTableWithoutStatsGetsAnalyzed(t *testing.T) {
 	}
 }
 
+// TestResume_HasRowsRepairsMissingIdentity: a table with rows and no state
+// entry, loaded without an identity, must get one on resume. Only then is the
+// reseed meaningful and the table marked completed.
+func TestResume_HasRowsRepairsMissingIdentity(t *testing.T) {
+	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), tenRowsDeleteNewest)
+	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if err := writeState(statePath, loadState{}); err != nil {
+		t.Fatalf("clearing state: %v", err)
+	}
+	conn := pgConnFor(t, connCfg)
+	if _, err := conn.Exec(context.Background(), `ALTER TABLE "t" ALTER COLUMN id DROP IDENTITY`); err != nil {
+		t.Fatalf("dropping identity: %v", err)
+	}
+
+	if err := executeLoad(cfg, connCfg, true, statePath); err != nil {
+		t.Fatalf("resume: %v", err)
+	}
+	done, err := loadCompletedTables(statePath)
+	if err != nil {
+		t.Fatalf("reading state: %v", err)
+	}
+	if !done["t"] {
+		t.Error("table was not marked completed after repair")
+	}
+	if got := insertWithoutID(t, connCfg); got != 11 {
+		t.Errorf("first generated id after repair = %d, want 11", got)
+	}
+}
+
+// TestResume_RepairFailureReturnsErrorAndDoesNotMarkTable: ADD GENERATED is
+// refused when the column already has a default. The resume must return that
+// error and leave the table unmarked, so the next run retries it.
+func TestResume_RepairFailureReturnsErrorAndDoesNotMarkTable(t *testing.T) {
+	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), tenRowsDeleteNewest)
+	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
+		t.Fatalf("load failed: %v", err)
+	}
+	if err := writeState(statePath, loadState{}); err != nil {
+		t.Fatalf("clearing state: %v", err)
+	}
+	conn := pgConnFor(t, connCfg)
+	if _, err := conn.Exec(context.Background(), `ALTER TABLE "t" ALTER COLUMN id DROP IDENTITY, ALTER COLUMN id SET DEFAULT 5`); err != nil {
+		t.Fatalf("setting up default: %v", err)
+	}
+
+	err := executeLoad(cfg, connCfg, true, statePath)
+	if err == nil || !strings.Contains(err.Error(), "adding identity to t.id") {
+		t.Fatalf("expected the identity repair error to be returned, got: %v", err)
+	}
+	done, err := loadCompletedTables(statePath)
+	if err != nil {
+		t.Fatalf("reading state: %v", err)
+	}
+	if done["t"] {
+		t.Error("table was marked completed despite the failed identity repair")
+	}
+}
+
 // TestResume_NonRangeReseedFailureDoesNotMarkTable: on the has-rows path, a
 // reseed failure that isn't an overflow must abort before the table is marked
 // completed, so the next resume retries it. Here setval fails because the

@@ -18,7 +18,7 @@ func Load(path string) (*MigrationConfig, error) {
 		return nil, fmt.Errorf("parsing config %s: %w", path, err)
 	}
 	if cfg.ConfigVersion != CurrentConfigVersion {
-		return nil, fmt.Errorf("config %s has config_version %d, but this build of sqlite2pg understands version %d; re-run `sqlite2pg profile` to regenerate it", path, cfg.ConfigVersion, CurrentConfigVersion)
+		return nil, fmt.Errorf("config %s has config_version %d, but this build of sqlite2pg understands version %d; re-run `sqlite2pg profile` to regenerate it, which overwrites the file and discards reviewed column decisions and overrides (back it up first, then re-review)", path, cfg.ConfigVersion, CurrentConfigVersion)
 	}
 	return &cfg, nil
 }
