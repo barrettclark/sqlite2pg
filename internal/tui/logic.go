@@ -475,8 +475,9 @@ func hasEmptyCell(cells []sampleCell) bool {
 	return false
 }
 
-// commonTransformForType returns the transform all samples agree on (issue #64),
-// or the standard transform when there is no non-empty sample.
+// commonTransformForType returns the transform all samples agree on, or the standard
+// transform when there is no non-empty sample. ok is false when a sample does not
+// validate as typeName or the samples disagree on a transform (issue #64).
 func commonTransformForType(cells []sampleCell, typeName, declaredType string) (transform string, ok bool) {
 	seen := false
 	for _, c := range cells {
@@ -590,8 +591,9 @@ func nextFlaggedColumn(flagged []flaggedColumn, current flaggedColumn, forward b
 	return flagged[next], true
 }
 
-// validTypesForColumn returns the types every sample validates as, given that
-// "" rows must also load under each type's transform (transformAcceptsEmpty).
+// validTypesForColumn returns the types the samples can be saved as. A type needs
+// the shared transform (commonTransformForType) and, with "" rows, a transform
+// that accepts "" (transformAcceptsEmpty), so the list matches onTypeSelected.
 func validTypesForColumn(cells []sampleCell, declaredType string, rejectNull bool) []string {
 	emptyRows := false
 	for _, c := range cells {
@@ -608,8 +610,9 @@ func validTypesForColumn(cells []sampleCell, declaredType string, rejectNull boo
 	return result
 }
 
-// typeLoadsSamples reports whether every non-NULL, non-empty cell validates as
-// typeName and, when emptyRows, its transform also accepts "".
+// typeLoadsSamples reports whether the samples can be saved as typeName. It is
+// gated on commonTransformForType (ok is false for invalid or disagreeing
+// samples), and when emptyRows its transform must also accept "".
 func typeLoadsSamples(cells []sampleCell, typeName, declaredType string, emptyRows, rejectNull bool) bool {
 	if _, ok := commonTransformForType(cells, typeName, declaredType); !ok {
 		return false

@@ -89,25 +89,18 @@ func centered(p tview.Primitive, width, height int) tview.Primitive {
 	return col
 }
 
-// onTypeSelected persists the derived transform for typeName, or refuses the
-// pick when the samples cannot load under it.
+// onTypeSelected persists the derived transform for typeName, or shows a refusal
+// and leaves the stored type and transform untouched.
 func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortcut rune) {
 	tv := findTable(m.summary, m.selectedTable)
 	col := columnByName(tv, m.pickerColumn)
 	cells := columnSampleCells(tv, m.pickerColumn)
-	// Persist the derived transform; refuse it if the samples can't load under it.
-	transform, ok := commonTransformForType(cells, typeName, col.DeclaredType)
-	if !ok {
+	if msg := refusalMessage(m.pickerColumn, typeName, col.TargetType, cells, col.DeclaredType, col.RejectNull); msg != "" {
 		m.closePicker()
-		m.showError(fmt.Sprintf("%s: sample rows need different %s transforms (e.g. ISO 8601 and YYYYMMDD dates); a single transform can't cover them — leave the column as %s or split it",
-			m.pickerColumn, typeName, col.TargetType))
+		m.showError(msg)
 		return
 	}
-	if !typeLoadsSamples(cells, typeName, col.DeclaredType, hasEmptyCell(cells), col.RejectNull) {
-		m.closePicker()
-		m.showError(fmt.Sprintf("%s: %s cannot load this column's sample rows (empty strings or NULL-producing transform); leave it as %s", m.pickerColumn, typeName, col.TargetType))
-		return
-	}
+	transform, _ := commonTransformForType(cells, typeName, col.DeclaredType)
 
 	err := m.st.ApplyDecision(m.selectedTable, m.pickerColumn, review.DecisionRequest{
 		TargetType: typeName,
@@ -150,4 +143,34 @@ func (m *model) pickerKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 		return nil
 	}
 	return event
+}
+
+// refusalMessage explains why typeName cannot be saved for the column's
+// samples, or returns "" if it can. Disagreeing transforms and invalid values
+// get different messages.
+func refusalMessage(column, typeName, targetType string, cells []sampleCell, declaredType string, rejectNull bool) string {
+	if _, ok := commonTransformForType(cells, typeName, declaredType); !ok {
+		if allSamplesValidate(cells, typeName, declaredType) {
+			return fmt.Sprintf("%s: sample rows need different %s transforms (e.g. ISO 8601 and YYYYMMDD dates); a single transform can't cover them — leave the column as %s or split it", column, typeName, targetType)
+		}
+		return fmt.Sprintf("%s: samples can't load as %s; leave the column as %s", column, typeName, targetType)
+	}
+	if !typeLoadsSamples(cells, typeName, declaredType, hasEmptyCell(cells), rejectNull) {
+		return fmt.Sprintf("%s: samples can't load as %s (an empty string would become NULL); leave the column as %s", column, typeName, targetType)
+	}
+	return ""
+}
+
+// allSamplesValidate reports whether every non-NULL, non-empty sample validates
+// as typeName, ignoring whether they agree on a transform.
+func allSamplesValidate(cells []sampleCell, typeName, declaredType string) bool {
+	for _, c := range cells {
+		if c.isNull() || c.value == "" {
+			continue
+		}
+		if _, _, valid := previewValueForType(c.value, typeName, declaredType, c.isText); !valid {
+			return false
+		}
+	}
+	return true
 }

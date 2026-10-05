@@ -29,6 +29,8 @@ type model struct {
 
 	picker       *tview.List
 	pickerColumn string
+	// lastError is the last message passed to showError, for tests.
+	lastError string
 
 	pendingConfirm confirmState
 }

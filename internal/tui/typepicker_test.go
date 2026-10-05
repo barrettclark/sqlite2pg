@@ -647,6 +647,9 @@ func TestOnTypeSelected_RefusesADateTypeWhenSamplesNeedDifferentTransforms(t *te
 		t.Fatal("\"date\" offered for a mixed ISO/compact column, want it omitted")
 	}
 	m.onTypeSelected(0, "date", "", 0)
+	if !strings.Contains(m.lastError, "need different date transforms") {
+		t.Errorf("refusal message %q, want it to say the samples need different transforms", m.lastError)
+	}
 
 	loaded, err := config.Load(path)
 	if err != nil {
@@ -1051,6 +1054,9 @@ func TestOnTypeSelected_CurrentTypeRefusalKeepsStoredTransform(t *testing.T) {
 	}
 
 	m.onTypeSelected(0, "integer", "", 0)
+	if !strings.Contains(m.lastError, "samples can't load as integer") {
+		t.Errorf("refusal message %q, want it to say samples can't load as integer", m.lastError)
+	}
 
 	loaded, err := config.Load(path)
 	if err != nil {
@@ -1080,6 +1086,11 @@ func TestOnTypeSelected_TextNullValuePersistsAndRefusesInteger(t *testing.T) {
 		t.Fatalf("offered = %v, want text offered and integer omitted", offeredTypes(m))
 	}
 
+	// Refuse integer first: a pick rebuilds the summary, which drops the injected samples.
+	m.onTypeSelected(0, "integer", "", 0)
+	if !strings.Contains(m.lastError, "samples can't load as integer") {
+		t.Errorf("refusal message %q, want it to say samples can't load as integer", m.lastError)
+	}
 	m.onTypeSelected(slices.Index(offeredTypes(m), "text"), "text", "", 0)
 
 	loaded, err := config.Load(path)
@@ -1089,5 +1100,34 @@ func TestOnTypeSelected_TextNullValuePersistsAndRefusesInteger(t *testing.T) {
 	col := loaded.Tables["bikes"].Columns["is_installed"]
 	if col.TargetType != "text" || col.Transform != "" {
 		t.Errorf("persisted (%q, %q), want (text, \"\")", col.TargetType, col.Transform)
+	}
+}
+
+func TestRefusalMessage(t *testing.T) {
+	cases := []struct {
+		name     string
+		cells    []sampleCell
+		typ      string
+		declared string
+		want     string
+	}{
+		{"valid samples are not refused", []sampleCell{{value: "1", isText: false}, {value: "2", isText: false}}, "integer", "INTEGER", ""},
+		{"disagreeing transforms", []sampleCell{{value: "2021-06-01", isText: true}, {value: "20210704", isText: true}}, "date", "TEXT", "sample rows need different date transforms"},
+		{"value that does not fit", []sampleCell{{value: "1,000", isText: true}}, "integer", "INTEGER", "samples can't load as integer"},
+		{"TEXT NULL is not an integer", []sampleCell{{value: "NULL", isText: true}}, "integer", "TEXT", "samples can't load as integer"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := refusalMessage("col", tc.typ, "target", tc.cells, tc.declared, false)
+			if tc.want == "" {
+				if got != "" {
+					t.Errorf("refusalMessage = %q, want no refusal", got)
+				}
+				return
+			}
+			if !strings.Contains(got, tc.want) {
+				t.Errorf("refusalMessage = %q, want it to contain %q", got, tc.want)
+			}
+		})
 	}
 }
