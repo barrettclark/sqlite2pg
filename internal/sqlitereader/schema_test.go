@@ -28,6 +28,51 @@ func openTestDB(t *testing.T, ddl string) *sql.DB {
 	return db
 }
 
+// openDBWithoutSequenceTable builds a database with ddl applied, then deletes
+// its sqlite_sequence table via writable_schema, the only way to reach that
+// state. It reopens the file so no cached schema still shows the table.
+func openDBWithoutSequenceTable(t *testing.T, ddl string) *sql.DB {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "test.db")
+	db, err := sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	if _, err := db.Exec(ddl); err != nil {
+		t.Fatalf("exec ddl: %v", err)
+	}
+	ctx := context.Background()
+	conn, err := db.Conn(ctx)
+	if err != nil {
+		t.Fatalf("conn: %v", err)
+	}
+	for _, stmt := range []string{
+		`PRAGMA writable_schema = ON`,
+		`DELETE FROM sqlite_master WHERE type = 'table' AND name = 'sqlite_sequence'`,
+		`PRAGMA writable_schema = OFF`,
+	} {
+		if _, err := conn.ExecContext(ctx, stmt); err != nil {
+			t.Fatalf("%s: %v", stmt, err)
+		}
+	}
+	conn.Close()
+	db.Close()
+
+	db, err = sql.Open("sqlite", path)
+	if err != nil {
+		t.Fatalf("reopen: %v", err)
+	}
+	t.Cleanup(func() { db.Close() })
+	var n int
+	if err := db.QueryRow(`SELECT COUNT(*) FROM sqlite_master WHERE name = 'sqlite_sequence'`).Scan(&n); err != nil {
+		t.Fatalf("checking sqlite_sequence: %v", err)
+	}
+	if n != 0 {
+		t.Fatalf("sqlite_sequence still present after writable_schema delete")
+	}
+	return db
+}
+
 func TestReadSchema_ReturnsTablesAndColumns(t *testing.T) {
 	db := openTestDB(t, `
 		CREATE TABLE bikes (
@@ -519,5 +564,165 @@ func TestReadSchema_DropsUnresolvableImplicitForeignKeyRatherThanAborting(t *tes
 	}
 	if len(child.ForeignKeys) != 0 {
 		t.Errorf("expected child's unresolvable FK to be absent, got: %+v", child.ForeignKeys)
+	}
+}
+
+func TestHasAutoincrement(t *testing.T) {
+	tests := []struct {
+		name string
+		sql  string
+		want bool
+	}{
+		{name: "AUTOINCREMENT", sql: `CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)`, want: true},
+		{name: "autoincrement lowercase", sql: `CREATE TABLE t (id integer primary key autoincrement)`, want: true},
+		{name: "column named autoincrement_count", sql: `CREATE TABLE t (id INTEGER PRIMARY KEY, autoincrement_count INTEGER)`, want: false},
+		{name: "INTEGER PRIMARY KEY without keyword", sql: `CREATE TABLE t (id INTEGER PRIMARY KEY)`, want: false},
+		{name: "quoted column named autoincrement", sql: `CREATE TABLE t (id INTEGER PRIMARY KEY, "autoincrement" TEXT)`, want: false},
+		{name: "keyword in comment", sql: "CREATE TABLE t (id INTEGER PRIMARY KEY -- AUTOINCREMENT\n)", want: false},
+		{name: "bare keyword in table-level PRIMARY KEY", sql: `CREATE TABLE t (id INTEGER, PRIMARY KEY (id AUTOINCREMENT))`, want: true},
+		// SQLite rejects a bare AUTOINCREMENT anywhere else, so a bare
+		// token in valid SQL is always the keyword.
+		{name: "AUTOINCREMENT inside DEFAULT string literal", sql: `CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT DEFAULT 'AUTOINCREMENT')`, want: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := hasAutoincrement(tt.sql); got != tt.want {
+				t.Errorf("hasAutoincrement(%q) = %v, want %v", tt.sql, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadSchema_DetectsAutoincrement(t *testing.T) {
+	db := openTestDB(t, `
+		CREATE TABLE plain (id INTEGER PRIMARY KEY);
+		CREATE TABLE auto (id INTEGER PRIMARY KEY AUTOINCREMENT);
+	`)
+	tables, _, _, err := ReadSchema(db)
+	if err != nil {
+		t.Fatalf("ReadSchema: %v", err)
+	}
+	got := map[string]bool{}
+	for _, tb := range tables {
+		got[tb.Name] = tb.Autoincrement
+	}
+	if got["plain"] || !got["auto"] {
+		t.Errorf("Autoincrement flags = %v, want plain=false auto=true", got)
+	}
+}
+
+func TestReadSequenceHighWater(t *testing.T) {
+	tests := []struct {
+		name string
+		// setup runs against the table; wantHW is the mark after it.
+		setup  []string
+		wantHW int64
+		// dropSequence removes sqlite_sequence after creating t, so t is
+		// AUTOINCREMENT in its SQL but the source has no sqlite_sequence.
+		dropSequence bool
+	}{
+		{name: "no rows ever inserted", setup: nil, wantHW: 0},
+		{name: "rows inserted", setup: []string{`INSERT INTO t (id) VALUES (1), (2), (3)`}, wantHW: 3},
+		{name: "newest rows deleted", setup: []string{`INSERT INTO t (id) VALUES (1), (2), (3)`, `DELETE FROM t WHERE id >= 2`}, wantHW: 3},
+		{name: "AUTOINCREMENT declared but sqlite_sequence absent", setup: nil, wantHW: 0, dropSequence: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			var db *sql.DB
+			if tt.dropSequence {
+				db = openDBWithoutSequenceTable(t, `CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)`)
+			} else {
+				db = openTestDB(t, `CREATE TABLE t (id INTEGER PRIMARY KEY AUTOINCREMENT)`)
+			}
+			for _, stmt := range tt.setup {
+				if _, err := db.Exec(stmt); err != nil {
+					t.Fatalf("setup %q: %v", stmt, err)
+				}
+			}
+			got, err := ReadSequenceHighWater(db, "t")
+			if err != nil {
+				t.Fatalf("ReadSequenceHighWater: %v", err)
+			}
+			if got != tt.wantHW {
+				t.Errorf("high-water = %d, want %d", got, tt.wantHW)
+			}
+		})
+	}
+}
+
+func TestReadSchema_DetectsWithoutRowID(t *testing.T) {
+	tests := []struct {
+		name string
+		ddl  string
+		want bool
+	}{
+		{name: "rowid table", ddl: `CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT)`, want: false},
+		{name: "WITHOUT ROWID table", ddl: `CREATE TABLE t (id INTEGER PRIMARY KEY, v TEXT) WITHOUT ROWID`, want: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openTestDB(t, tt.ddl)
+			tables, _, _, err := ReadSchema(db)
+			if err != nil {
+				t.Fatalf("ReadSchema: %v", err)
+			}
+			if len(tables) != 1 || tables[0].WithoutRowID != tt.want {
+				t.Errorf("WithoutRowID = %v, want %v", tables[0].WithoutRowID, tt.want)
+			}
+		})
+	}
+}
+
+func TestReadWithoutRowID_ReadsOnlyMainSchema(t *testing.T) {
+	tests := []struct {
+		name    string
+		mainDDL string
+		// tempDDL is created on the same connection, so it shadows or stands
+		// in for the main table of the same name.
+		tempDDL string
+		table   string
+		want    bool
+		wantErr bool
+	}{
+		{name: "main rowid table, no temp table", mainDDL: `CREATE TABLE t (id INTEGER PRIMARY KEY)`, table: "t", want: false},
+		{name: "main WITHOUT ROWID, no temp table", mainDDL: `CREATE TABLE t (id INTEGER PRIMARY KEY) WITHOUT ROWID`, table: "t", want: true},
+		{
+			name:    "same-named temp table is ignored",
+			mainDDL: `CREATE TABLE t (id INTEGER PRIMARY KEY)`,
+			tempDDL: `CREATE TEMP TABLE t (id INTEGER PRIMARY KEY) WITHOUT ROWID`,
+			table:   "t",
+			want:    false,
+		},
+		{
+			name:    "temp-only table is not found in main",
+			mainDDL: `CREATE TABLE other (id INTEGER PRIMARY KEY)`,
+			tempDDL: `CREATE TEMP TABLE tt (id INTEGER PRIMARY KEY) WITHOUT ROWID`,
+			table:   "tt",
+			wantErr: true,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			db := openTestDB(t, tt.mainDDL)
+			db.SetMaxOpenConns(1)
+			if tt.tempDDL != "" {
+				if _, err := db.Exec(tt.tempDDL); err != nil {
+					t.Fatalf("temp ddl: %v", err)
+				}
+			}
+			got, err := readWithoutRowID(db, tt.table)
+			if tt.wantErr {
+				if err == nil {
+					t.Fatalf("readWithoutRowID(%q) = %v, want error", tt.table, got)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("readWithoutRowID(%q): %v", tt.table, err)
+			}
+			if got != tt.want {
+				t.Errorf("readWithoutRowID(%q) = %v, want %v", tt.table, got, tt.want)
+			}
+		})
 	}
 }

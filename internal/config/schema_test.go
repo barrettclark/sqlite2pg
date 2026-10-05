@@ -7,7 +7,7 @@ import (
 
 func TestSaveThenLoad_RoundTripsAMigrationConfig(t *testing.T) {
 	cfg := &MigrationConfig{
-		ConfigVersion: 1,
+		ConfigVersion: CurrentConfigVersion,
 		Source: SourceInfo{
 			Path:         "/tmp/bikes.db",
 			SQLiteSHA256: "deadbeef",

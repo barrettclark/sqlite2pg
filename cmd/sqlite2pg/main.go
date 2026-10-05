@@ -72,6 +72,7 @@ func runRun(args []string) error {
 	sampleSize := fs.Int("sample-size", 500, "rows to sample per column")
 	threshold := fs.Float64("threshold", 0.9, "confidence below which a column is highlighted as needing review")
 	keepConfig := fs.Bool("keep-config", false, "keep the generated <source>.migration.yaml after the run instead of deleting it")
+	force := fs.Bool("force", false, "overwrite an existing <source>.migration.yaml without asking")
 	verifyFlag := fs.Bool("verify", false, "automatically run verification after a successful load, no prompt (mutually exclusive with --noverify)")
 	noverifyFlag := fs.Bool("noverify", false, "skip verification after a successful load, no prompt (mutually exclusive with --verify)")
 	if err := fs.Parse(args); err != nil {
@@ -82,12 +83,23 @@ func runRun(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: sqlite2pg run --pg url [--sample-size N] [--threshold F] [--keep-config] [--verify|--noverify] <source.db>")
+		return errors.New("usage: sqlite2pg run --pg url [--sample-size N] [--threshold F] [--keep-config] [--force] [--verify|--noverify] <source.db>")
 	}
 	if *pgURL == "" {
 		return errors.New("--pg is required (use `sqlite2pg profile` + `sqlite2pg review` separately if you don't have a target yet)")
 	}
 	sourcePath := fs.Arg(0)
+	if err := checkSourceFile(sourcePath); err != nil {
+		return err
+	}
+	configPath := sourcePath + ".migration.yaml"
+	proceed, err := confirmOverwrite(configPath, *force, os.Stdin, os.Stdout, isTerminal(os.Stdin))
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		return nil
+	}
 
 	db, err := sql.Open("sqlite", sourcePath)
 	if err != nil {
@@ -100,8 +112,10 @@ func runRun(args []string) error {
 		return err
 	}
 
-	configPath := sourcePath + ".migration.yaml"
 	if err := config.Save(result.Config, configPath); err != nil {
+		return err
+	}
+	if err := discardStaleState(configPath, os.Stdout); err != nil {
 		return err
 	}
 	fmt.Printf("profiled %s: %d table(s), %d column(s) need review\n", sourcePath, len(result.Config.Tables), len(result.Unresolved))
@@ -120,7 +134,7 @@ func runRun(args []string) error {
 
 	switch st.Outcome() {
 	case review.OutcomeCancelled:
-		fmt.Println("cancelled — nothing was imported")
+		fmt.Println("cancelled — nothing was imported; the config was already regenerated")
 		return nil
 	case review.OutcomeConfirmed:
 		// fall through to load below
@@ -229,22 +243,51 @@ func cleanupConfigAfterLoad(loadErr error, configPath string, keepConfig bool) e
 
 // --- profile ---------------------------------------------------------------
 
+// checkSourceFile rejects a missing or non-file source before SQLite opens it.
+// The driver creates an empty database for a missing path, so a mistyped path
+// would otherwise profile to zero tables and overwrite the config with it.
+func checkSourceFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("source database %s: %w", path, err)
+	}
+	if !info.Mode().IsRegular() {
+		return fmt.Errorf("source database %s is not a regular file", path)
+	}
+	return nil
+}
+
 func runProfile(args []string) error {
+	return runProfileIO(args, os.Stdin, os.Stdout, isTerminal(os.Stdin))
+}
+
+func runProfileIO(args []string, in io.Reader, w io.Writer, interactive bool) error {
 	fs := flag.NewFlagSet("profile", flag.ContinueOnError)
 	out := fs.String("out", "", "path to write the draft migration config (default: <source>.migration.yaml)")
 	sampleSize := fs.Int("sample-size", 500, "rows to sample per column")
 	threshold := fs.Float64("threshold", 0.9, "confidence required to auto-approve a column")
+	force := fs.Bool("force", false, "overwrite an existing config without asking")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: sqlite2pg profile [--out path] [--sample-size N] [--threshold F] <source.db>")
+		return errors.New("usage: sqlite2pg profile [--out path] [--force] [--sample-size N] [--threshold F] <source.db>")
 	}
 	sourcePath := fs.Arg(0)
 	if *out == "" {
 		*out = sourcePath + ".migration.yaml"
 	}
 
+	if err := checkSourceFile(sourcePath); err != nil {
+		return err
+	}
+	proceed, err := confirmOverwrite(*out, *force, in, w, interactive)
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		return nil
+	}
 	db, err := sql.Open("sqlite", sourcePath)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", sourcePath, err)
@@ -256,6 +299,9 @@ func runProfile(args []string) error {
 		return err
 	}
 	if err := config.Save(result.Config, *out); err != nil {
+		return err
+	}
+	if err := discardStaleState(*out, w); err != nil {
 		return err
 	}
 	fmt.Printf("wrote draft config to %s (%d table(s))\n", *out, len(result.Config.Tables))
@@ -502,6 +548,17 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		}
 	}
 
+	// The identifier CREATE TABLE and COPY must actually target for each
+	// table (see ddl.PostgresTableNames/issue #44) — computed once here
+	// (schema-wide, over the full config, not just the tables this run
+	// will touch) so DDL, COPY, and the foreign key/index step below all
+	// agree on the same disambiguated name for the same table. tableName
+	// (the source name) is still what's used for progress reporting, the
+	// state file, and error messages below — those stay human-readable
+	// and are unaffected by truncation since source table names are never
+	// themselves ambiguous, only their Postgres-truncated form can be.
+	pgTableNames := ddl.PostgresTableNames(cfg)
+
 	// Count every table this run will actually load up front, so the
 	// progress bar has a real grand total from its very first draw
 	// instead of growing as tables are discovered. Tables already
@@ -528,22 +585,20 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		}
 		if resume && completed[tableName] {
 			fmt.Printf("%s: skipping (already completed)\n", tableName)
+			// A run finished under a binary that seeded identities from
+			// MAX(id) never reseeded them. The data is already in place, so
+			// a failed reseed warns rather than aborting before the FK step.
+			if err := tolerateOverflow(reseedCompletedTable(ctx, conn, sourceDB, tableName, pgTableNames[tableName], tc)); err != nil {
+				return err
+			}
+			if err := analyzeIfNeverAnalyzed(ctx, conn, pgTableNames[tableName]); err != nil {
+				return err
+			}
 			continue
 		}
 		tableNames = append(tableNames, tableName)
 	}
 	sort.Strings(tableNames)
-
-	// The identifier CREATE TABLE and COPY must actually target for each
-	// table (see ddl.PostgresTableNames/issue #44) — computed once here
-	// (schema-wide, over the full config, not just the tables this run
-	// will touch) so DDL, COPY, and the foreign key/index step below all
-	// agree on the same disambiguated name for the same table. tableName
-	// (the source name) is still what's used for progress reporting, the
-	// state file, and error messages below — those stay human-readable
-	// and are unaffected by truncation since source table names are never
-	// themselves ambiguous, only their Postgres-truncated form can be.
-	pgTableNames := ddl.PostgresTableNames(cfg)
 
 	var totalRows int64
 	sourceRowCounts := make(map[string]int64, len(tableNames))
@@ -605,6 +660,12 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 					return fmt.Errorf("checking whether existing %s (Postgres table %q) has any rows: %w", tableName, pgTable, err)
 				}
 				if hasRows {
+					if err := tolerateOverflow(reseedCompletedTable(ctx, conn, sourceDB, tableName, pgTable, tc)); err != nil {
+						return err
+					}
+					if err := analyzeTable(ctx, conn, pgTable); err != nil {
+						return err
+					}
 					if err := markTableCompleted(statePath, tableName); err != nil {
 						return err
 					}
@@ -619,6 +680,15 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 					progress.skipAlreadyLoadedTable(tableName, sourceRowCounts[tableName])
 					continue
 				}
+				// The range check precedes the DROP: an overflow must leave
+				// the existing (empty) table in place, not drop it and fail.
+				hw, err := sourceHighWater(sourceDB, tableName, tc)
+				if err != nil {
+					return err
+				}
+				if err := checkTableIdentityRange(pgTable, tc, hw); err != nil {
+					return err
+				}
 				// IF EXISTS even though existence was just confirmed
 				// above: makes this resilient to a race between the
 				// to_regclass probe and this statement (e.g. a second
@@ -631,6 +701,16 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 				}
 			}
 		}
+		// Checked before any DDL or COPY: an identity that can't hold the
+		// source's high-water mark fails the table with nothing loaded, so
+		// a retry hits the same clear error instead of a half-finished table.
+		hw, err := sourceHighWater(sourceDB, tableName, tc)
+		if err != nil {
+			return err
+		}
+		if err := checkTableIdentityRange(pgTable, tc, hw); err != nil {
+			return err
+		}
 		stmt, err := ddl.GenerateCreateTable(pgTable, tc)
 		if err != nil {
 			return fmt.Errorf("generating DDL for %s: %w", tableName, err)
@@ -642,6 +722,10 @@ func executeLoad(cfg *config.MigrationConfig, connCfg *pgx.ConnConfig, resume bo
 		src := copywriter.NewTableSource(sourceDB, tableName, tc).OnRow(progress.row)
 		n, err := copywriter.LoadTable(ctx, conn, pgTable, tc, src)
 		if err != nil {
+			progress.abort()
+			return err
+		}
+		if err := postLoadTable(ctx, conn, pgTable, tc, hw); err != nil {
 			progress.abort()
 			return err
 		}
