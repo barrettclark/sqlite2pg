@@ -56,7 +56,7 @@ func TestPreviewValueForType_ScientificNormalizationLeavesExactDigitStringsAlone
 // issue #139, picker-level: integer/bigint must reappear in the offered
 // list for a scientific-notation sample on a REAL-affinity column.
 func TestValidTypesForColumn_OffersIntegerTypesForScientificNotationSample(t *testing.T) {
-	got := validTypesForColumn(plainCells("1.712345678e+09"), "REAL")
+	got := validTypesForColumn(plainCells("1.712345678e+09"), "REAL", false)
 	var haveBigint, haveInteger bool
 	for _, typ := range got {
 		switch typ {

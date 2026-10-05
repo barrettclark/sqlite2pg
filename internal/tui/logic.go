@@ -572,29 +572,24 @@ func nextFlaggedColumn(flagged []flaggedColumn, current flaggedColumn, forward b
 	return flagged[next], true
 }
 
-// validTypesForColumn returns the review.TypeOptions every non-NULL, non-empty
-// sample validates as (per previewValueForType). The loader runs the chosen
-// transform on every row and does not map "" to NULL, so with any "" sample a
-// type is offered only if each sample's transform accepts "". With no
-// non-NULL, non-empty sample there is no evidence for a transform, so only
-// text and bytea are offered: they load the raw value unconverted.
-func validTypesForColumn(cells []sampleCell, declaredType string) []string {
-	hasValue, hasEmpty := false, false
+// validTypesForColumn returns the review.TypeOptions a column's samples can
+// load as. Each non-NULL, non-empty sample must validate as the type
+// (previewValueForType). The loader applies the chosen transform to every row
+// and does not map "" to NULL, so when a sample has a "" row each transform
+// must accept "" (see transformAcceptsEmpty). Validity is checked per sample,
+// not via commonTransformForType: a mixed ISO/yyyymmdd date column is still
+// offered date, and selecting it is refused there because the samples need
+// different transforms.
+func validTypesForColumn(cells []sampleCell, declaredType string, rejectNull bool) []string {
+	emptyRows := false
 	for _, c := range cells {
-		switch c.value {
-		case "NULL":
-		case "":
-			hasEmpty = true
-		default:
-			hasValue = true
+		if c.value == "" {
+			emptyRows = true
 		}
 	}
 	var result []string
 	for _, t := range review.TypeOptions {
-		if !hasValue && t != "text" && t != "bytea" {
-			continue
-		}
-		if typeLoadsSamples(cells, t, declaredType, hasEmpty) {
+		if typeLoadsSamples(cells, t, declaredType, emptyRows, rejectNull) {
 			result = append(result, t)
 		}
 	}
@@ -602,27 +597,41 @@ func validTypesForColumn(cells []sampleCell, declaredType string) []string {
 }
 
 // typeLoadsSamples reports whether every non-NULL, non-empty cell validates as
-// typeName and, when hasEmpty, each cell's transform also accepts "".
-func typeLoadsSamples(cells []sampleCell, typeName, declaredType string, hasEmpty bool) bool {
+// typeName and, when emptyRows, its transform also accepts "".
+func typeLoadsSamples(cells []sampleCell, typeName, declaredType string, emptyRows, rejectNull bool) bool {
+	sawValue := false
 	for _, c := range cells {
 		if c.value == "" || c.value == "NULL" {
 			continue
 		}
 		_, transform, valid := previewValueForType(c.value, typeName, declaredType, c.isText)
-		if !valid || (hasEmpty && !transformAcceptsEmpty(typeName, transform)) {
+		if !valid {
 			return false
 		}
+		if emptyRows && !transformAcceptsEmpty(typeName, transform, rejectNull) {
+			return false
+		}
+		sawValue = true
+	}
+	// With no non-empty sample the "" rows get the transform
+	// commonTransformForType returns for it: the empty one.
+	if emptyRows && !sawValue {
+		return transformAcceptsEmpty(typeName, "", rejectNull)
 	}
 	return true
 }
 
 // transformAcceptsEmpty reports whether a "" row loads under transform for
 // typeName. An empty transform passes "" through, which only text and bytea
-// accept as a value.
-func transformAcceptsEmpty(typeName, transform string) bool {
+// accept. A transform that turns "" into NULL is refused when rejectNull, since
+// the PRIMARY KEY or NOT NULL column then aborts COPY.
+func transformAcceptsEmpty(typeName, transform string, rejectNull bool) bool {
 	if transform == "" {
 		return typeName == "text" || typeName == "bytea"
 	}
-	_, err := copywriter.Transform(transform, "")
-	return err == nil
+	out, err := copywriter.Transform(transform, "")
+	if err != nil {
+		return false
+	}
+	return out != nil || !rejectNull
 }

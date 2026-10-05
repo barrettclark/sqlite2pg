@@ -712,3 +712,24 @@ func pickerIndexOf(m *model, typeName string) int {
 	}
 	return -1
 }
+
+func TestOpenTypePicker_AllNullIntegerColumnKeepsCurrentTypeSelected(t *testing.T) {
+	m := testModel()
+	m.summary = withSamples(m.summary, "bikes", "is_installed", "NULL", "NULL")
+	for i := range m.summary.Tables {
+		for j := range m.summary.Tables[i].Columns {
+			if m.summary.Tables[i].Columns[j].Column == "is_installed" {
+				m.summary.Tables[i].Columns[j].TargetType = "integer"
+				m.summary.Tables[i].Columns[j].DeclaredType = "INTEGER"
+			}
+		}
+	}
+	m.onTableSelected(0, "bikes", "", 0)
+
+	m.openTypePicker("is_installed")
+
+	current, _ := m.picker.GetItemText(m.picker.GetCurrentItem())
+	if current != "integer" {
+		t.Errorf("expected the all-NULL integer column to keep integer pre-selected, got %q", current)
+	}
+}
