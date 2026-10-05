@@ -1323,3 +1323,21 @@ func assertPersisted(t *testing.T, path, wantType, wantTransform string) {
 		t.Errorf("persisted (%q, %q), want (%q, %q)", col.TargetType, col.Transform, wantType, wantTransform)
 	}
 }
+
+// A column mixing TEXT and REAL float samples persists numeric_text_to_double
+// for every row, so double precision is offered and saved with it.
+func TestOnTypeSelected_MixedStorageFloatPersistsTextTransform(t *testing.T) {
+	_, path, m := newColumnState(t, "double precision", "", "REAL")
+	m.summary = withSampleCells(m.summary, "bikes", "is_installed",
+		sampleCell{value: "1.5", isText: true}, sampleCell{value: "2.5", isText: false})
+	m.openTypePicker("is_installed")
+	idx := slices.Index(offeredTypes(m), "double precision")
+	if idx == -1 {
+		t.Fatalf("double precision not offered for mixed TEXT and REAL samples, got %v", offeredTypes(m))
+	}
+	m.onTypeSelected(idx, "double precision", "", 0)
+	if m.lastError != "" {
+		t.Fatalf("unexpected refusal: %q", m.lastError)
+	}
+	assertPersisted(t, path, "double precision", "numeric_text_to_double")
+}

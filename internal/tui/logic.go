@@ -480,6 +480,9 @@ func hasEmptyCell(cells []sampleCell) bool {
 // transform when there is no non-empty sample. ok is false when a sample does not
 // validate as typeName or the samples disagree on a transform (issue #64).
 func commonTransformForType(cells []sampleCell, typeName, declaredType string) (transform string, ok bool) {
+	if isFloatType(typeName) {
+		return floatTransform(cells, typeName, declaredType)
+	}
 	seen := false
 	for _, c := range cells {
 		if c.isNull() || c.value == "" {
@@ -615,29 +618,11 @@ func validTypesForColumn(cells []sampleCell, declaredType string, rejectNull boo
 // gated on commonTransformForType (ok is false for invalid or disagreeing
 // samples), and when emptyRows its transform must also accept "".
 func typeLoadsSamples(cells []sampleCell, typeName, declaredType string, emptyRows, rejectNull bool) bool {
-	if _, ok := commonTransformForType(cells, typeName, declaredType); !ok {
+	transform, ok := commonTransformForType(cells, typeName, declaredType)
+	if !ok {
 		return false
 	}
-	sawValue := false
-	for _, c := range cells {
-		if c.isNull() || c.value == "" {
-			continue
-		}
-		_, transform, valid := previewValueForType(c.value, typeName, declaredType, c.isText)
-		if !valid {
-			return false
-		}
-		if emptyRows && !transformAcceptsEmpty(typeName, transform, rejectNull) {
-			return false
-		}
-		sawValue = true
-	}
-	// With no non-empty sample, "" rows get the type's standard transform.
-	if emptyRows && !sawValue {
-		t, ok := standardTransform(typeName, declaredType)
-		return ok && transformAcceptsEmpty(typeName, t, rejectNull)
-	}
-	return true
+	return !emptyRows || transformAcceptsEmpty(typeName, transform, rejectNull)
 }
 
 // transformAcceptsEmpty reports whether a "" row loads under transform for
@@ -669,4 +654,33 @@ func emptyRowsBecomeNull(cells []sampleCell, transform string) bool {
 	}
 	out, err := copywriter.Transform(transform, "")
 	return err == nil && out == nil
+}
+
+// isFloatType reports whether typeName is a float column type.
+func isFloatType(typeName string) bool {
+	return typeName == "real" || typeName == "double precision" || typeName == "numeric"
+}
+
+// floatTransform returns the one transform for a float target. A column mixing
+// TEXT and REAL samples gets numeric_text_to_double for every row, since it
+// loads both float64 and string values; REAL-only columns get "".
+func floatTransform(cells []sampleCell, typeName, declaredType string) (string, bool) {
+	anyText, seen := false, false
+	for _, c := range cells {
+		if c.isNull() || c.value == "" {
+			continue
+		}
+		if _, _, valid := previewValueForType(c.value, typeName, declaredType, c.isText); !valid {
+			return "", false
+		}
+		seen = true
+		anyText = anyText || c.isText
+	}
+	switch {
+	case !seen:
+		return standardTransform(typeName, declaredType)
+	case anyText:
+		return "numeric_text_to_double", true
+	}
+	return "", true
 }

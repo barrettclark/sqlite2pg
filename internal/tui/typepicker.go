@@ -9,6 +9,10 @@ import (
 	"sqlite2pg/internal/review"
 )
 
+// pickerWidth is the overlay width. The list border takes 2 columns, tview's "(x)"
+// shortcut prefix takes 4, and the rest fits the longest row note.
+const pickerWidth = 76
+
 // openTypePicker opens a centered list of the types validTypesForColumn offers,
 // with the current target type pre-selected when it is listed.
 func (m *model) openTypePicker(columnName string) {
@@ -56,7 +60,7 @@ func (m *model) openTypePicker(columnName string) {
 
 	// tview reserves 4 extra columns to print each item's "(x)" shortcut
 	// prefix once any item has one, so widen the overlay to match.
-	overlay := centered(list, 76, len(types)+2)
+	overlay := centered(list, pickerWidth, len(types)+2)
 	if m.pages.HasPage("picker") {
 		m.pages.RemovePage("picker")
 	}
