@@ -103,8 +103,11 @@ func TestRunProfile_SourceChecks(t *testing.T) {
 			dir := t.TempDir()
 			source := tt.setup(t, dir)
 			out := filepath.Join(t.TempDir(), "out.migration.yaml")
-			if err := os.WriteFile(out, []byte(sentinel), 0o644); err != nil {
-				t.Fatalf("seeding --out: %v", err)
+			// The success case starts with no --out, so nothing is overwritten.
+			if tt.wantErr != "" {
+				if err := os.WriteFile(out, []byte(sentinel), 0o644); err != nil {
+					t.Fatalf("seeding --out: %v", err)
+				}
 			}
 
 			err := runProfile([]string{"--out", out, source})

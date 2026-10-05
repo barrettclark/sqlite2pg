@@ -72,6 +72,7 @@ func runRun(args []string) error {
 	sampleSize := fs.Int("sample-size", 500, "rows to sample per column")
 	threshold := fs.Float64("threshold", 0.9, "confidence below which a column is highlighted as needing review")
 	keepConfig := fs.Bool("keep-config", false, "keep the generated <source>.migration.yaml after the run instead of deleting it")
+	force := fs.Bool("force", false, "overwrite an existing <source>.migration.yaml without asking")
 	verifyFlag := fs.Bool("verify", false, "automatically run verification after a successful load, no prompt (mutually exclusive with --noverify)")
 	noverifyFlag := fs.Bool("noverify", false, "skip verification after a successful load, no prompt (mutually exclusive with --verify)")
 	if err := fs.Parse(args); err != nil {
@@ -82,7 +83,7 @@ func runRun(args []string) error {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: sqlite2pg run --pg url [--sample-size N] [--threshold F] [--keep-config] [--verify|--noverify] <source.db>")
+		return errors.New("usage: sqlite2pg run --pg url [--sample-size N] [--threshold F] [--keep-config] [--force] [--verify|--noverify] <source.db>")
 	}
 	if *pgURL == "" {
 		return errors.New("--pg is required (use `sqlite2pg profile` + `sqlite2pg review` separately if you don't have a target yet)")
@@ -90,6 +91,14 @@ func runRun(args []string) error {
 	sourcePath := fs.Arg(0)
 	if err := checkSourceFile(sourcePath); err != nil {
 		return err
+	}
+	configPath := sourcePath + ".migration.yaml"
+	proceed, err := confirmOverwrite(configPath, *force, os.Stdin, os.Stdout, isTerminal(os.Stdin))
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		return nil
 	}
 
 	db, err := sql.Open("sqlite", sourcePath)
@@ -103,7 +112,6 @@ func runRun(args []string) error {
 		return err
 	}
 
-	configPath := sourcePath + ".migration.yaml"
 	if err := config.Save(result.Config, configPath); err != nil {
 		return err
 	}
@@ -247,15 +255,20 @@ func checkSourceFile(path string) error {
 }
 
 func runProfile(args []string) error {
+	return runProfileIO(args, os.Stdin, os.Stdout, isTerminal(os.Stdin))
+}
+
+func runProfileIO(args []string, in io.Reader, w io.Writer, interactive bool) error {
 	fs := flag.NewFlagSet("profile", flag.ContinueOnError)
 	out := fs.String("out", "", "path to write the draft migration config (default: <source>.migration.yaml)")
 	sampleSize := fs.Int("sample-size", 500, "rows to sample per column")
 	threshold := fs.Float64("threshold", 0.9, "confidence required to auto-approve a column")
+	force := fs.Bool("force", false, "overwrite an existing config without asking")
 	if err := fs.Parse(args); err != nil {
 		return err
 	}
 	if fs.NArg() != 1 {
-		return errors.New("usage: sqlite2pg profile [--out path] [--sample-size N] [--threshold F] <source.db>")
+		return errors.New("usage: sqlite2pg profile [--out path] [--force] [--sample-size N] [--threshold F] <source.db>")
 	}
 	sourcePath := fs.Arg(0)
 	if *out == "" {
@@ -264,6 +277,13 @@ func runProfile(args []string) error {
 
 	if err := checkSourceFile(sourcePath); err != nil {
 		return err
+	}
+	proceed, err := confirmOverwrite(*out, *force, in, w, interactive)
+	if err != nil {
+		return err
+	}
+	if !proceed {
+		return nil
 	}
 	db, err := sql.Open("sqlite", sourcePath)
 	if err != nil {
