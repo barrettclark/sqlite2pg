@@ -832,3 +832,27 @@ func TestValidTypesForColumn_TextNullIsValueNotSQLNull(t *testing.T) {
 		t.Errorf("integer not offered for SQL NULL, got %v", sqlNull)
 	}
 }
+
+func TestStoredTransformFits(t *testing.T) {
+	cases := []struct {
+		name       string
+		cells      []sampleCell
+		typ        string
+		transform  string
+		rejectNull bool
+		want       bool
+	}{
+		{"valid stored integer transform is kept", []sampleCell{{value: "42", isText: true}}, "integer", "numeric_text_to_integer", false, true},
+		{"out-of-range integer sample is not kept", []sampleCell{{value: "3000000000", isText: true}}, "integer", "numeric_text_to_integer", false, false},
+		{"implausible epoch for timestamptz is not kept", []sampleCell{{value: "12", isText: true}}, "timestamptz", "unix_epoch_seconds", false, false},
+		{"stored nullif_sentinels that nulls a sentinel is kept", []sampleCell{{value: "1.5", isText: true}, {value: "NA", isText: true}}, "double precision", "nullif_sentinels", false, true},
+		{"stored empty transform is never kept", []sampleCell{{value: "1.5", isText: true}}, "double precision", "", false, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := storedTransformFits(tc.cells, tc.typ, "", tc.transform, tc.rejectNull); got != tc.want {
+				t.Errorf("storedTransformFits = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}

@@ -680,10 +680,11 @@ func emptyRowsBecomeNull(cells []sampleCell, transform string) bool {
 	return err == nil && out == nil
 }
 
-// storedTransformFits reports whether an existing transform converts every
-// non-NULL sample without error (and never yields NULL when rejectNull). A
-// stored "" is never kept, so it is re-derived.
-func storedTransformFits(cells []sampleCell, transform string, rejectNull bool) bool {
+// storedTransformFits reports whether a stored transform can be kept for the
+// samples: each non-NULL sample must convert without error and, unless the
+// transform turns it into NULL, pass previewValueForType (range and date
+// windows included). A stored "" is never kept, so it is re-derived.
+func storedTransformFits(cells []sampleCell, typeName, declaredType, transform string, rejectNull bool) bool {
 	if transform == "" {
 		return false
 	}
@@ -692,7 +693,16 @@ func storedTransformFits(cells []sampleCell, transform string, rejectNull bool) 
 			continue
 		}
 		out, err := copywriter.Transform(transform, rawSample(c))
-		if err != nil || (rejectNull && out == nil) {
+		if err != nil {
+			return false
+		}
+		if out == nil {
+			if rejectNull {
+				return false
+			}
+			continue
+		}
+		if _, _, valid := previewValueForType(c.value, typeName, declaredType, c.isText); !valid {
 			return false
 		}
 	}

@@ -104,7 +104,7 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 	// Re-confirming the current type keeps its stored transform when that still
 	// converts every sample; otherwise the transform is re-derived and checked.
 	transform := col.Transform
-	if typeName != col.TargetType || !storedTransformFits(cells, col.Transform, col.RejectNull) {
+	if typeName != col.TargetType || !storedTransformFits(cells, typeName, col.DeclaredType, col.Transform, col.RejectNull) {
 		if msg := refusalMessage(m.pickerColumn, typeName, col.TargetType, cells, col.DeclaredType, col.RejectNull); msg != "" {
 			m.status.SetText(m.pickerStatusBase)
 			m.closePicker()
