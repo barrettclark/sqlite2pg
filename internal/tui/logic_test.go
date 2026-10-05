@@ -789,3 +789,31 @@ func TestValidTypesForColumn_EmptyRowsExcludeTypesWhoseTransformRejectsEmpty(t *
 		})
 	}
 }
+
+func TestStandardTransform_CoversEveryTypeOption(t *testing.T) {
+	want := map[string]string{
+		"text": "", "bytea": "", "real": "", "double precision": "", "numeric": "",
+		"integer": "numeric_text_to_integer", "bigint": "numeric_text_to_integer", "smallint": "numeric_text_to_integer",
+		"boolean": "int_to_bool", "date": "iso8601_to_date", "timestamptz": "iso8601_to_timestamptz",
+		"jsonb": "text_to_jsonb", "uuid": "uuid_format", "uuid[]": "uuid_list_format",
+	}
+	for _, typ := range review.TypeOptions {
+		t.Run(typ, func(t *testing.T) {
+			wantTransform, known := want[typ]
+			if !known {
+				t.Fatalf("no expected standard transform for %q", typ)
+			}
+			rep, ok := representativeValue[typ]
+			if !ok {
+				t.Fatalf("no representativeValue for %q", typ)
+			}
+			if _, _, valid := previewValueForType(rep, typ, "", false); !valid {
+				t.Fatalf("representative %q does not validate as %q", rep, typ)
+			}
+			got, ok := standardTransform(typ, "")
+			if !ok || got != wantTransform {
+				t.Errorf("standardTransform(%q) = (%q, %v), want (%q, true)", typ, got, ok, wantTransform)
+			}
+		})
+	}
+}

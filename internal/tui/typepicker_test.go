@@ -734,8 +734,8 @@ func TestOpenTypePicker_AllNullIntegerColumnKeepsCurrentTypeSelected(t *testing.
 	}
 }
 
-// newAllNullIntegerState is a bikes config whose is_installed is integer via
-// numeric_text_to_integer, with all-NULL samples supplied by the caller.
+// newAllNullIntegerState is a bikes config whose is_installed is integer with no
+// stored transform, so a fresh pick must derive its transform.
 func newAllNullIntegerState(t *testing.T) (*review.State, string, *model) {
 	t.Helper()
 	path := filepath.Join(t.TempDir(), "test.migration.yaml")
@@ -746,7 +746,7 @@ func newAllNullIntegerState(t *testing.T) (*review.State, string, *model) {
 				ColumnOrder: []string{"bike_id", "is_installed"},
 				Columns: map[string]config.ColumnConfig{
 					"bike_id":      {TargetType: "integer", Confidence: 0.99, Source: "heuristic:default_passthrough"},
-					"is_installed": {TargetType: "integer", Transform: "numeric_text_to_integer", DeclaredType: "INTEGER", Confidence: 0.55, Source: "heuristic:integer"},
+					"is_installed": {TargetType: "integer", DeclaredType: "INTEGER", Confidence: 0.55, Source: "heuristic:integer"},
 				},
 			},
 		},
@@ -766,16 +766,17 @@ func newAllNullIntegerState(t *testing.T) (*review.State, string, *model) {
 	return st, path, m
 }
 
-// An all-NULL column offers every type; the current type stays pre-selected,
-// and a fresh pick persists its standard transform (verified only on the sample).
+// An all-NULL column offers every type. A fresh pick's transform is derived from
+// the type's standard representative value, not verified against the samples.
 func TestOnTypeSelected_AllNullIntegerColumnPersistsStandardTransform(t *testing.T) {
 	cases := []struct {
 		name, choose, wantTransform string
 	}{
-		{"current integer keeps numeric_text_to_integer", "integer", "numeric_text_to_integer"},
+		{"current integer keeps its stored transform", "integer", ""},
 		{"bigint persists numeric_text_to_integer", "bigint", "numeric_text_to_integer"},
 		{"boolean persists int_to_bool", "boolean", "int_to_bool"},
 		{"text persists no transform", "text", ""},
+		{"bytea persists no transform", "bytea", ""},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -808,5 +809,31 @@ func TestOnTypeSelected_AllNullIntegerColumnPersistsStandardTransform(t *testing
 				t.Errorf("persisted Transform = %q, want %q", col.Transform, tc.wantTransform)
 			}
 		})
+	}
+}
+
+// A NOT NULL column with "" rows refuses a type whose transform turns "" into
+// NULL, and the stored config is left alone.
+func TestOnTypeSelected_NotNullColumnRefusesNullProducingTransform(t *testing.T) {
+	_, path, m := newAllNullIntegerState(t)
+	m.summary = withSamples(m.summary, "bikes", "is_installed", "1", "")
+	for i := range m.summary.Tables {
+		for j := range m.summary.Tables[i].Columns {
+			if m.summary.Tables[i].Columns[j].Column == "is_installed" {
+				m.summary.Tables[i].Columns[j].RejectNull = true
+			}
+		}
+	}
+	m.openTypePicker("is_installed")
+	// Called directly: the offer list already omits bigint, and the re-check must hold regardless.
+	m.onTypeSelected(0, "bigint", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["bikes"].Columns["is_installed"]
+	if col.TargetType != "integer" || col.Transform != "" {
+		t.Errorf("config changed to (%q, %q), want unchanged (integer, \"\")", col.TargetType, col.Transform)
 	}
 }

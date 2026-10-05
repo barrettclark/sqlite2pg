@@ -125,6 +125,12 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 		transform = t
 	}
 
+	if col.RejectNull && hasEmptyCell(columnSampleCells(tv, m.pickerColumn)) && !transformAcceptsEmpty(typeName, transform, true) {
+		m.closePicker()
+		m.showError(fmt.Sprintf("%s: %s turns the empty-string rows of this NOT NULL column into NULL; leave it as %s", m.pickerColumn, typeName, col.TargetType))
+		return
+	}
+
 	err := m.st.ApplyDecision(m.selectedTable, m.pickerColumn, review.DecisionRequest{
 		TargetType: typeName,
 		Transform:  transform,

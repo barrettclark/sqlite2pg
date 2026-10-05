@@ -453,9 +453,21 @@ var representativeValue = map[string]string{
 	"uuid[]": "00000000-0000-0000-0000-000000000000",
 }
 
-func standardTransform(typeName, declaredType string) string {
-	_, transform, _ := previewValueForType(representativeValue[typeName], typeName, declaredType, false)
-	return transform
+// standardTransform returns the transform previewValueForType attaches to the
+// type's representative value; ok is false if that value does not validate.
+func standardTransform(typeName, declaredType string) (transform string, ok bool) {
+	_, transform, ok = previewValueForType(representativeValue[typeName], typeName, declaredType, false)
+	return transform, ok
+}
+
+// hasEmptyCell reports whether any sample is the empty string.
+func hasEmptyCell(cells []sampleCell) bool {
+	for _, c := range cells {
+		if c.value == "" {
+			return true
+		}
+	}
+	return false
 }
 
 // commonTransformForType returns the transform all samples agree on (issue #64),
@@ -479,7 +491,7 @@ func commonTransformForType(cells []sampleCell, typeName, declaredType string) (
 		}
 	}
 	if !seen {
-		return standardTransform(typeName, declaredType), true
+		return standardTransform(typeName, declaredType)
 	}
 	return transform, true
 }
@@ -610,7 +622,8 @@ func typeLoadsSamples(cells []sampleCell, typeName, declaredType string, emptyRo
 	}
 	// With no non-empty sample, "" rows get the type's standard transform.
 	if emptyRows && !sawValue {
-		return transformAcceptsEmpty(typeName, standardTransform(typeName, declaredType), rejectNull)
+		t, ok := standardTransform(typeName, declaredType)
+		return ok && transformAcceptsEmpty(typeName, t, rejectNull)
 	}
 	return true
 }
