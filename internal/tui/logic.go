@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"sqlite2pg/internal/copywriter"
+	"sqlite2pg/internal/profiler"
 	"sqlite2pg/internal/review"
 )
 
@@ -332,6 +333,11 @@ func previewValueForType(value, targetType, declaredType string, isText bool) (d
 		}
 		return strconv.FormatInt(n, 10), "numeric_text_to_integer", true
 	case "real", "double precision", "numeric":
+		// numeric would round a TEXT decimal through float64; a precision-preserving
+		// transform is a follow-up.
+		if targetType == "numeric" && isText {
+			return value, "", false
+		}
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil {
 			return value, "", false
@@ -672,4 +678,35 @@ func emptyRowsBecomeNull(cells []sampleCell, transform string) bool {
 	}
 	out, err := copywriter.Transform(transform, "")
 	return err == nil && out == nil
+}
+
+// storedTransformFits reports whether an existing transform converts every
+// non-NULL sample without error (and never yields NULL when rejectNull). A
+// stored "" is never kept, so it is re-derived.
+func storedTransformFits(cells []sampleCell, transform string, rejectNull bool) bool {
+	if transform == "" {
+		return false
+	}
+	for _, c := range cells {
+		if c.isNull() {
+			continue
+		}
+		out, err := copywriter.Transform(transform, rawSample(c))
+		if err != nil || (rejectNull && out == nil) {
+			return false
+		}
+	}
+	return true
+}
+
+// rawSample is a sample as the loader sees it: TEXT as a string, otherwise a
+// float64 when it parses.
+func rawSample(c sampleCell) profiler.Value {
+	if c.isText {
+		return c.value
+	}
+	if f, err := strconv.ParseFloat(c.value, 64); err == nil {
+		return f
+	}
+	return c.value
 }

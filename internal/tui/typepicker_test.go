@@ -887,8 +887,8 @@ func TestOpenTypePicker_EmptyRowWarning(t *testing.T) {
 			name:        "nullable INTEGER with empty row warns on the NULL-producing integer types",
 			declared:    "INTEGER",
 			values:      []string{"1", ""},
-			wantOffered: []string{"text", "integer", "bigint", "smallint", "double precision", "real", "numeric", "bytea"},
-			wantWarned:  []string{"integer", "bigint", "smallint", "double precision", "real", "numeric"},
+			wantOffered: []string{"text", "integer", "bigint", "smallint", "double precision", "real", "bytea"},
+			wantWarned:  []string{"integer", "bigint", "smallint", "double precision", "real"},
 		},
 		{
 			name:        "NOT NULL INTEGER with empty row offers no NULL-producing type and no warning",
@@ -901,7 +901,7 @@ func TestOpenTypePicker_EmptyRowWarning(t *testing.T) {
 			name:        "INTEGER without empty row has no warning",
 			declared:    "INTEGER",
 			values:      []string{"1", "2"},
-			wantOffered: []string{"text", "integer", "bigint", "smallint", "double precision", "real", "numeric", "jsonb", "bytea"},
+			wantOffered: []string{"text", "integer", "bigint", "smallint", "double precision", "real", "jsonb", "bytea"},
 		},
 		{
 			name:        "TEXT with empty row keeps its list and shows no warning",
@@ -1246,5 +1246,57 @@ func TestOnTypeSelected_ApplyErrorRestoresStatusBase(t *testing.T) {
 	}
 	if status := m.status.GetText(false); status != "base status" {
 		t.Errorf("status after apply error = %q, want base status", status)
+	}
+}
+
+// numeric on TEXT would round through float64, so it is not offered; real and
+// double precision still are.
+func TestValidTypesForColumn_TextNumericNotOfferedForLongDecimal(t *testing.T) {
+	got := validTypesForColumn([]sampleCell{{value: "9007199254740993.0", isText: true}}, "TEXT", false)
+	if containsType(got, "numeric") {
+		t.Errorf("numeric offered for a TEXT decimal beyond float64 precision, got %v", got)
+	}
+	for _, typ := range []string{"double precision", "real"} {
+		if !containsType(got, typ) {
+			t.Errorf("%q not offered for a TEXT decimal, got %v", typ, got)
+		}
+	}
+}
+
+// A stored transform that still converts every sample is kept on re-confirm.
+func TestOnTypeSelected_ReconfirmKeepsStoredTransformThatFitsSamples(t *testing.T) {
+	_, path, m := newColumnState(t, "double precision", "nullif_sentinels", "TEXT")
+	m.summary = withSampleCells(m.summary, "bikes", "is_installed",
+		sampleCell{value: "1.5", isText: true}, sampleCell{value: "NA", isText: true})
+	m.openTypePicker("is_installed")
+	// Not offered (the derived transform fails on "NA"), but re-confirming the current type is still allowed.
+	m.onTypeSelected(0, "double precision", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.Tables["bikes"].Columns["is_installed"].Transform; got != "nullif_sentinels" {
+		t.Errorf("persisted Transform = %q, want the stored nullif_sentinels kept", got)
+	}
+}
+
+// A stored transform that fails the samples is replaced by the derived one.
+func TestOnTypeSelected_ReconfirmReplacesStoredTransformThatFailsSamples(t *testing.T) {
+	_, path, m := newColumnState(t, "double precision", "numeric_text_to_integer", "TEXT")
+	m.summary = withSampleCells(m.summary, "bikes", "is_installed", sampleCell{value: "1.5", isText: true})
+	m.openTypePicker("is_installed")
+	idx := slices.Index(offeredTypes(m), "double precision")
+	if idx == -1 {
+		t.Fatalf("double precision not offered, got %v", offeredTypes(m))
+	}
+	m.onTypeSelected(idx, "double precision", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := loaded.Tables["bikes"].Columns["is_installed"].Transform; got != "numeric_text_to_double" {
+		t.Errorf("persisted Transform = %q, want numeric_text_to_double", got)
 	}
 }
