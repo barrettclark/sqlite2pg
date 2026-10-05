@@ -2,6 +2,8 @@ package main
 
 import (
 	"database/sql"
+	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,6 +11,25 @@ import (
 
 	"sqlite2pg/internal/config"
 )
+
+// requireSymlink creates link -> target. A platform that refuses symlinks for
+// this user skips the subtest, unless CI is set: then the skip is a failure, so
+// a runner can't quietly drop the symlink cases. Any other error fails.
+func requireSymlink(t *testing.T, target, link string) {
+	t.Helper()
+	err := os.Symlink(target, link)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, fs.ErrPermission) || symlinkPrivilegeError(err) {
+		msg := "symlink creation is not permitted here: " + err.Error()
+		if os.Getenv("CI") != "" {
+			t.Fatal(msg)
+		}
+		t.Skip(msg)
+	}
+	t.Fatalf("creating symlink %s -> %s: %v", link, target, err)
+}
 
 // makeSQLiteFile creates a real SQLite database at path with one table.
 func makeSQLiteFile(t *testing.T, path string) {
@@ -57,9 +78,7 @@ func TestRunProfile_SourceChecks(t *testing.T) {
 				target := filepath.Join(dir, "real.db")
 				makeSQLiteFile(t, target)
 				link := filepath.Join(dir, "link.db")
-				if err := os.Symlink(target, link); err != nil {
-					t.Skipf("creating symlinks is not permitted here: %v", err)
-				}
+				requireSymlink(t, target, link)
 				return link
 			},
 		},
@@ -67,9 +86,7 @@ func TestRunProfile_SourceChecks(t *testing.T) {
 			name: "dangling symlink is rejected and its target not created",
 			setup: func(t *testing.T, dir string) string {
 				link := filepath.Join(dir, "dangling.db")
-				if err := os.Symlink(filepath.Join(dir, "gone.db"), link); err != nil {
-					t.Skipf("creating symlinks is not permitted here: %v", err)
-				}
+				requireSymlink(t, filepath.Join(dir, "gone.db"), link)
 				return link
 			},
 			wantErr:    "dangling.db",
