@@ -58,7 +58,7 @@ func TestRunProfile_SourceChecks(t *testing.T) {
 				makeSQLiteFile(t, target)
 				link := filepath.Join(dir, "link.db")
 				if err := os.Symlink(target, link); err != nil {
-					t.Fatalf("symlink: %v", err)
+					t.Skipf("creating symlinks is not permitted here: %v", err)
 				}
 				return link
 			},
@@ -68,7 +68,7 @@ func TestRunProfile_SourceChecks(t *testing.T) {
 			setup: func(t *testing.T, dir string) string {
 				link := filepath.Join(dir, "dangling.db")
 				if err := os.Symlink(filepath.Join(dir, "gone.db"), link); err != nil {
-					t.Fatalf("symlink: %v", err)
+					t.Skipf("creating symlinks is not permitted here: %v", err)
 				}
 				return link
 			},
