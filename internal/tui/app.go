@@ -31,6 +31,8 @@ type model struct {
 	pickerColumn string
 	// lastError is the last message passed to showError, for tests.
 	lastError string
+	// pickerStatusBase is the status line before the picker highlighted a type.
+	pickerStatusBase string
 
 	pendingConfirm confirmState
 }

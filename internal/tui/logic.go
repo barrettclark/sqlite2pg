@@ -348,6 +348,10 @@ func previewValueForType(value, targetType, declaredType string, isText bool) (d
 		if !strings.Contains(formatted, ".") {
 			formatted += ".0"
 		}
+		// pgx cannot encode a TEXT number as float8; numeric_text_to_double parses it.
+		if isText {
+			return formatted, "numeric_text_to_double", true
+		}
 		return formatted, "", true
 	case "boolean":
 		// Routed through the real int_to_bool transform (issue #80's

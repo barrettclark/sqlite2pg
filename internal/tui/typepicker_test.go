@@ -11,6 +11,7 @@ import (
 	"github.com/rivo/tview"
 
 	"sqlite2pg/internal/config"
+	"sqlite2pg/internal/copywriter"
 	"sqlite2pg/internal/review"
 )
 
@@ -885,8 +886,8 @@ func TestOpenTypePicker_EmptyRowWarning(t *testing.T) {
 			name:        "nullable INTEGER with empty row warns on the NULL-producing integer types",
 			declared:    "INTEGER",
 			values:      []string{"1", ""},
-			wantOffered: []string{"text", "integer", "bigint", "smallint", "bytea"},
-			wantWarned:  []string{"integer", "bigint", "smallint"},
+			wantOffered: []string{"text", "integer", "bigint", "smallint", "double precision", "real", "numeric", "bytea"},
+			wantWarned:  []string{"integer", "bigint", "smallint", "double precision", "real", "numeric"},
 		},
 		{
 			name:        "NOT NULL INTEGER with empty row offers no NULL-producing type and no warning",
@@ -935,7 +936,11 @@ func TestOpenTypePicker_EmptyRowWarning(t *testing.T) {
 				secondary, _ := secondaryOf(m, typ)
 				warned := slices.Contains(tc.wantWarned, typ)
 				if warned {
-					want := fmt.Sprintf(`e.g. %s; %s`, tc.values[0], marker)
+					shown := tc.values[0]
+					if strings.HasPrefix(typ, "double") || typ == "real" || typ == "numeric" {
+						shown += ".0"
+					}
+					want := fmt.Sprintf(`e.g. %s; %s`, shown, marker)
 					if secondary != want {
 						t.Errorf("%q secondary = %q, want %q", typ, secondary, want)
 					}
@@ -1137,4 +1142,78 @@ func TestRefusalMessage(t *testing.T) {
 			}
 		})
 	}
+}
+
+// The full empty-row note follows the highlighted type and clears on a type
+// without one; Esc restores the status line.
+func TestOpenTypePicker_StatusFollowsHighlightedType(t *testing.T) {
+	_, _, m := newAllNullIntegerState(t)
+	m.summary = withSamples(m.summary, "bikes", "is_installed", "1", "")
+	m.status.SetText("base status")
+	m.openTypePicker("is_installed")
+
+	if !strings.Contains(m.status.GetText(false), "is not NULL") {
+		t.Errorf("status %q does not show the note for highlighted integer", m.status.GetText(false))
+	}
+	m.picker.SetCurrentItem(slices.Index(offeredTypes(m), "text"))
+	if status := m.status.GetText(false); strings.Contains(status, "is not NULL") {
+		t.Errorf("status %q still shows the note after highlighting text", status)
+	}
+	m.picker.SetCurrentItem(slices.Index(offeredTypes(m), "bigint"))
+	if status := m.status.GetText(false); !strings.Contains(status, "empty-string rows load as NULL") {
+		t.Errorf("status %q does not show the note for highlighted bigint", status)
+	}
+	m.pickerKeyCapture(tcell.NewEventKey(tcell.KeyEscape, 0, tcell.ModNone))
+	if status := m.status.GetText(false); status != "base status" {
+		t.Errorf("status after Esc = %q, want base status", status)
+	}
+}
+
+// A TEXT "1.5" column re-confirmed as a float persists numeric_text_to_double,
+// which parses it into a float64; a REAL column needs no transform.
+func TestOnTypeSelected_FloatCurrentTypePersistsTransformMatchingSamples(t *testing.T) {
+	t.Run("TEXT 1.5 persists numeric_text_to_double", func(t *testing.T) {
+		_, path, m := newColumnState(t, "double precision", "", "TEXT")
+		m.summary = withSampleCells(m.summary, "bikes", "is_installed", sampleCell{value: "1.5", isText: true})
+		m.openTypePicker("is_installed")
+		idx := slices.Index(offeredTypes(m), "double precision")
+		if idx == -1 {
+			t.Fatalf("double precision not offered, got %v", offeredTypes(m))
+		}
+		m.onTypeSelected(idx, "double precision", "", 0)
+
+		loaded, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := loaded.Tables["bikes"].Columns["is_installed"].Transform; got != "numeric_text_to_double" {
+			t.Fatalf("persisted Transform = %q, want numeric_text_to_double", got)
+		}
+		v, err := copywriter.Transform("numeric_text_to_double", "1.5")
+		if err != nil {
+			t.Fatalf("Transform: %v", err)
+		}
+		if f, ok := v.(float64); !ok || f != 1.5 {
+			t.Errorf("Transform produced %#v, want float64(1.5)", v)
+		}
+	})
+
+	t.Run("REAL 1.5 persists no transform", func(t *testing.T) {
+		_, path, m := newColumnState(t, "double precision", "", "REAL")
+		m.summary = withSampleCells(m.summary, "bikes", "is_installed", sampleCell{value: "1.5", isText: false})
+		m.openTypePicker("is_installed")
+		idx := slices.Index(offeredTypes(m), "double precision")
+		if idx == -1 {
+			t.Fatalf("double precision not offered, got %v", offeredTypes(m))
+		}
+		m.onTypeSelected(idx, "double precision", "", 0)
+
+		loaded, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if got := loaded.Tables["bikes"].Columns["is_installed"].Transform; got != "" {
+			t.Errorf("persisted Transform = %q, want \"\"", got)
+		}
+	})
 }

@@ -24,6 +24,10 @@ func (m *model) openTypePicker(columnName string) {
 	list.SetTitle(fmt.Sprintf(" Edit type: %s ", columnName))
 	list.SetInputCapture(m.pickerKeyCapture)
 	list.SetSelectedFunc(m.onTypeSelected)
+	list.SetChangedFunc(func(_ int, typ, _ string, _ rune) {
+		m.showPickerWarning(typ)
+	})
+	m.pickerStatusBase = m.status.GetText(false)
 	sample := firstNonNullCell(cells)
 	for i, t := range types {
 		secondary := ""
@@ -47,6 +51,8 @@ func (m *model) openTypePicker(columnName string) {
 		}
 	}
 	m.picker = list
+	current, _ := list.GetItemText(list.GetCurrentItem())
+	m.showPickerWarning(current)
 
 	// tview reserves 4 extra columns to print each item's "(x)" shortcut
 	// prefix once any item has one, so widen the overlay to match.
@@ -96,6 +102,7 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 	col := columnByName(tv, m.pickerColumn)
 	cells := columnSampleCells(tv, m.pickerColumn)
 	if msg := refusalMessage(m.pickerColumn, typeName, col.TargetType, cells, col.DeclaredType, col.RejectNull); msg != "" {
+		m.status.SetText(m.pickerStatusBase)
 		m.closePicker()
 		m.showError(msg)
 		return
@@ -139,6 +146,7 @@ func (m *model) closePicker() {
 // about: esc closes it without applying anything.
 func (m *model) pickerKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyEscape {
+		m.status.SetText(m.pickerStatusBase)
 		m.closePicker()
 		return nil
 	}
@@ -177,4 +185,18 @@ func allSamplesValidate(cells []sampleCell, typeName, declaredType string) bool 
 		}
 	}
 	return true
+}
+
+// showPickerWarning shows the full empty-row note in the status bar while typ
+// is highlighted, and clears it when the highlight moves to a type without one.
+func (m *model) showPickerWarning(typ string) {
+	tv := findTable(m.summary, m.selectedTable)
+	col := columnByName(tv, m.pickerColumn)
+	cells := columnSampleCells(tv, m.pickerColumn)
+	transform, _ := commonTransformForType(cells, typ, col.DeclaredType)
+	text := m.pickerStatusBase
+	if emptyRowsBecomeNull(cells, transform) {
+		text += " | " + tview.Escape(emptyNullStatus)
+	}
+	m.status.SetText(text)
 }

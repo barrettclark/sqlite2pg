@@ -571,10 +571,11 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			// straight to pgx's float8 codec, which can't binary-encode
 			// it (issue #85's audit, finding M6). Try float64 before
 			// falling back.
-			if f, err := parseFiniteFloat(cleaned); err == nil {
-				return f, nil
+			f, err := parseFiniteFloat(cleaned)
+			if err != nil {
+				return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel and not a finite number: %w", v, err)
 			}
-			return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel token and not numeric", v)
+			return f, nil
 		case int64:
 			return v, nil
 		case int:
