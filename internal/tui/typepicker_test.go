@@ -1361,3 +1361,29 @@ func TestOnTypeSelected_MixedTextAndRealInfinityRefusesFloat(t *testing.T) {
 	}
 	assertPersisted(t, path, "double precision", "")
 }
+
+// Reopening the picker after a pick that showed the note must not carry the
+// note into the base: an unmarked type shows none, the marked one shows it once.
+func TestOpenTypePicker_ReopenAfterNoteDoesNotStaleTheStatus(t *testing.T) {
+	_, _, m := newAllNullIntegerState(t)
+	m.summary = withSamples(m.summary, "bikes", "is_installed", "1", "")
+	m.status.SetText("base status")
+	m.openTypePicker("is_installed")
+	m.onTypeSelected(slices.Index(offeredTypes(m), "bigint"), "bigint", "", 0)
+	if !strings.Contains(m.status.GetText(false), "empty-string rows load as NULL") {
+		t.Fatalf("status %q does not show the note after the pick", m.status.GetText(false))
+	}
+
+	// A pick rebuilds the summary from state, so restore the samples as the app would have them.
+	m.summary = withSamples(m.summary, "bikes", "is_installed", "1", "")
+	m.openTypePicker("is_installed")
+
+	m.picker.SetCurrentItem(slices.Index(offeredTypes(m), "text"))
+	if status := m.status.GetText(false); strings.Contains(status, "empty-string rows load as NULL") {
+		t.Errorf("status %q carries a stale note on unmarked text", status)
+	}
+	m.picker.SetCurrentItem(slices.Index(offeredTypes(m), "bigint"))
+	if n := strings.Count(m.status.GetText(false), "empty-string rows load as NULL"); n != 1 {
+		t.Errorf("note appears %d times on marked bigint, want 1: %q", n, m.status.GetText(false))
+	}
+}

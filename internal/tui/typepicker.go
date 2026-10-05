@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -31,7 +32,7 @@ func (m *model) openTypePicker(columnName string) {
 	list.SetChangedFunc(func(_ int, typ, _ string, _ rune) {
 		m.showPickerWarning(typ)
 	})
-	m.pickerStatusBase = m.status.GetText(false)
+	m.pickerStatusBase = strings.TrimSuffix(m.status.GetText(false), " | "+tview.Escape(emptyNullStatus))
 	sample := firstNonNullCell(cells)
 	for i, t := range types {
 		secondary := ""
