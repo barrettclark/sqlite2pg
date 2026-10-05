@@ -52,7 +52,8 @@ func writeAtomic(path string, data []byte, write func(*os.File, []byte) error) (
 			if !closed {
 				tmp.Close()
 			}
-			os.Remove(tmp.Name())
+			// The primary error is already returned; a failed cleanup is not worth masking it.
+			_ = os.Remove(tmp.Name())
 		}
 	}()
 
