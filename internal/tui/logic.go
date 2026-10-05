@@ -441,27 +441,25 @@ func firstNonNullCell(cells []sampleCell) sampleCell {
 	return sampleCell{}
 }
 
-// commonTransformForType derives the transform previewValueForType would
-// attach for typeName across EVERY non-NULL sample, returning it only if
-// they all agree (issue #64).
-//
-// validTypesForColumn offers date/timestamptz whenever every sample
-// converts to it — but different rows can need different transforms
-// ("2021-06-01" via iso8601_to_date, "20210704" via yyyymmdd_to_date;
-// "1712345678" via unix_epoch_seconds, "40000" via
-// excel_serial_to_timestamptz). config.ColumnConfig.Transform is a single
-// value, so onTypeSelected can't honour a per-row choice; deriving it from
-// one sample (the old firstNonNullValue behaviour) attached a transform
-// that then failed the real COPY on every row of the other format.
-//
-// ok is false when the non-NULL samples disagree on a transform, OR when
-// any non-NULL sample doesn't validate for typeName at all — either way
-// the caller should refuse the type rather than persist a config that can
-// break the load. When ok is true, transform is the shared one (or "" when
-// no non-NULL sample needs a transform, e.g. text, or the column is all
-// NULL). Non-date types are unaffected: previewValueForType returns a
-// fixed transform per type ("" for text/integer, uuid_format for uuid), so
-// those always agree.
+// representativeValue is one value of each type; standardTransform derives the
+// transform a type needs from it, so a column with no sample still gets one.
+var representativeValue = map[string]string{
+	"text": "x", "bytea": "x",
+	"integer": "1", "bigint": "1", "smallint": "1", "boolean": "1",
+	"real": "1.5", "double precision": "1.5", "numeric": "1.5",
+	"date": "2021-01-01", "timestamptz": "2021-01-01T00:00:00Z",
+	"jsonb":  "{}",
+	"uuid":   "00000000-0000-0000-0000-000000000000",
+	"uuid[]": "00000000-0000-0000-0000-000000000000",
+}
+
+func standardTransform(typeName, declaredType string) string {
+	_, transform, _ := previewValueForType(representativeValue[typeName], typeName, declaredType, false)
+	return transform
+}
+
+// commonTransformForType returns the transform all samples agree on (issue #64),
+// or the standard transform when there is no non-empty sample.
 func commonTransformForType(cells []sampleCell, typeName, declaredType string) (transform string, ok bool) {
 	seen := false
 	for _, c := range cells {
@@ -479,6 +477,9 @@ func commonTransformForType(cells []sampleCell, typeName, declaredType string) (
 		if t != transform {
 			return "", false
 		}
+	}
+	if !seen {
+		return standardTransform(typeName, declaredType), true
 	}
 	return transform, true
 }
@@ -572,14 +573,8 @@ func nextFlaggedColumn(flagged []flaggedColumn, current flaggedColumn, forward b
 	return flagged[next], true
 }
 
-// validTypesForColumn returns the review.TypeOptions a column's samples can
-// load as. Each non-NULL, non-empty sample must validate as the type
-// (previewValueForType). The loader applies the chosen transform to every row
-// and does not map "" to NULL, so when a sample has a "" row each transform
-// must accept "" (see transformAcceptsEmpty). Validity is checked per sample,
-// not via commonTransformForType: a mixed ISO/yyyymmdd date column is still
-// offered date, and selecting it is refused there because the samples need
-// different transforms.
+// validTypesForColumn returns the types every sample validates as, given that
+// "" rows must also load under each type's transform (transformAcceptsEmpty).
 func validTypesForColumn(cells []sampleCell, declaredType string, rejectNull bool) []string {
 	emptyRows := false
 	for _, c := range cells {
@@ -613,10 +608,9 @@ func typeLoadsSamples(cells []sampleCell, typeName, declaredType string, emptyRo
 		}
 		sawValue = true
 	}
-	// With no non-empty sample the "" rows get the transform
-	// commonTransformForType returns for it: the empty one.
+	// With no non-empty sample, "" rows get the type's standard transform.
 	if emptyRows && !sawValue {
-		return transformAcceptsEmpty(typeName, "", rejectNull)
+		return transformAcceptsEmpty(typeName, standardTransform(typeName, declaredType), rejectNull)
 	}
 	return true
 }

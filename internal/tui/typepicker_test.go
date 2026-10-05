@@ -574,7 +574,7 @@ func TestCommonTransformForType_UnanimousAndMixed(t *testing.T) {
 		{"mixed epoch + excel serial", []string{"1712345678", "40000"}, "timestamptz", "", false},
 		{"one sample invalid for the type", []string{"2021-06-01", "not-a-date"}, "date", "", false},
 		{"NULLs ignored, rest unanimous", []string{"NULL", "2021-06-01", "", "2022-01-15"}, "date", "iso8601_to_date", true},
-		{"all NULL", []string{"NULL", ""}, "date", "", true},
+		{"all NULL", []string{"NULL", ""}, "date", "iso8601_to_date", true},
 		{"plain text needs no transform", []string{"a", "b"}, "text", "", true},
 		{"uuid always uuid_format", []string{"90b141b9-c39f-4a26-8f5d-9d3c1e2a7b10", "11111111-1111-1111-1111-111111111111"}, "uuid", "uuid_format", true},
 	}
@@ -731,5 +731,82 @@ func TestOpenTypePicker_AllNullIntegerColumnKeepsCurrentTypeSelected(t *testing.
 	current, _ := m.picker.GetItemText(m.picker.GetCurrentItem())
 	if current != "integer" {
 		t.Errorf("expected the all-NULL integer column to keep integer pre-selected, got %q", current)
+	}
+}
+
+// newAllNullIntegerState is a bikes config whose is_installed is integer via
+// numeric_text_to_integer, with all-NULL samples supplied by the caller.
+func newAllNullIntegerState(t *testing.T) (*review.State, string, *model) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "test.migration.yaml")
+	cfg := &config.MigrationConfig{
+		ConfigVersion: config.CurrentConfigVersion,
+		Tables: map[string]config.TableConfig{
+			"bikes": {
+				ColumnOrder: []string{"bike_id", "is_installed"},
+				Columns: map[string]config.ColumnConfig{
+					"bike_id":      {TargetType: "integer", Confidence: 0.99, Source: "heuristic:default_passthrough"},
+					"is_installed": {TargetType: "integer", Transform: "numeric_text_to_integer", DeclaredType: "INTEGER", Confidence: 0.55, Source: "heuristic:integer"},
+				},
+			},
+		},
+	}
+	if err := config.Save(cfg, path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	st, err := review.NewState(path, 0.9)
+	if err != nil {
+		t.Fatalf("NewState: %v", err)
+	}
+	m := &model{app: tview.NewApplication(), pages: tview.NewPages(), st: st, summary: withSamples(st.Summary(), "bikes", "is_installed", "NULL", "NULL")}
+	m.status = tview.NewTextView()
+	m.buildTableList()
+	m.pages.AddPage("tablelist", m.tableList, true, true)
+	m.onTableSelected(0, "bikes", "", 0)
+	return st, path, m
+}
+
+// An all-NULL column offers every type; the current type stays pre-selected,
+// and a fresh pick persists its standard transform (verified only on the sample).
+func TestOnTypeSelected_AllNullIntegerColumnPersistsStandardTransform(t *testing.T) {
+	cases := []struct {
+		name, choose, wantTransform string
+	}{
+		{"current integer keeps numeric_text_to_integer", "integer", "numeric_text_to_integer"},
+		{"bigint persists numeric_text_to_integer", "bigint", "numeric_text_to_integer"},
+		{"boolean persists int_to_bool", "boolean", "int_to_bool"},
+		{"text persists no transform", "text", ""},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, path, m := newAllNullIntegerState(t)
+			m.openTypePicker("is_installed")
+
+			if current, _ := m.picker.GetItemText(m.picker.GetCurrentItem()); current != "integer" {
+				t.Errorf("expected integer pre-selected, got %q", current)
+			}
+			idx := -1
+			for i := 0; i < m.picker.GetItemCount(); i++ {
+				if text, _ := m.picker.GetItemText(i); text == tc.choose {
+					idx = i
+				}
+			}
+			if idx == -1 {
+				t.Fatalf("%q not offered for an all-NULL integer column", tc.choose)
+			}
+			m.onTypeSelected(idx, tc.choose, "", 0)
+
+			loaded, err := config.Load(path)
+			if err != nil {
+				t.Fatalf("Load: %v", err)
+			}
+			col := loaded.Tables["bikes"].Columns["is_installed"]
+			if col.TargetType != tc.choose {
+				t.Errorf("TargetType = %q, want %q", col.TargetType, tc.choose)
+			}
+			if col.Transform != tc.wantTransform {
+				t.Errorf("persisted Transform = %q, want %q", col.Transform, tc.wantTransform)
+			}
+		})
 	}
 }

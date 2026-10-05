@@ -691,27 +691,27 @@ func TestColumnSampleCells_MissingIsTextFailsClosed(t *testing.T) {
 	}
 }
 
-func TestValidTypesForColumn_AllEmptyTextOffersOnlyTheEmptyAcceptingTypes(t *testing.T) {
-	cases := []struct {
-		name  string
-		cells []sampleCell
-	}{
-		{"empty strings", []sampleCell{{value: ""}, {value: ""}}},
-		{"mixed NULL and empty", []sampleCell{{value: "NULL"}, {value: ""}}},
+func TestValidTypesForColumn_AllEmptyTextOffersOnlyTypesAcceptingEmpty(t *testing.T) {
+	cells := []sampleCell{{value: ""}, {value: ""}}
+	nullable := []string{"text", "integer", "bigint", "smallint", "bytea", "uuid", "uuid[]"}
+	if got := validTypesForColumn(cells, "TEXT", false); !equalTypes(got, nullable) {
+		t.Errorf("nullable all-empty column: got %v, want %v", got, nullable)
 	}
-	for _, tc := range cases {
-		t.Run(tc.name, func(t *testing.T) {
-			got := validTypesForColumn(tc.cells, "TEXT", false)
-			if len(got) != 2 || got[0] != "text" || got[1] != "bytea" {
-				t.Errorf("validTypesForColumn = %v, want [text bytea]", got)
-			}
-			for _, typ := range []string{"date", "timestamptz", "boolean", "jsonb", "real", "double precision", "numeric", "integer"} {
-				if containsType(got, typ) {
-					t.Errorf("%q offered for an all-empty column, got %v", typ, got)
-				}
-			}
-		})
+	if got := validTypesForColumn(cells, "TEXT", true); !equalTypes(got, []string{"text", "bytea"}) {
+		t.Errorf("NOT NULL all-empty column: got %v, want [text bytea]", got)
 	}
+}
+
+func equalTypes(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func TestValidTypesForColumn_AllNullColumnOffersEveryType(t *testing.T) {
