@@ -166,7 +166,7 @@ func (m *model) pickerKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 // disagreeing transforms, a value that does not fit the type, or (with "" rows)
 // an empty string that becomes NULL on a NOT NULL column or does not load at all.
 func refusalMessage(column, typeName, targetType string, cells []sampleCell, declaredType string, rejectNull bool) string {
-	if isFloatType(typeName) && hasTextCell(cells) && hasInfinityReal(cells) {
+	if isFloatType(typeName) && hasTextCell(cells) && hasInfinityReal(cells) && allSamplesValidate(cells, typeName, declaredType) {
 		return fmt.Sprintf("%s: text numbers and infinities can't share a float transform; leave the column as %s", column, targetType)
 	}
 	if _, ok := commonTransformForType(cells, typeName, declaredType); !ok {
