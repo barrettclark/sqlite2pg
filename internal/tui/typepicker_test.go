@@ -602,12 +602,9 @@ func TestCommonTransformForType_UnanimousAndMixed(t *testing.T) {
 	}
 }
 
-// TestOnTypeSelected_RefusesADateTypeWhenSamplesNeedDifferentTransforms is
-// the end-to-end #64 case: a text column mixing ISO and compact date
-// spellings offers "date" (every row converts), but the old code stored
-// the first row's transform (iso8601_to_date) and the real COPY then
-// failed on every 20210704-style row. onTypeSelected must refuse the pick
-// rather than persist a config guaranteed to break the load.
+// TestOnTypeSelected_RefusesADateTypeWhenSamplesNeedDifferentTransforms: a
+// mixed ISO/compact date column does not offer "date", and a direct pick is
+// still refused by onTypeSelected.
 func TestOnTypeSelected_RefusesADateTypeWhenSamplesNeedDifferentTransforms(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.migration.yaml")
 	cfg := &config.MigrationConfig{
@@ -646,11 +643,10 @@ func TestOnTypeSelected_RefusesADateTypeWhenSamplesNeedDifferentTransforms(t *te
 	m.onTableSelected(0, "t", "", 0)
 	m.openTypePicker("d")
 
-	idx := pickerIndexOf(m, "date")
-	if idx == -1 {
-		t.Fatal("expected \"date\" to be offered (every sample converts to a date, just via different transforms)")
+	if idx := pickerIndexOf(m, "date"); idx != -1 {
+		t.Fatal("\"date\" offered for a mixed ISO/compact column, want it omitted")
 	}
-	m.onTypeSelected(idx, "date", "", 0)
+	m.onTypeSelected(0, "date", "", 0)
 
 	loaded, err := config.Load(path)
 	if err != nil {
@@ -1042,4 +1038,56 @@ func TestOnTypeSelected_CurrentTypePersistsValidatedTransform(t *testing.T) {
 			t.Errorf("persisted Transform = %q, want \"\" (REAL +Inf passes through)", col.Transform)
 		}
 	})
+}
+
+// Re-confirming the current type is refused when the samples no longer derive
+// a transform, and the stored transform stays in the config.
+func TestOnTypeSelected_CurrentTypeRefusalKeepsStoredTransform(t *testing.T) {
+	_, path, m := newColumnState(t, "integer", "numeric_text_to_integer", "INTEGER")
+	m.summary = withSampleCells(m.summary, "bikes", "is_installed", sampleCell{value: "1,000", isText: true})
+	m.openTypePicker("is_installed")
+	if slices.Contains(offeredTypes(m), "integer") {
+		t.Fatalf("integer offered for a sample it cannot load, got %v", offeredTypes(m))
+	}
+
+	m.onTypeSelected(0, "integer", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["bikes"].Columns["is_installed"]
+	if col.TargetType != "integer" || col.Transform != "numeric_text_to_integer" {
+		t.Errorf("config changed to (%q, %q), want unchanged (integer, numeric_text_to_integer)", col.TargetType, col.Transform)
+	}
+}
+
+// A TEXT "NULL" is a value: it persists text with no transform, and integer
+// is refused rather than treated as a NULL that loads anywhere.
+func TestOnTypeSelected_TextNullValuePersistsAndRefusesInteger(t *testing.T) {
+	cells := []sampleCell{{value: "NULL", isText: true}}
+	if transform, ok := commonTransformForType(cells, "text", "TEXT"); !ok || transform != "" {
+		t.Errorf("commonTransformForType(text) = (%q, %v), want (\"\", true)", transform, ok)
+	}
+	if _, ok := commonTransformForType(cells, "integer", "TEXT"); ok {
+		t.Errorf("commonTransformForType(integer) ok for TEXT \"NULL\", want refused")
+	}
+
+	_, path, m := newColumnState(t, "integer", "", "TEXT")
+	m.summary = withSampleCells(m.summary, "bikes", "is_installed", cells...)
+	m.openTypePicker("is_installed")
+	if !slices.Contains(offeredTypes(m), "text") || slices.Contains(offeredTypes(m), "integer") {
+		t.Fatalf("offered = %v, want text offered and integer omitted", offeredTypes(m))
+	}
+
+	m.onTypeSelected(slices.Index(offeredTypes(m), "text"), "text", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["bikes"].Columns["is_installed"]
+	if col.TargetType != "text" || col.Transform != "" {
+		t.Errorf("persisted (%q, %q), want (text, \"\")", col.TargetType, col.Transform)
+	}
 }

@@ -611,6 +611,9 @@ func validTypesForColumn(cells []sampleCell, declaredType string, rejectNull boo
 // typeLoadsSamples reports whether every non-NULL, non-empty cell validates as
 // typeName and, when emptyRows, its transform also accepts "".
 func typeLoadsSamples(cells []sampleCell, typeName, declaredType string, emptyRows, rejectNull bool) bool {
+	if _, ok := commonTransformForType(cells, typeName, declaredType); !ok {
+		return false
+	}
 	sawValue := false
 	for _, c := range cells {
 		if c.isNull() || c.value == "" {

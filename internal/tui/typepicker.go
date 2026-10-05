@@ -9,9 +9,8 @@ import (
 	"sqlite2pg/internal/review"
 )
 
-// openTypePicker opens a centered list of the types columnName's sample
-// values actually validate as (per validTypesForColumn), with the
-// column's current target type pre-selected when it is in the list.
+// openTypePicker opens a centered list of the types validTypesForColumn offers,
+// with the current target type pre-selected when it is listed.
 func (m *model) openTypePicker(columnName string) {
 	m.pickerColumn = columnName
 	tv := findTable(m.summary, m.selectedTable)
@@ -90,37 +89,13 @@ func centered(p tview.Primitive, width, height int) tview.Primitive {
 	return col
 }
 
-// onTypeSelected applies typeName as m.pickerColumn's new target type,
-// refreshes the grid and status line, and closes the picker.
-//
-// Transform is preserved unchanged when typeName matches the column's
-// current TargetType: re-confirming the picker's own current selection
-// (issue #18) must not strip a transform the column still needs at COPY
-// time (e.g. timestamptz via unix_epoch_seconds).
-//
-// For a genuine type change, the stale transform from the prior heuristic
-// guess is never implicitly carried over — but the picker itself only
-// offers a type in the first place when either it needs no transform at
-// all, or some transform actually converts the column's sample data into
-// it (dateTransformPreview for date/timestamptz, uuid_format/
-// uuid_list_format for uuid/uuid[] — issues #27, #12). Re-deriving that
-// same transform here (issue #41) means selecting one of those offered
-// types attaches the transform that made it valid, instead of discarding
-// it and leaving a raw value the real COPY can't write into the new
-// column type.
-//
-// The transform is derived across EVERY non-NULL sample, not just the
-// first (issue #64): a date/timestamptz column whose rows legitimately
-// need different transforms (some ISO 8601, some YYYYMMDD) can't be
-// expressed by a single ColumnConfig.Transform, so the pick is refused
-// rather than persisting one row's transform and breaking the COPY on all
-// the others.
+// onTypeSelected persists the derived transform for typeName, or refuses the
+// pick when the samples cannot load under it.
 func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortcut rune) {
 	tv := findTable(m.summary, m.selectedTable)
 	col := columnByName(tv, m.pickerColumn)
 	cells := columnSampleCells(tv, m.pickerColumn)
-	// The persisted transform is always the derived one, never the stored one, so
-	// it is the one validated here and in validTypesForColumn.
+	// Persist the derived transform; refuse it if the samples can't load under it.
 	transform, ok := commonTransformForType(cells, typeName, col.DeclaredType)
 	if !ok {
 		m.closePicker()
