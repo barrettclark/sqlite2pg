@@ -134,10 +134,10 @@ func TestValidTypesForColumn_OffersDoublePrecisionOnlyForREALInfinity(t *testing
 		}
 		return false
 	}
-	if got := validTypesForColumn([]sampleCell{{value: "+Inf", isText: false}}, "text", "REAL"); !has(got, "double precision") {
+	if got := validTypesForColumn([]sampleCell{{value: "+Inf", isText: false}}, "REAL"); !has(got, "double precision") {
 		t.Errorf("REAL +Inf: double precision not offered, got %v", got)
 	}
-	if got := validTypesForColumn([]sampleCell{{value: "+Inf", isText: true}}, "text", "TEXT"); has(got, "double precision") {
+	if got := validTypesForColumn([]sampleCell{{value: "+Inf", isText: true}}, "TEXT"); has(got, "double precision") {
 		t.Errorf("text \"+Inf\": double precision offered, got %v", got)
 	}
 }
@@ -159,7 +159,7 @@ func TestValidTypesForColumn_NeverOffersInvalidCurrentType(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := validTypesForColumn(tc.cells, tc.currentType, tc.declared)
+			got := validTypesForColumn(tc.cells, tc.declared)
 			offered := false
 			for _, typ := range got {
 				if typ == tc.currentType {
@@ -170,6 +170,23 @@ func TestValidTypesForColumn_NeverOffersInvalidCurrentType(t *testing.T) {
 				t.Errorf("%q offered = %v, want %v (got %v)", tc.currentType, offered, tc.wantOffered, got)
 			}
 		})
+	}
+}
+
+// An empty sample is "no value on file" (commonTransformForType skips it), so it must not
+// knock numeric types out of the picker.
+func TestValidTypesForColumn_EmptySamplesAreSkipped(t *testing.T) {
+	got := validTypesForColumn([]sampleCell{{value: ""}, {value: "1.5"}, {value: "NULL"}}, "TEXT")
+	for _, want := range []string{"real", "double precision", "numeric"} {
+		found := false
+		for _, typ := range got {
+			if typ == want {
+				found = true
+			}
+		}
+		if !found {
+			t.Errorf("%q not offered for samples with empty string, got %v", want, got)
+		}
 	}
 }
 
@@ -270,7 +287,7 @@ func TestValidTypesForColumn_FiltersOutTypesAnySampleFails(t *testing.T) {
 	// and text-like types validate; boolean/date/timestamptz don't, since
 	// "12"/"34" aren't boolean-shaped or date-formatted.
 	values := []string{"12", "34", "0"}
-	got := validTypesForColumn(plainCells(values...), "integer", "")
+	got := validTypesForColumn(plainCells(values...), "")
 	want := map[string]bool{
 		"integer": true, "bigint": true, "smallint": true,
 		"real": true, "double precision": true, "numeric": true,
@@ -410,7 +427,7 @@ func TestValidTypesForColumn_OffersTimestamptzForAPlausibleUnixEpochValueNotAlre
 	// missing from the picker for any column that didn't already have it
 	// as its current type).
 	values := []string{"1712345678"}
-	got := validTypesForColumn(plainCells(values...), "integer", "")
+	got := validTypesForColumn(plainCells(values...), "")
 	found := false
 	for _, typ := range got {
 		if typ == "timestamptz" {
@@ -428,7 +445,7 @@ func TestValidTypesForColumn_DoesNotOfferTimestamptzForOrdinarySmallIntegers(t *
 	// a count) is not remotely epoch-shaped and must not "validate" as
 	// timestamptz just because Transform happens not to error on it.
 	values := []string{"12", "34", "0"}
-	got := validTypesForColumn(plainCells(values...), "integer", "")
+	got := validTypesForColumn(plainCells(values...), "")
 	for _, typ := range got {
 		if typ == "timestamptz" || typ == "date" {
 			t.Errorf("did not expect %q to be offered for ordinary small integers, got %v", typ, got)
@@ -537,7 +554,7 @@ func TestValidTypesForColumn_ExcludesSmallintForOutOfRangeValues(t *testing.T) {
 	// here would let the picker promise a type the real COPY then rejects
 	// with "value out of range for type smallint" (issue #27).
 	values := []string{"70000"}
-	got := validTypesForColumn(plainCells(values...), "integer", "")
+	got := validTypesForColumn(plainCells(values...), "")
 	for _, typ := range got {
 		if typ == "smallint" {
 			t.Errorf("did not expect smallint to be offered for out-of-range value 70000, got %v", got)
@@ -593,7 +610,7 @@ func TestPreviewValueForType_IntegerRangeCheck(t *testing.T) {
 
 func TestValidTypesForColumn_ExcludesCurrentTypeWhenInvalid(t *testing.T) {
 	values := []string{"not-a-number-at-all"}
-	got := validTypesForColumn(plainCells(values...), "integer", "")
+	got := validTypesForColumn(plainCells(values...), "")
 	for _, typ := range got {
 		if typ == "integer" {
 			t.Errorf("currentType %q offered though its preview rejects the sample, got %v", "integer", got)
@@ -660,7 +677,7 @@ func TestColumnSampleCells_MissingIsTextFailsClosed(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := validTypesForColumn(columnSampleCells(tc.tv, "x"), "text", "REAL")
+			got := validTypesForColumn(columnSampleCells(tc.tv, "x"), "REAL")
 			has := false
 			for _, typ := range got {
 				if typ == "double precision" {

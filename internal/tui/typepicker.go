@@ -17,7 +17,7 @@ func (m *model) openTypePicker(columnName string) {
 	tv := findTable(m.summary, m.selectedTable)
 	col := columnByName(tv, columnName)
 	cells := columnSampleCells(tv, columnName)
-	types := validTypesForColumn(cells, col.TargetType, col.DeclaredType)
+	types := validTypesForColumn(cells, col.DeclaredType)
 
 	list := tview.NewList()
 	list.ShowSecondaryText(true)

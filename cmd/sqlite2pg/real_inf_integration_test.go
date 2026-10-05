@@ -1,7 +1,9 @@
 //go:build integration
 
 // Tier 3 (real Postgres): a SQLite REAL infinity (1e999 / -1e999) loaded
-// with no transform must reach Postgres as the same infinity. Run with:
+// with no transform must reach Postgres as the same infinity. The numeric
+// test needs PostgreSQL 14+ (numeric Infinity); it fails on older servers.
+// Run with:
 //
 //	PGURL=postgres://user@localhost:5432/postgres?sslmode=disable \
 //	  go test -tags integration ./cmd/sqlite2pg/... -run TestRealInf -v
@@ -124,9 +126,9 @@ func TestRealInf_DoublePrecisionStoresSignedInfinity(t *testing.T) {
 	}
 }
 
-// TestRealInf_NumericOutcome records what a REAL +Inf/-Inf with no
-// transform does when loaded into a numeric column. Numeric has Infinity
-// since Postgres 14; this test pins whichever answer the driver gives.
+// TestRealInf_NumericOutcome asserts that a REAL +Inf/-Inf with no transform
+// loads into a numeric column as Infinity/-Infinity, which requires the PG14+
+// numeric infinity support.
 func TestRealInf_NumericOutcome(t *testing.T) {
 	connCfg, err := realInfFixture(t, "double precision", "numeric")
 	if err != nil {

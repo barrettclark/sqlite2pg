@@ -573,14 +573,18 @@ func nextFlaggedColumn(flagged []flaggedColumn, current flaggedColumn, forward b
 }
 
 // validTypesForColumn returns the subset of review.TypeOptions that every
-// one of cells would load successfully as (per previewValueForType). The
-// current type is not exempt: offering a type that fails the preview would
-// let a human select a type whose COPY then fails.
-func validTypesForColumn(cells []sampleCell, currentType, declaredType string) []string {
+// one of cells would load successfully as (per previewValueForType). NULL and
+// empty samples are skipped, as in commonTransformForType. The current type is
+// not exempt: offering a type that fails the preview would let a human select
+// a type whose COPY then fails.
+func validTypesForColumn(cells []sampleCell, declaredType string) []string {
 	var result []string
 	for _, t := range review.TypeOptions {
 		ok := true
 		for _, c := range cells {
+			if c.value == "" || c.value == "NULL" {
+				continue
+			}
 			if _, _, valueValid := previewValueForType(c.value, t, declaredType, c.isText); !valueValid {
 				ok = false
 				break
