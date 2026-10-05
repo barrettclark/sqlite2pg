@@ -88,6 +88,9 @@ func runRun(args []string) error {
 		return errors.New("--pg is required (use `sqlite2pg profile` + `sqlite2pg review` separately if you don't have a target yet)")
 	}
 	sourcePath := fs.Arg(0)
+	if err := checkSourceFile(sourcePath); err != nil {
+		return err
+	}
 
 	db, err := sql.Open("sqlite", sourcePath)
 	if err != nil {
@@ -229,6 +232,20 @@ func cleanupConfigAfterLoad(loadErr error, configPath string, keepConfig bool) e
 
 // --- profile ---------------------------------------------------------------
 
+// checkSourceFile rejects a missing or non-file source before SQLite opens it.
+// The driver creates an empty database for a missing path, so a mistyped path
+// would otherwise profile to zero tables and overwrite the config with it.
+func checkSourceFile(path string) error {
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("source database %s: %w", path, err)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("source database %s is a directory", path)
+	}
+	return nil
+}
+
 func runProfile(args []string) error {
 	fs := flag.NewFlagSet("profile", flag.ContinueOnError)
 	out := fs.String("out", "", "path to write the draft migration config (default: <source>.migration.yaml)")
@@ -245,6 +262,9 @@ func runProfile(args []string) error {
 		*out = sourcePath + ".migration.yaml"
 	}
 
+	if err := checkSourceFile(sourcePath); err != nil {
+		return err
+	}
 	db, err := sql.Open("sqlite", sourcePath)
 	if err != nil {
 		return fmt.Errorf("opening %s: %w", sourcePath, err)

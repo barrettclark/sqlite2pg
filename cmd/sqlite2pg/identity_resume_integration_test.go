@@ -216,10 +216,10 @@ func TestResume_EmptyTableOverflowExhaustsSequence(t *testing.T) {
 	assertInsertExhausted(t, connCfg)
 }
 
-// TestReseedCompletedTable_AliasExcludedFromColumnOrderIsNotDrift: a PK
+// TestResume_AliasExcludedFromColumnOrderIsNotDrift: a PK
 // column left out of ColumnOrder isn't created, so the config doesn't claim
 // an alias for it, and a table without an identity is not drift.
-func TestReseedCompletedTable_AliasExcludedFromColumnOrderIsNotDrift(t *testing.T) {
+func TestResume_AliasExcludedFromColumnOrderIsNotDrift(t *testing.T) {
 	connCfg, err := connectForLoad(context.Background(), identityTestPgURL(t), filepath.Join(t.TempDir(), "drift.db"), false, filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
 		t.Skipf("no Postgres available: %v", err)
@@ -465,10 +465,10 @@ func TestResume_NonRangeReseedFailureDoesNotMarkTable(t *testing.T) {
 	}
 }
 
-// TestFresh_OverflowOnResumeKeepsExistingEmptyTable: an overflow on a resume
+// TestResume_OverflowOnEmptyPartialKeepsTable: an overflow on a resume
 // that finds an empty partial t must fail before the DROP, leaving t and the
 // state file exactly as they were.
-func TestFresh_OverflowOnResumeKeepsExistingEmptyTable(t *testing.T) {
+func TestResume_OverflowOnEmptyPartialKeepsTable(t *testing.T) {
 	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), overflowIntegerSetup)
 	if err := writeState(statePath, loadState{}); err != nil {
 		t.Fatalf("writing state: %v", err)

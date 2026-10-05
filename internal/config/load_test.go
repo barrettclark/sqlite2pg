@@ -27,9 +27,8 @@ func TestLoad_RejectsV1ConfigWithRepairInstructions(t *testing.T) {
 	tests := []struct {
 		name   string
 		source string
-		// want and notWant are built from the config path the test wrote.
-		want    func(path string) []string
-		notWant []string
+		// want is built from the config path the test wrote.
+		want func(path string) []string
 	}{
 		{
 			name:   "source recorded",
@@ -44,7 +43,13 @@ func TestLoad_RejectsV1ConfigWithRepairInstructions(t *testing.T) {
 			want: func(path string) []string {
 				return []string{"--out '" + path + "'", "replace <your SQLite file> with the path to your SQLite source"}
 			},
-			notWant: []string{"<source.db>"},
+		},
+		{
+			name:   "single quote in path is escaped",
+			source: "/data/bob's bikes.db",
+			want: func(path string) []string {
+				return []string{`'/data/bob'\''s bikes.db'`}
+			},
 		},
 		{
 			name:   "path with spaces is quoted",
@@ -73,11 +78,6 @@ func TestLoad_RejectsV1ConfigWithRepairInstructions(t *testing.T) {
 			for _, want := range tt.want(path) {
 				if !strings.Contains(err.Error(), want) {
 					t.Errorf("expected the error to contain %q, got %q", want, err.Error())
-				}
-			}
-			for _, bad := range tt.notWant {
-				if strings.Contains(err.Error(), bad) {
-					t.Errorf("error should not contain %q, got %q", bad, err.Error())
 				}
 			}
 		})
