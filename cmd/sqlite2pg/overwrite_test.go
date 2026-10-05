@@ -243,8 +243,9 @@ func TestRunProfileIO_StateSurvivesFailedSave(t *testing.T) {
 		t.Fatalf("seeding state: %v", err)
 	}
 
-	if err := runProfileIO([]string{"--force", "--out", out, src}, strings.NewReader(""), &bytes.Buffer{}, false); err == nil {
-		t.Fatal("expected the config write to fail")
+	err := runProfileIO([]string{"--force", "--out", out, src}, strings.NewReader(""), &bytes.Buffer{}, false)
+	if err == nil || !strings.Contains(err.Error(), "writing config") || !strings.Contains(err.Error(), out) {
+		t.Fatalf("expected the failure to be the config save naming %s, got: %v", out, err)
 	}
 	if _, err := os.Stat(state); err != nil {
 		t.Errorf("failed save removed the load state: %v", err)
@@ -267,8 +268,9 @@ func TestRunProfileIO_StateSurvivesFailedProfile(t *testing.T) {
 		t.Fatalf("seeding state: %v", err)
 	}
 
-	if err := runProfileIO([]string{"--force", "--out", out, src}, strings.NewReader(""), &bytes.Buffer{}, false); err == nil {
-		t.Fatal("expected profiling a non-SQLite file to fail")
+	err := runProfileIO([]string{"--force", "--out", out, src}, strings.NewReader(""), &bytes.Buffer{}, false)
+	if err == nil || strings.Contains(err.Error(), "writing config") {
+		t.Fatalf("expected the profile itself to fail before any save, got: %v", err)
 	}
 	if _, err := os.Stat(state); err != nil {
 		t.Errorf("failed profile removed the load state: %v", err)
@@ -276,5 +278,35 @@ func TestRunProfileIO_StateSurvivesFailedProfile(t *testing.T) {
 	got, err := os.ReadFile(out)
 	if err != nil || string(got) != "sentinel" {
 		t.Errorf("failed profile changed the config: %q, %v", got, err)
+	}
+}
+
+// A run whose profile fails must keep the config and the state, like a
+// refused run does. Profiling fails before any connection is attempted.
+func TestRunRun_FailedProfileKeepsConfigAndState(t *testing.T) {
+	dir := t.TempDir()
+	src := filepath.Join(dir, "not-sqlite.db")
+	if err := os.WriteFile(src, []byte("this is not a sqlite database, just text padding padding padding"), 0o644); err != nil {
+		t.Fatalf("writing source: %v", err)
+	}
+	cfgPath := src + ".migration.yaml"
+	if err := os.WriteFile(cfgPath, []byte("sentinel"), 0o644); err != nil {
+		t.Fatalf("seeding config: %v", err)
+	}
+	state := cfgPath + ".state.json"
+	if err := writeState(state, loadState{Database: "old_db", Completed: []string{"t"}}); err != nil {
+		t.Fatalf("seeding state: %v", err)
+	}
+
+	err := runRun([]string{"--pg", "postgres://u@localhost:5432/?sslmode=disable", "--force", src})
+	if err == nil || strings.Contains(err.Error(), "writing config") {
+		t.Fatalf("expected the profile to fail before any save, got: %v", err)
+	}
+	got, readErr := os.ReadFile(cfgPath)
+	if readErr != nil || string(got) != "sentinel" {
+		t.Errorf("failed run changed the config: %q, %v", got, readErr)
+	}
+	if _, statErr := os.Stat(state); statErr != nil {
+		t.Errorf("failed run removed the load state: %v", statErr)
 	}
 }
