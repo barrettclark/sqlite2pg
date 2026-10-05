@@ -5,8 +5,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
+
+	"sqlite2pg/internal/config"
 )
 
 // makeSQLiteFile creates a real SQLite database at path with one table.
@@ -23,6 +24,7 @@ func makeSQLiteFile(t *testing.T, path string) {
 }
 
 func TestRunProfile_SourceChecks(t *testing.T) {
+	const sentinel = "sentinel"
 	tests := []struct {
 		name string
 		// setup returns the source path to pass to profile.
@@ -74,14 +76,8 @@ func TestRunProfile_SourceChecks(t *testing.T) {
 			wantAbsent: func(source string) string { return filepath.Join(filepath.Dir(source), "gone.db") },
 		},
 		{
-			name: "FIFO is rejected as not a regular file",
-			setup: func(t *testing.T, dir string) string {
-				fifo := filepath.Join(dir, "pipe.db")
-				if err := syscall.Mkfifo(fifo, 0o600); err != nil {
-					t.Fatalf("mkfifo: %v", err)
-				}
-				return fifo
-			},
+			name:    "FIFO is rejected as not a regular file",
+			setup:   func(t *testing.T, dir string) string { return makeFIFO(t, dir) },
 			wantErr: "not a regular file",
 		},
 	}
@@ -90,25 +86,44 @@ func TestRunProfile_SourceChecks(t *testing.T) {
 			dir := t.TempDir()
 			source := tt.setup(t, dir)
 			out := filepath.Join(t.TempDir(), "out.migration.yaml")
+			if err := os.WriteFile(out, []byte(sentinel), 0o644); err != nil {
+				t.Fatalf("seeding --out: %v", err)
+			}
 
 			err := runProfile([]string{"--out", out, source})
 			if tt.wantErr == "" {
 				if err != nil {
 					t.Fatalf("expected profile to succeed, got: %v", err)
 				}
-				if _, statErr := os.Stat(out); statErr != nil {
-					t.Fatalf("expected --out to be written: %v", statErr)
+				got, err := os.ReadFile(out)
+				if err != nil {
+					t.Fatalf("reading --out: %v", err)
+				}
+				if len(got) == 0 {
+					t.Fatal("--out is empty after a successful profile")
+				}
+				cfg, err := config.Load(out)
+				if err != nil {
+					t.Fatalf("--out does not parse as a config: %v", err)
+				}
+				if _, ok := cfg.Tables["t"]; !ok {
+					t.Errorf("--out has no table t, tables: %v", cfg.Tables)
 				}
 				return
 			}
+
 			if err == nil {
 				t.Fatal("expected runProfile to reject the source")
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Errorf("error should contain %q, got: %v", tt.wantErr, err)
 			}
-			if _, statErr := os.Stat(out); !os.IsNotExist(statErr) {
-				t.Errorf("--out must not be written on rejection, stat err = %v", statErr)
+			got, err := os.ReadFile(out)
+			if err != nil {
+				t.Fatalf("reading --out: %v", err)
+			}
+			if string(got) != sentinel {
+				t.Errorf("--out was modified by a rejected run: %q", got)
 			}
 			if tt.wantAbsent != nil {
 				if _, statErr := os.Stat(tt.wantAbsent(source)); !os.IsNotExist(statErr) {
