@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"slices"
 	"testing"
 
+	"sqlite2pg/internal/config"
 	"sqlite2pg/internal/review"
 )
 
@@ -693,7 +695,7 @@ func TestColumnSampleCells_MissingIsTextFailsClosed(t *testing.T) {
 
 func TestValidTypesForColumn_AllEmptyTextOffersOnlyTypesAcceptingEmpty(t *testing.T) {
 	cells := []sampleCell{{value: ""}, {value: ""}}
-	nullable := []string{"text", "integer", "bigint", "smallint", "bytea", "uuid", "uuid[]"}
+	nullable := []string{"text", "integer", "bigint", "smallint", "double precision", "real", "bytea", "uuid", "uuid[]"}
 	if got := validTypesForColumn(cells, "TEXT", false); !equalTypes(got, nullable) {
 		t.Errorf("nullable all-empty column: got %v, want %v", got, nullable)
 	}
@@ -810,7 +812,7 @@ func TestStandardTransform_CoversEveryTypeOption(t *testing.T) {
 			if _, _, valid := previewValueForType(rep, typ, "", false); !valid {
 				t.Fatalf("representative %q does not validate as %q", rep, typ)
 			}
-			got, ok := standardTransform(typ, "")
+			got, ok := standardTransform(typ, "REAL")
 			if !ok || got != wantTransform {
 				t.Errorf("standardTransform(%q) = (%q, %v), want (%q, true)", typ, got, ok, wantTransform)
 			}
@@ -830,5 +832,50 @@ func TestValidTypesForColumn_TextNullIsValueNotSQLNull(t *testing.T) {
 	sqlNull := validTypesForColumn([]sampleCell{{value: "NULL", isText: false}}, "INTEGER", false)
 	if !containsType(sqlNull, "integer") {
 		t.Errorf("integer not offered for SQL NULL, got %v", sqlNull)
+	}
+}
+
+// sampleValues returns the display strings of cells, in order.
+func sampleValues(cells []sampleCell) []string {
+	values := make([]string, len(cells))
+	for i, c := range cells {
+		values[i] = c.value
+	}
+	return values
+}
+
+// numeric is not offered for a plain TEXT decimal either, not only a long one.
+func TestValidTypesForColumn_TextNumericNotOfferedForPlainDecimal(t *testing.T) {
+	got := validTypesForColumn([]sampleCell{{value: "1.5", isText: true}}, "TEXT", false)
+	if containsType(got, "numeric") {
+		t.Errorf("numeric offered for TEXT \"1.5\", got %v", got)
+	}
+	if !containsType(got, "double precision") {
+		t.Errorf("double precision not offered for TEXT \"1.5\", got %v", got)
+	}
+}
+
+// An all-NULL TEXT column gets the text float transform, not "", for real and
+// double precision, and offers no numeric.
+func TestOnTypeSelected_AllNullTextColumnFloatTransform(t *testing.T) {
+	if got := validTypesForColumn([]sampleCell{{value: "NULL"}}, "TEXT", false); containsType(got, "numeric") {
+		t.Errorf("numeric offered for an all-NULL TEXT column, got %v", got)
+	}
+	for _, typ := range []string{"real", "double precision"} {
+		_, path, m := newColumnState(t, "text", "", "TEXT")
+		m.summary = withSampleCells(m.summary, "bikes", "is_installed", sampleCell{value: "NULL"})
+		m.openTypePicker("is_installed")
+		idx := slices.Index(offeredTypes(m), typ)
+		if idx == -1 {
+			t.Fatalf("%q not offered for an all-NULL TEXT column, got %v", typ, offeredTypes(m))
+		}
+		m.onTypeSelected(idx, typ, "", 0)
+		loaded, err := config.Load(path)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if col := loaded.Tables["bikes"].Columns["is_installed"]; col.Transform != "numeric_text_to_double" {
+			t.Errorf("%s persisted Transform %q, want numeric_text_to_double", typ, col.Transform)
+		}
 	}
 }

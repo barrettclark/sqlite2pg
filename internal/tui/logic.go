@@ -202,15 +202,6 @@ func columnSampleCells(tv review.TableView, columnName string) []sampleCell {
 	return cells
 }
 
-// sampleValues returns the display strings of cells, in order.
-func sampleValues(cells []sampleCell) []string {
-	values := make([]string, len(cells))
-	for i, c := range cells {
-		values[i] = c.value
-	}
-	return values
-}
-
 // sqliteNumericAffinity reports whether declaredType gives the column
 // INTEGER, REAL, or NUMERIC affinity per SQLite's rules
 // (sqlite.org/datatype3.html#determination_of_column_affinity) — the
@@ -469,8 +460,9 @@ var representativeValue = map[string]string{
 
 // standardTransform returns the transform previewValueForType attaches to the
 // type's representative value; ok is false if that value does not validate.
+// A TEXT-affinity column holds numbers as strings, so float targets get the text transform.
 func standardTransform(typeName, declaredType string) (transform string, ok bool) {
-	_, transform, ok = previewValueForType(representativeValue[typeName], typeName, declaredType, false)
+	_, transform, ok = previewValueForType(representativeValue[typeName], typeName, declaredType, !sqliteNumericAffinity(declaredType))
 	return transform, ok
 }
 

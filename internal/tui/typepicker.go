@@ -101,13 +101,17 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 	tv := findTable(m.summary, m.selectedTable)
 	col := columnByName(tv, m.pickerColumn)
 	cells := columnSampleCells(tv, m.pickerColumn)
-	if msg := refusalMessage(m.pickerColumn, typeName, col.TargetType, cells, col.DeclaredType, col.RejectNull); msg != "" {
+	msg := refusalMessage(m.pickerColumn, typeName, col.TargetType, cells, col.DeclaredType, col.RejectNull)
+	transform, ok := commonTransformForType(cells, typeName, col.DeclaredType)
+	if msg == "" && !ok {
+		msg = fmt.Sprintf("%s: samples can't load as %s; leave the column as %s", m.pickerColumn, typeName, col.TargetType)
+	}
+	if msg != "" {
 		m.status.SetText(m.pickerStatusBase)
 		m.closePicker()
 		m.showError(msg)
 		return
 	}
-	transform, _ := commonTransformForType(cells, typeName, col.DeclaredType)
 
 	err := m.st.ApplyDecision(m.selectedTable, m.pickerColumn, review.DecisionRequest{
 		TargetType: typeName,

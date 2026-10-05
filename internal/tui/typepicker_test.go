@@ -281,12 +281,9 @@ func TestOnTypeSelected_RebuildsTheTableListPreservingSelection(t *testing.T) {
 	}
 }
 
-// TestOnTypeSelected_ReselectingTheSameTypePreservesTheTransform guards
-// against issue #18: a human re-confirming the picker's own current
-// selection (the natural "yes, that's correct" gesture) must not clear a
-// transform the column actually needs at COPY time. Only a genuine change
-// to a different target type should clear a stale transform.
-func TestOnTypeSelected_ReselectingTheSameTypePreservesTheTransform(t *testing.T) {
+// Re-confirming the current type derives the transform from the samples, so the
+// epoch column is persisted with the derived unix_epoch_seconds.
+func TestOnTypeSelected_ReselectingTheSameTypeDerivesTheTransform(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.migration.yaml")
 	cfg := &config.MigrationConfig{
 		ConfigVersion: config.CurrentConfigVersion,
@@ -342,23 +339,12 @@ func TestOnTypeSelected_ReselectingTheSameTypePreservesTheTransform(t *testing.T
 		t.Errorf("expected TargetType timestamptz, got %q", col.TargetType)
 	}
 	if col.Transform != "unix_epoch_seconds" {
-		t.Errorf("expected Transform preserved as unix_epoch_seconds when type unchanged, got %q", col.Transform)
+		t.Errorf("expected the derived transform unix_epoch_seconds on re-confirm, got %q", col.Transform)
 	}
 }
 
-// TestOnTypeSelected_SelectingTimestamptzForAnEpochIntegerColumnAttachesTheMatchingTransform
-// reproduces issue #41's exact failure scenario: bikes.last_reported is
-// integer holding a raw Unix epoch seconds value, timestamptz is offered by
-// the picker (issue #27's transform-aware previewValueForType, credited via
-// dateTransformPreview) because unix_epoch_seconds actually converts it —
-// but selecting it is a genuine type change (integer -> timestamptz), so
-// issue #18's "type changed -> clear transform" rule fires. Without this
-// fix, the saved config ends up with target_type: timestamptz and
-// transform: "", and the real COPY sends a raw int64 into a timestamptz
-// column and fails. Selecting timestamptz here must attach the
-// unix_epoch_seconds transform that made the option valid in the first
-// place, not discard it.
-func TestOnTypeSelected_SelectingTimestamptzForAnEpochIntegerColumnAttachesTheMatchingTransform(t *testing.T) {
+// Selecting timestamptz for an epoch-seconds integer column attaches unix_epoch_seconds.
+func TestOnTypeSelected_EpochIntegerToTimestamptzAttachesTransform(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.migration.yaml")
 	cfg := &config.MigrationConfig{
 		ConfigVersion: config.CurrentConfigVersion,
@@ -425,11 +411,7 @@ func TestOnTypeSelected_SelectingTimestamptzForAnEpochIntegerColumnAttachesTheMa
 	}
 }
 
-// TestOnTypeSelected_SelectingUUIDArrayForAUUIDListColumnAttachesUUIDListFormatTransform
-// mirrors the epoch/timestamptz scenario above for issue #12's uuid[]
-// option: a text column holding beets' NUL-joined UUID list format offers
-// uuid[] in the picker, but without uuid_list_format attached the raw
-// NUL-joined string goes to a uuid[] column and fails at COPY time.
+// A uuid[] pick on a NUL-joined UUID list column attaches uuid_list_format.
 func TestOnTypeSelected_SelectingUUIDArrayForAUUIDListColumnAttachesUUIDListFormatTransform(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.migration.yaml")
 	cfg := &config.MigrationConfig{
@@ -497,11 +479,7 @@ func TestOnTypeSelected_SelectingUUIDArrayForAUUIDListColumnAttachesUUIDListForm
 	}
 }
 
-// TestOnTypeSelected_SelectingTextForAPlainStringColumnClearsTheTransform
-// guards against overcorrecting: a genuine type change to a type that
-// needs no transform at all (e.g. text for an ordinary string value) must
-// still result in Transform "", not spuriously carry over some other
-// type's transform.
+// A text pick on a plain string column persists an empty transform.
 func TestOnTypeSelected_SelectingTextForAPlainStringColumnClearsTheTransform(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "test.migration.yaml")
 	cfg := &config.MigrationConfig{
