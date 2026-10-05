@@ -6,6 +6,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"runtime"
+	"syscall"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -13,8 +15,8 @@ import (
 
 // Save writes cfg to path as YAML. The write goes to a temp file beside path,
 // is fsynced, and is renamed over path, so a failed write leaves the previous
-// config intact. A new file gets 0644 before the umask, as os.WriteFile does; an
-// existing file keeps its mode.
+// config intact. A symlink at path is replaced, not followed. A new file gets
+// 0644 before the umask, as os.WriteFile does; an existing file keeps its mode.
 func Save(cfg *MigrationConfig, path string) error {
 	data, err := yaml.Marshal(cfg)
 	if err != nil {
@@ -48,10 +50,17 @@ func writeAtomic(path string, data []byte, write func(*os.File, []byte) error) (
 		}
 	}()
 
-	if info, statErr := os.Stat(path); statErr == nil {
+	info, statErr := os.Stat(path)
+	switch {
+	case statErr == nil:
 		if err = tmp.Chmod(info.Mode().Perm()); err != nil {
 			return err
 		}
+	case errors.Is(statErr, fs.ErrNotExist):
+		// A new file keeps the 0644 from createTemp, with the umask applied.
+	default:
+		err = statErr
+		return err
 	}
 	if err = write(tmp, data); err != nil {
 		return err
@@ -63,7 +72,28 @@ func writeAtomic(path string, data []byte, write func(*os.File, []byte) error) (
 	if err = tmp.Close(); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err = os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	return syncDir(filepath.Dir(path))
+}
+
+// syncDir fsyncs dir so a completed rename survives power loss. Windows can't
+// fsync a directory handle, and some platforms return EINVAL for it; both are
+// skipped.
+func syncDir(dir string) error {
+	if runtime.GOOS == "windows" {
+		return nil
+	}
+	d, err := os.Open(dir)
+	if err != nil {
+		return err
+	}
+	defer d.Close()
+	if err := d.Sync(); err != nil && !errors.Is(err, syscall.EINVAL) {
+		return err
+	}
+	return nil
 }
 
 // createTemp opens a new temp file in path's directory with os.WriteFile's
