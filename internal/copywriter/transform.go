@@ -6,6 +6,7 @@ package copywriter
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"math"
 	"strconv"
@@ -573,7 +574,12 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			// falling back.
 			f, err := parseFiniteFloat(cleaned)
 			if err != nil {
-				return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel or a number: %w", v, err)
+				cause := errNotFinite
+				var numErr *strconv.NumError
+				if errors.As(err, &numErr) {
+					cause = numErr.Err
+				}
+				return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel or a number: %w", v, cause)
 			}
 			return f, nil
 		case int64:
@@ -662,6 +668,8 @@ func parseWholeNumberText(s string) (int64, error) {
 	}
 	return strconv.ParseInt(intPart, 10, 64)
 }
+
+var errNotFinite = errors.New("not a finite number")
 
 // parseFiniteFloat rejects NaN and ±Inf, which ParseFloat accepts from text
 // ("NaN", "inf", "Infinity") and which would load as float8 specials.

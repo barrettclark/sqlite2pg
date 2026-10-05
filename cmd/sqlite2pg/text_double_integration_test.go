@@ -11,6 +11,8 @@ package main
 import (
 	"context"
 	"database/sql"
+	"errors"
+	"net"
 	"path/filepath"
 	"testing"
 
@@ -59,11 +61,15 @@ func TestTextDouble_NumericTextLoadsAsFloat(t *testing.T) {
 		t.Fatalf("parsing PGURL: %v", err)
 	}
 	probe.Database = "postgres"
-	if conn, err := pgx.ConnectConfig(ctx, probe); err != nil {
-		t.Skipf("no Postgres available at %s: %v", pgURL, err)
-	} else {
-		conn.Close(ctx)
+	probeConn, err := pgx.ConnectConfig(ctx, probe)
+	if err != nil {
+		var opErr *net.OpError
+		if errors.As(err, &opErr) {
+			t.Skipf("no Postgres reachable at %s: %v", pgURL, err)
+		}
+		t.Fatalf("connecting to Postgres at %s: %v", pgURL, err)
 	}
+	probeConn.Close(ctx)
 
 	connCfg, err := connectForLoad(ctx, pgURL, sqlitePath, false, statePath)
 	if err != nil {
