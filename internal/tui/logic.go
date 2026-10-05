@@ -680,10 +680,12 @@ func emptyRowsBecomeNull(cells []sampleCell, transform string) bool {
 	return err == nil && out == nil
 }
 
-// storedTransformFits reports whether a stored transform can be kept for the
-// samples: each non-NULL sample must convert without error and, unless the
-// transform turns it into NULL, pass previewValueForType (range and date
-// windows included). A stored "" is never kept, so it is re-derived.
+// storedTransformFits reports whether a stored transform can be kept. For each
+// non-NULL sample it must convert without error, and where it yields a value,
+// previewValueForType must accept the raw sample with the same transform name
+// (so unix_epoch_micros is not kept where unix_epoch_seconds is what fits). A
+// stored "" is never kept. nullif_sentinels is exempt from the name match: it
+// only nulls sentinels and never names a converter the preview would use.
 func storedTransformFits(cells []sampleCell, typeName, declaredType, transform string, rejectNull bool) bool {
 	if transform == "" {
 		return false
@@ -702,7 +704,8 @@ func storedTransformFits(cells []sampleCell, typeName, declaredType, transform s
 			}
 			continue
 		}
-		if _, _, valid := previewValueForType(c.value, typeName, declaredType, c.isText); !valid {
+		_, name, valid := previewValueForType(c.value, typeName, declaredType, c.isText)
+		if !valid || (name != transform && transform != "nullif_sentinels") {
 			return false
 		}
 	}

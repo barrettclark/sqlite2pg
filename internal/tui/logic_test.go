@@ -845,7 +845,9 @@ func TestStoredTransformFits(t *testing.T) {
 		{"valid stored integer transform is kept", []sampleCell{{value: "42", isText: true}}, "integer", "numeric_text_to_integer", false, true},
 		{"out-of-range integer sample is not kept", []sampleCell{{value: "3000000000", isText: true}}, "integer", "numeric_text_to_integer", false, false},
 		{"implausible epoch for timestamptz is not kept", []sampleCell{{value: "12", isText: true}}, "timestamptz", "unix_epoch_seconds", false, false},
+		{"implausible non-text epoch is not kept", []sampleCell{{value: "12", isText: false}}, "timestamptz", "unix_epoch_seconds", false, false},
 		{"stored nullif_sentinels that nulls a sentinel is kept", []sampleCell{{value: "1.5", isText: true}, {value: "NA", isText: true}}, "double precision", "nullif_sentinels", false, true},
+		{"stored unix_epoch_micros is not kept where seconds fit", []sampleCell{{value: "1712345678", isText: true}}, "timestamptz", "unix_epoch_micros", false, false},
 		{"stored empty transform is never kept", []sampleCell{{value: "1.5", isText: true}}, "double precision", "", false, false},
 	}
 	for _, tc := range cases {

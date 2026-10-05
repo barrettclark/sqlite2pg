@@ -1300,3 +1300,52 @@ func TestOnTypeSelected_ReconfirmReplacesStoredTransformThatFailsSamples(t *test
 		t.Errorf("persisted Transform = %q, want numeric_text_to_double", got)
 	}
 }
+
+// Re-confirming a type with a stored transform that does not fit must refuse
+// (or replace it), and the refusal names the cause in m.lastError.
+func TestOnTypeSelected_ReconfirmStoredTransformOutcomes(t *testing.T) {
+	t.Run("smallint out of range is refused", func(t *testing.T) {
+		_, path, m := newColumnState(t, "smallint", "numeric_text_to_integer", "TEXT")
+		m.summary = withSampleCells(m.summary, "bikes", "is_installed", sampleCell{value: "70000", isText: true})
+		m.openTypePicker("is_installed")
+		m.onTypeSelected(0, "smallint", "", 0)
+		if !strings.Contains(m.lastError, "samples can't load as smallint") {
+			t.Errorf("lastError = %q, want a refusal for smallint", m.lastError)
+		}
+		assertPersisted(t, path, "smallint", "numeric_text_to_integer")
+	})
+
+	t.Run("timestamptz implausible epoch is refused", func(t *testing.T) {
+		_, path, m := newColumnState(t, "timestamptz", "unix_epoch_seconds", "TEXT")
+		m.summary = withSampleCells(m.summary, "bikes", "is_installed", sampleCell{value: "12", isText: true})
+		m.openTypePicker("is_installed")
+		m.onTypeSelected(0, "timestamptz", "", 0)
+		if !strings.Contains(m.lastError, "samples can't load as timestamptz") {
+			t.Errorf("lastError = %q, want a refusal for timestamptz", m.lastError)
+		}
+		assertPersisted(t, path, "timestamptz", "unix_epoch_seconds")
+	})
+
+	t.Run("timestamptz wrong epoch unit is replaced", func(t *testing.T) {
+		_, path, m := newColumnState(t, "timestamptz", "unix_epoch_micros", "TEXT")
+		m.summary = withSampleCells(m.summary, "bikes", "is_installed", sampleCell{value: "1712345678", isText: false})
+		m.openTypePicker("is_installed")
+		m.onTypeSelected(0, "timestamptz", "", 0)
+		if m.lastError != "" {
+			t.Errorf("lastError = %q, want the replacement to save without a refusal", m.lastError)
+		}
+		assertPersisted(t, path, "timestamptz", "unix_epoch_seconds")
+	})
+}
+
+func assertPersisted(t *testing.T, path, wantType, wantTransform string) {
+	t.Helper()
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	col := loaded.Tables["bikes"].Columns["is_installed"]
+	if col.TargetType != wantType || col.Transform != wantTransform {
+		t.Errorf("persisted (%q, %q), want (%q, %q)", col.TargetType, col.Transform, wantType, wantTransform)
+	}
+}
