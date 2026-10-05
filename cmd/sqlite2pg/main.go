@@ -112,6 +112,9 @@ func runRun(args []string) error {
 		return err
 	}
 
+	if err := discardStaleState(configPath, os.Stdout); err != nil {
+		return err
+	}
 	if err := config.Save(result.Config, configPath); err != nil {
 		return err
 	}
@@ -293,6 +296,9 @@ func runProfileIO(args []string, in io.Reader, w io.Writer, interactive bool) er
 
 	result, err := pipeline.ProfileDatabase(db, sourcePath, *sampleSize, *threshold)
 	if err != nil {
+		return err
+	}
+	if err := discardStaleState(*out, w); err != nil {
 		return err
 	}
 	if err := config.Save(result.Config, *out); err != nil {

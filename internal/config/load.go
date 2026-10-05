@@ -26,7 +26,7 @@ func Load(path string) (*MigrationConfig, error) {
 		} else {
 			hint = " (replace <your SQLite file> with the path to your SQLite source)"
 		}
-		return nil, fmt.Errorf("config %s has config_version %d, but this build of sqlite2pg understands version %d; re-run `sqlite2pg profile --out %s %s` to regenerate it%s. profile asks before overwriting; --force skips the prompt. Regeneration discards reviewed column decisions and overrides, so back the file up first and re-review the output", path, cfg.ConfigVersion, CurrentConfigVersion, shellQuote(path), source, hint)
+		return nil, fmt.Errorf("config %s has config_version %d, but this build of sqlite2pg understands version %d; re-run `sqlite2pg profile --out %s %s` to regenerate it%s. From a terminal, profile prompts before overwriting; otherwise pass --force. run prompts the same way and takes --force too. Regeneration discards reviewed column decisions and overrides, and removes the load state, so back the file up first and re-review the output", path, cfg.ConfigVersion, CurrentConfigVersion, shellQuote(path), source, hint)
 	}
 	return &cfg, nil
 }
