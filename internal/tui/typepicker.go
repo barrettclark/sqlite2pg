@@ -115,6 +115,7 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 		Rationale:  "human override via TUI",
 	})
 	if err != nil {
+		m.status.SetText(m.pickerStatusBase)
 		m.closePicker()
 		m.showError(fmt.Sprintf("apply decision failed: %s", err))
 		return

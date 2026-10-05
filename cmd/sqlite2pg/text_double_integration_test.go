@@ -54,9 +54,20 @@ func TestTextDouble_NumericTextLoadsAsFloat(t *testing.T) {
 	}
 	statePath := configPath + ".state.json"
 
+	probe, err := pgx.ParseConfig(pgURL)
+	if err != nil {
+		t.Fatalf("parsing PGURL: %v", err)
+	}
+	probe.Database = "postgres"
+	if conn, err := pgx.ConnectConfig(ctx, probe); err != nil {
+		t.Skipf("no Postgres available at %s: %v", pgURL, err)
+	} else {
+		conn.Close(ctx)
+	}
+
 	connCfg, err := connectForLoad(ctx, pgURL, sqlitePath, false, statePath)
 	if err != nil {
-		t.Skipf("no Postgres available at %s: %v", pgURL, err)
+		t.Fatalf("connectForLoad: %v", err)
 	}
 	t.Cleanup(func() {
 		maintCfg, err := pgx.ParseConfig(pgURL)

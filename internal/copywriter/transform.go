@@ -573,7 +573,7 @@ func Transform(transform string, raw profiler.Value) (any, error) {
 			// falling back.
 			f, err := parseFiniteFloat(cleaned)
 			if err != nil {
-				return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel and not a finite number: %w", v, err)
+				return nil, fmt.Errorf("nullif_sentinels: %q is not a recognized sentinel or a number: %w", v, err)
 			}
 			return f, nil
 		case int64:

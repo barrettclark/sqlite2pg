@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"os"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -1216,4 +1217,34 @@ func TestOnTypeSelected_FloatCurrentTypePersistsTransformMatchingSamples(t *test
 			t.Errorf("persisted Transform = %q, want \"\"", got)
 		}
 	})
+}
+
+// A failed apply restores the status line to the base text, not the note for
+// the highlighted type.
+func TestOnTypeSelected_ApplyErrorRestoresStatusBase(t *testing.T) {
+	_, path, m := newAllNullIntegerState(t)
+	m.summary = withSamples(m.summary, "bikes", "is_installed", "1", "")
+	m.status.SetText("base status")
+	m.openTypePicker("is_installed")
+	m.picker.SetCurrentItem(slices.Index(offeredTypes(m), "bigint"))
+	if !strings.Contains(m.status.GetText(false), "is not NULL") {
+		t.Fatalf("status %q does not show the note for highlighted bigint", m.status.GetText(false))
+	}
+
+	// Replace the config file with a directory so the save fails.
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("Remove: %v", err)
+	}
+	if err := os.Mkdir(path, 0o755); err != nil {
+		t.Fatalf("Mkdir: %v", err)
+	}
+
+	m.onTypeSelected(0, "bigint", "", 0)
+
+	if !strings.HasPrefix(m.lastError, "apply decision failed") {
+		t.Fatalf("expected an apply error, got %q", m.lastError)
+	}
+	if status := m.status.GetText(false); status != "base status" {
+		t.Errorf("status after apply error = %q, want base status", status)
+	}
 }
