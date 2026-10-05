@@ -642,3 +642,15 @@ func transformAcceptsEmpty(typeName, transform string, rejectNull bool) bool {
 	}
 	return out != nil || !rejectNull
 }
+
+// emptyNullWarning is shown when a chosen transform stores "" as NULL.
+const emptyNullWarning = `empty strings stored as NULL (SQLite "" is not NULL); only these rows change`
+
+// emptyRowsBecomeNull reports whether transform stores a "" sample as NULL.
+func emptyRowsBecomeNull(cells []sampleCell, transform string) bool {
+	if transform == "" || !hasEmptyCell(cells) {
+		return false
+	}
+	out, err := copywriter.Transform(transform, "")
+	return err == nil && out == nil
+}

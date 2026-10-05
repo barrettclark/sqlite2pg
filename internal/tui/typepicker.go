@@ -35,6 +35,13 @@ func (m *model) openTypePicker(columnName string) {
 			// real sample data can contain brackets.
 			secondary = tview.Escape(fmt.Sprintf("e.g. %s", display))
 		}
+		transform, _ := commonTransformForType(cells, t, col.DeclaredType)
+		if emptyRowsBecomeNull(cells, transform) {
+			if secondary != "" {
+				secondary += "; "
+			}
+			secondary += tview.Escape(emptyNullWarning)
+		}
 		list.AddItem(t, secondary, typeShortcuts[t], nil)
 		if t == col.TargetType {
 			list.SetCurrentItem(i)
@@ -44,7 +51,7 @@ func (m *model) openTypePicker(columnName string) {
 
 	// tview reserves 4 extra columns to print each item's "(x)" shortcut
 	// prefix once any item has one, so widen the overlay to match.
-	overlay := centered(list, 44, len(types)+2)
+	overlay := centered(list, 76, len(types)+2)
 	if m.pages.HasPage("picker") {
 		m.pages.RemovePage("picker")
 	}
@@ -147,6 +154,9 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 	m.buildGrid(m.selectedTable)
 	m.grid.Select(0, selectedColumn)
 	m.gridSelectionChanged(0, selectedColumn)
+	if emptyRowsBecomeNull(columnSampleCells(tv, m.pickerColumn), transform) {
+		m.status.SetText(tview.Escape(m.status.GetText(true) + " | " + emptyNullWarning))
+	}
 	// Keeps the table list's needs-review/auto-approved counts and title
 	// in sync with the decision just applied (issue #93's audit, finding
 	// L7) — without this, they showed whatever they were when the TUI

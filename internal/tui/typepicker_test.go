@@ -837,3 +837,69 @@ func TestOnTypeSelected_NotNullColumnRefusesNullProducingTransform(t *testing.T)
 		t.Errorf("config changed to (%q, %q), want unchanged (integer, \"\")", col.TargetType, col.Transform)
 	}
 }
+
+// secondaryOf returns the picker item's secondary text for typ, or "" if absent.
+func secondaryOf(m *model, typ string) (string, bool) {
+	for i := 0; i < m.picker.GetItemCount(); i++ {
+		if text, secondary := m.picker.GetItemText(i); text == typ {
+			return secondary, true
+		}
+	}
+	return "", false
+}
+
+func TestOpenTypePicker_EmptyRowWarningOnNullProducingType(t *testing.T) {
+	cases := []struct {
+		name       string
+		values     []string
+		rejectNull bool
+		typ        string
+		wantOffer  bool
+		wantWarn   bool
+	}{
+		{"nullable integer with empty row warns", []string{"1", ""}, false, "integer", true, true},
+		{"NOT NULL integer with empty row omits integer, no warning", []string{"1", ""}, true, "integer", false, false},
+		{"integer without empty row has no warning", []string{"1", "2"}, false, "integer", true, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, _, m := newAllNullIntegerState(t)
+			m.summary = withSamples(m.summary, "bikes", "is_installed", tc.values...)
+			for i := range m.summary.Tables {
+				for j := range m.summary.Tables[i].Columns {
+					if m.summary.Tables[i].Columns[j].Column == "is_installed" {
+						m.summary.Tables[i].Columns[j].RejectNull = tc.rejectNull
+					}
+				}
+			}
+			m.openTypePicker("is_installed")
+
+			secondary, offered := secondaryOf(m, tc.typ)
+			if offered != tc.wantOffer {
+				t.Fatalf("%q offered = %v, want %v", tc.typ, offered, tc.wantOffer)
+			}
+			if got := strings.Contains(secondary, "stored as NULL"); got != tc.wantWarn {
+				t.Errorf("%q warning = %v, want %v (secondary %q)", tc.typ, got, tc.wantWarn, secondary)
+			}
+		})
+	}
+}
+
+func TestOnTypeSelected_EmptyRowWarningShownInStatus(t *testing.T) {
+	_, path, m := newAllNullIntegerState(t)
+	m.summary = withSamples(m.summary, "bikes", "is_installed", "1", "")
+	m.openTypePicker("is_installed")
+
+	m.onTypeSelected(0, "bigint", "", 0)
+
+	loaded, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if col := loaded.Tables["bikes"].Columns["is_installed"]; col.TargetType != "bigint" || col.Transform != "numeric_text_to_integer" {
+		t.Fatalf("expected bigint/numeric_text_to_integer persisted, got (%q, %q)", col.TargetType, col.Transform)
+	}
+	if status := m.status.GetText(true); !strings.Contains(status, "stored as NULL") {
+		t.Errorf("status %q does not show the empty-string warning", status)
+	}
+}
