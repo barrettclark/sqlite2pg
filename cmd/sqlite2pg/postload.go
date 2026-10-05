@@ -76,13 +76,11 @@ func checkTableIdentityRange(pgTable string, tc config.TableConfig, highWater in
 // reseedIdentity advances the identity sequence of pgTable.col past the loaded
 // rows and past highWater. It never moves the sequence backward: the app may
 // already have issued ids past the loaded maximum. When highWater doesn't fit
-// typ, the loaded maximum still applies and the identityRangeError is returned
-// with what was done to the sequence.
+// typ, the sequence is exhausted at the type's maximum, so the next insert
+// fails instead of reissuing an id SQLite already handed out. The
+// identityRangeError is returned with what was done to the sequence.
 func reseedIdentity(ctx context.Context, conn *pgx.Conn, pgTable, col, typ string, highWater int64) error {
 	rangeErr := identityOverflow(pgTable, col, typ, highWater)
-	if rangeErr != nil {
-		highWater = 0
-	}
 	qualified := pgx.Identifier{pgTable}.Sanitize()
 	// pg_get_serial_sequence returns NULL when the live column has no
 	// identity; setval is STRICT and would silently skip, so check here.
@@ -101,6 +99,9 @@ func reseedIdentity(ctx context.Context, conn *pgx.Conn, pgTable, col, typ strin
 	target := highWater
 	if loaded != nil && *loaded > target {
 		target = *loaded
+	}
+	if rangeErr != nil {
+		target = rangeErr.max
 	}
 	note := "sequence left unchanged"
 	// Below 1 nothing was loaded or recorded, and the sequence's first
@@ -199,7 +200,7 @@ func analyzeIfNeverAnalyzed(ctx context.Context, conn *pgx.Conn, pgTable string)
 func tolerateOverflow(err error) error {
 	var rangeErr *identityRangeError
 	if err != nil && errors.As(err, &rangeErr) {
-		fmt.Fprintf(os.Stderr, "warning: %v; %s; retype the column to bigint and re-run\n", err, rangeErr.note)
+		fmt.Fprintf(os.Stderr, "warning: %v; %s; inserts without an id fail until the column is widened: retype the column to bigint and re-run\n", err, rangeErr.note)
 		return nil
 	}
 	return err

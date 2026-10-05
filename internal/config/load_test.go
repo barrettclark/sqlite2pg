@@ -26,11 +26,12 @@ func TestLoad_AcceptsTheCurrentConfigVersion(t *testing.T) {
 func TestLoad_RejectsV1ConfigWithoutWithoutRowID(t *testing.T) {
 	cfg := &MigrationConfig{
 		ConfigVersion: 1,
+		Source:        SourceInfo{Path: "/data/bikes.db"},
 		Tables: map[string]TableConfig{
 			"bikes": {Include: true},
 		},
 	}
-	path := filepath.Join(t.TempDir(), "v1.migration.yaml")
+	path := filepath.Join(t.TempDir(), "reviewed-elsewhere.yaml")
 	if err := Save(cfg, path); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -39,8 +40,10 @@ func TestLoad_RejectsV1ConfigWithoutWithoutRowID(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected Load to reject a v1 config")
 	}
-	if !strings.Contains(err.Error(), "re-run `sqlite2pg profile`") {
-		t.Errorf("expected the error to say to re-run `sqlite2pg profile`, got %q", err.Error())
+	for _, want := range []string{"re-run `sqlite2pg profile --out " + path + " /data/bikes.db`", path} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("expected the error to contain %q, got %q", want, err.Error())
+		}
 	}
 }
 

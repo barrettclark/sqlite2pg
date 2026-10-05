@@ -107,11 +107,9 @@ func TestResume_CompletedTableWarnsOnRangeAndFinishes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume should finish despite the reseed warning, got: %v", err)
 	}
-	assertOverflowWarning(t, stderr, "sequence left unchanged")
+	assertOverflowWarning(t, stderr, "sequence set to 2147483647")
 	assertFKsApplied(t, statePath)
-	if got := insertWithoutID(t, connCfg); got != 6 {
-		t.Errorf("first generated id after resume = %d, want 6", got)
-	}
+	assertInsertExhausted(t, connCfg)
 }
 
 // TestResume_HasRowsUnmarkedOverflowMarksCompleted: a table with rows but no
@@ -140,7 +138,7 @@ func TestResume_HasRowsUnmarkedOverflowMarksCompleted(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume should finish despite the reseed warning, got: %v", err)
 	}
-	assertOverflowWarning(t, stderr, "sequence set to 5")
+	assertOverflowWarning(t, stderr, "sequence set to 2147483647")
 	done, err := loadCompletedTables(statePath)
 	if err != nil {
 		t.Fatalf("reading state: %v", err)
@@ -149,14 +147,12 @@ func TestResume_HasRowsUnmarkedOverflowMarksCompleted(t *testing.T) {
 		t.Error("table with rows was not marked completed")
 	}
 	assertFKsApplied(t, statePath)
-	if got := insertWithoutID(t, connCfg); got != 6 {
-		t.Errorf("first generated id after resume = %d, want 6", got)
-	}
+	assertInsertExhausted(t, connCfg)
 }
 
 // TestResume_OverflowNeverMovesSequenceBackward: the app has issued ids 6..10
 // and deleted them, so MAX(id) is 5 but the sequence is at 10. An overflowing
-// resume must leave the sequence there, not reset it to 5.
+// resume must not reset it to 5, so the next insert can't reissue 6.
 func TestResume_OverflowNeverMovesSequenceBackward(t *testing.T) {
 	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), fiveRowsSetup)
 	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
@@ -176,16 +172,14 @@ func TestResume_OverflowNeverMovesSequenceBackward(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	assertOverflowWarning(t, stderr, "sequence left unchanged")
-	if got := insertWithoutID(t, connCfg); got != 11 {
-		t.Errorf("first generated id after resume = %d, want 11 (sequence must not move backward)", got)
-	}
+	assertOverflowWarning(t, stderr, "sequence set to 2147483647")
+	assertInsertExhausted(t, connCfg)
 }
 
-// TestResume_EmptyTableOverflowSaysUnchanged: with no loaded rows and an
-// overflowing high-water mark, nothing is written, and the warning must not
-// claim the sequence was set.
-func TestResume_EmptyTableOverflowSaysUnchanged(t *testing.T) {
+// TestResume_EmptyTableOverflowExhaustsSequence: with no loaded rows and an
+// overflowing high-water mark, the sequence is still exhausted, so no id can
+// be issued from it.
+func TestResume_EmptyTableOverflowExhaustsSequence(t *testing.T) {
 	cfg, connCfg, statePath := autoincFixture(t, identityTestPgURL(t), nil)
 	if err := executeLoad(cfg, connCfg, false, statePath); err != nil {
 		t.Fatalf("load failed: %v", err)
@@ -196,13 +190,8 @@ func TestResume_EmptyTableOverflowSaysUnchanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resume: %v", err)
 	}
-	assertOverflowWarning(t, stderr, "sequence left unchanged")
-	if strings.Contains(stderr, "sequence set to") {
-		t.Errorf("warning claims the sequence was set on an empty table: %q", stderr)
-	}
-	if got := insertWithoutID(t, connCfg); got != 1 {
-		t.Errorf("first generated id on empty table after resume = %d, want 1", got)
-	}
+	assertOverflowWarning(t, stderr, "sequence set to 2147483647")
+	assertInsertExhausted(t, connCfg)
 }
 
 // TestReseedCompletedTable_AliasExcludedFromColumnOrderIsNotDrift: a PK
@@ -263,6 +252,21 @@ func assertOverflowWarning(t *testing.T, stderr, note string) {
 		if !strings.Contains(stderr, want) {
 			t.Errorf("warning should contain %q, got: %q", want, stderr)
 		}
+	}
+}
+
+// assertInsertExhausted checks that an id-less insert fails because the
+// identity sequence is exhausted, rather than returning an id.
+func assertInsertExhausted(t *testing.T, connCfg *pgx.ConnConfig) {
+	t.Helper()
+	conn := pgConnFor(t, connCfg)
+	var id int64
+	err := conn.QueryRow(context.Background(), `INSERT INTO "t" (label) VALUES ('new') RETURNING id`).Scan(&id)
+	if err == nil {
+		t.Fatalf("insert returned id %d, want the exhausted sequence to fail it", id)
+	}
+	if !strings.Contains(err.Error(), "reached maximum value of sequence") {
+		t.Errorf("insert should fail with the exhausted-sequence error, got: %v", err)
 	}
 }
 
