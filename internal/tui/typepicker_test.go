@@ -1105,20 +1105,24 @@ func TestOnTypeSelected_TextNullValuePersistsAndRefusesInteger(t *testing.T) {
 
 func TestRefusalMessage(t *testing.T) {
 	cases := []struct {
-		name     string
-		cells    []sampleCell
-		typ      string
-		declared string
-		want     string
+		name       string
+		cells      []sampleCell
+		typ        string
+		declared   string
+		rejectNull bool
+		want       string // substring the message must contain; "" means no refusal
+		forbid     string // substring the message must not contain
 	}{
-		{"valid samples are not refused", []sampleCell{{value: "1", isText: false}, {value: "2", isText: false}}, "integer", "INTEGER", ""},
-		{"disagreeing transforms", []sampleCell{{value: "2021-06-01", isText: true}, {value: "20210704", isText: true}}, "date", "TEXT", "sample rows need different date transforms"},
-		{"value that does not fit", []sampleCell{{value: "1,000", isText: true}}, "integer", "INTEGER", "samples can't load as integer"},
-		{"TEXT NULL is not an integer", []sampleCell{{value: "NULL", isText: true}}, "integer", "TEXT", "samples can't load as integer"},
+		{"valid samples are not refused", []sampleCell{{value: "1", isText: false}, {value: "2", isText: false}}, "integer", "INTEGER", false, "", ""},
+		{"disagreeing transforms", []sampleCell{{value: "2021-06-01", isText: true}, {value: "20210704", isText: true}}, "date", "TEXT", false, "sample rows need different date transforms", ""},
+		{"value that does not fit", []sampleCell{{value: "1,000", isText: true}}, "integer", "INTEGER", false, "samples can't load as integer", ""},
+		{"TEXT NULL is not an integer", []sampleCell{{value: "NULL", isText: true}}, "integer", "TEXT", false, "samples can't load as integer", ""},
+		{"NOT NULL bigint with empty row becomes NULL", []sampleCell{{value: "1", isText: true}, {value: ""}}, "bigint", "INTEGER", true, "would become NULL on this NOT NULL column", ""},
+		{"nullable date with empty row does not load", []sampleCell{{value: "2021-06-01", isText: true}, {value: ""}}, "date", "TEXT", false, "empty strings don't load as date", "become NULL"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			got := refusalMessage("col", tc.typ, "target", tc.cells, tc.declared, false)
+			got := refusalMessage("col", tc.typ, "target", tc.cells, tc.declared, tc.rejectNull)
 			if tc.want == "" {
 				if got != "" {
 					t.Errorf("refusalMessage = %q, want no refusal", got)
@@ -1127,6 +1131,9 @@ func TestRefusalMessage(t *testing.T) {
 			}
 			if !strings.Contains(got, tc.want) {
 				t.Errorf("refusalMessage = %q, want it to contain %q", got, tc.want)
+			}
+			if tc.forbid != "" && strings.Contains(got, tc.forbid) {
+				t.Errorf("refusalMessage = %q, must not contain %q", got, tc.forbid)
 			}
 		})
 	}

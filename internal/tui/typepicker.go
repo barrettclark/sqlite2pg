@@ -145,9 +145,9 @@ func (m *model) pickerKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 	return event
 }
 
-// refusalMessage explains why typeName cannot be saved for the column's
-// samples, or returns "" if it can. Disagreeing transforms and invalid values
-// get different messages.
+// refusalMessage returns "" if typeName can be saved, else one of three messages:
+// disagreeing transforms, a value that does not fit the type, or (with "" rows)
+// an empty string that becomes NULL on a NOT NULL column or does not load at all.
 func refusalMessage(column, typeName, targetType string, cells []sampleCell, declaredType string, rejectNull bool) string {
 	if _, ok := commonTransformForType(cells, typeName, declaredType); !ok {
 		if allSamplesValidate(cells, typeName, declaredType) {
@@ -156,7 +156,11 @@ func refusalMessage(column, typeName, targetType string, cells []sampleCell, dec
 		return fmt.Sprintf("%s: samples can't load as %s; leave the column as %s", column, typeName, targetType)
 	}
 	if !typeLoadsSamples(cells, typeName, declaredType, hasEmptyCell(cells), rejectNull) {
-		return fmt.Sprintf("%s: samples can't load as %s (an empty string would become NULL); leave the column as %s", column, typeName, targetType)
+		transform, _ := commonTransformForType(cells, typeName, declaredType)
+		if rejectNull && emptyRowsBecomeNull(cells, transform) {
+			return fmt.Sprintf("%s: samples can't load as %s (an empty string would become NULL on this NOT NULL column); leave the column as %s", column, typeName, targetType)
+		}
+		return fmt.Sprintf("%s: samples can't load as %s (empty strings don't load as %s); leave the column as %s", column, typeName, typeName, targetType)
 	}
 	return ""
 }
