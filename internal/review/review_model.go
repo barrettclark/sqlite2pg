@@ -33,6 +33,8 @@ type ColumnView struct {
 	Rationale    string
 	Reviewed     bool
 	NeedsReview  bool
+	// RejectNull is set for a PRIMARY KEY or NOT NULL column.
+	RejectNull bool
 }
 
 // TablePreview is a table's real-data preview: a handful of complete rows
@@ -41,6 +43,7 @@ type ColumnView struct {
 // sampled" the way a spreadsheet import preview does.
 type TablePreview struct {
 	Rows     [][]string
+	IsText   [][]bool
 	RowCount int
 }
 
@@ -54,6 +57,7 @@ type TableView struct {
 	Name     string
 	Columns  []ColumnView
 	Rows     [][]string
+	IsText   [][]bool
 	RowCount int
 }
 
@@ -110,10 +114,12 @@ func BuildReviewSummary(cfg *config.MigrationConfig, threshold float64, grid Gri
 				Rationale:    col.Rationale,
 				Reviewed:     col.Reviewed,
 				NeedsReview:  needsReview,
+				RejectNull:   col.PrimaryKeySeq > 0 || col.NotNull,
 			})
 		}
 		if preview, ok := grid[tableName]; ok {
 			tv.Rows = preview.Rows
+			tv.IsText = preview.IsText
 			tv.RowCount = preview.RowCount
 		}
 		summary.Tables = append(summary.Tables, tv)

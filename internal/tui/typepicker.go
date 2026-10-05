@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"strings"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/rivo/tview"
@@ -9,15 +10,18 @@ import (
 	"sqlite2pg/internal/review"
 )
 
-// openTypePicker opens a centered list of the types columnName's sample
-// values actually validate as (per validTypesForColumn), with the
-// column's current target type pre-selected.
+// pickerWidth is the overlay width. It fits values of about 20 characters or
+// fewer after the border and tview's "(x)" shortcut prefix.
+const pickerWidth = 76
+
+// openTypePicker opens a centered list of the types validTypesForColumn offers,
+// with the current target type pre-selected when it is listed.
 func (m *model) openTypePicker(columnName string) {
 	m.pickerColumn = columnName
 	tv := findTable(m.summary, m.selectedTable)
 	col := columnByName(tv, columnName)
-	values := columnSampleValues(tv, columnName)
-	types := validTypesForColumn(values, col.TargetType, col.DeclaredType)
+	cells := columnSampleCells(tv, columnName)
+	types := validTypesForColumn(cells, col.DeclaredType, col.RejectNull)
 
 	list := tview.NewList()
 	list.ShowSecondaryText(true)
@@ -25,15 +29,26 @@ func (m *model) openTypePicker(columnName string) {
 	list.SetTitle(fmt.Sprintf(" Edit type: %s ", columnName))
 	list.SetInputCapture(m.pickerKeyCapture)
 	list.SetSelectedFunc(m.onTypeSelected)
-	sample := firstNonNullValue(values)
+	list.SetChangedFunc(func(_ int, typ, _ string, _ rune) {
+		m.showPickerWarning(typ)
+	})
+	m.pickerStatusBase = strings.TrimSuffix(m.status.GetText(false), " | "+tview.Escape(emptyNullStatus))
+	sample := firstNonNullCell(cells)
 	for i, t := range types {
 		secondary := ""
-		if sample != "" {
-			display, _, _ := previewValueForType(sample, t, col.DeclaredType)
+		if sample.value != "" {
+			display, _, _ := previewValueForType(sample.value, t, col.DeclaredType, sample.isText)
 			// Escaped for the same reason as the grid's header/cell text:
 			// tview treats literal "[...]" in rendered text as a tag, and
 			// real sample data can contain brackets.
 			secondary = tview.Escape(fmt.Sprintf("e.g. %s", display))
+		}
+		transform, _ := commonTransformForType(cells, t, col.DeclaredType)
+		if emptyRowsBecomeNull(cells, transform) {
+			if secondary != "" {
+				secondary += "; "
+			}
+			secondary += tview.Escape(emptyNullMarker)
 		}
 		list.AddItem(t, secondary, typeShortcuts[t], nil)
 		if t == col.TargetType {
@@ -41,10 +56,12 @@ func (m *model) openTypePicker(columnName string) {
 		}
 	}
 	m.picker = list
+	current, _ := list.GetItemText(list.GetCurrentItem())
+	m.showPickerWarning(current)
 
-	// tview reserves 4 extra columns to print each item's "(x)" shortcut
-	// prefix once any item has one, so widen the overlay to match.
-	overlay := centered(list, 44, len(types)+2)
+	// The overlay is pickerWidth wide, which fits values of about 20 characters or
+	// fewer after tview's "(x)" shortcut prefix.
+	overlay := centered(list, pickerWidth, len(types)+2)
 	if m.pages.HasPage("picker") {
 		m.pages.RemovePage("picker")
 	}
@@ -83,46 +100,22 @@ func centered(p tview.Primitive, width, height int) tview.Primitive {
 	return col
 }
 
-// onTypeSelected applies typeName as m.pickerColumn's new target type,
-// refreshes the grid and status line, and closes the picker.
-//
-// Transform is preserved unchanged when typeName matches the column's
-// current TargetType: re-confirming the picker's own current selection
-// (issue #18) must not strip a transform the column still needs at COPY
-// time (e.g. timestamptz via unix_epoch_seconds).
-//
-// For a genuine type change, the stale transform from the prior heuristic
-// guess is never implicitly carried over — but the picker itself only
-// offers a type in the first place when either it needs no transform at
-// all, or some transform actually converts the column's sample data into
-// it (dateTransformPreview for date/timestamptz, uuid_format/
-// uuid_list_format for uuid/uuid[] — issues #27, #12). Re-deriving that
-// same transform here (issue #41) means selecting one of those offered
-// types attaches the transform that made it valid, instead of discarding
-// it and leaving a raw value the real COPY can't write into the new
-// column type.
-//
-// The transform is derived across EVERY non-NULL sample, not just the
-// first (issue #64): a date/timestamptz column whose rows legitimately
-// need different transforms (some ISO 8601, some YYYYMMDD) can't be
-// expressed by a single ColumnConfig.Transform, so the pick is refused
-// rather than persisting one row's transform and breaking the COPY on all
-// the others.
+// onTypeSelected always derives the transform from the samples and persists it,
+// or shows a refusal and leaves the stored type and transform untouched.
 func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortcut rune) {
 	tv := findTable(m.summary, m.selectedTable)
 	col := columnByName(tv, m.pickerColumn)
-	transform := ""
-	if typeName == col.TargetType {
-		transform = col.Transform
-	} else {
-		t, ok := commonTransformForType(columnSampleValues(tv, m.pickerColumn), typeName, col.DeclaredType)
-		if !ok {
-			m.closePicker()
-			m.showError(fmt.Sprintf("%s: sample rows need different %s transforms (e.g. ISO 8601 and YYYYMMDD dates); a single transform can't cover them — leave the column as %s or split it",
-				m.pickerColumn, typeName, col.TargetType))
-			return
-		}
-		transform = t
+	cells := columnSampleCells(tv, m.pickerColumn)
+	msg := refusalMessage(m.pickerColumn, typeName, col.TargetType, cells, col.DeclaredType, col.RejectNull)
+	transform, ok := commonTransformForType(cells, typeName, col.DeclaredType)
+	if msg == "" && !ok {
+		msg = fmt.Sprintf("%s: samples can't load as %s; leave the column as %s", m.pickerColumn, typeName, col.TargetType)
+	}
+	if msg != "" {
+		m.status.SetText(m.pickerStatusBase)
+		m.closePicker()
+		m.showError(msg)
+		return
 	}
 
 	err := m.st.ApplyDecision(m.selectedTable, m.pickerColumn, review.DecisionRequest{
@@ -131,6 +124,7 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 		Rationale:  "human override via TUI",
 	})
 	if err != nil {
+		m.status.SetText(m.pickerStatusBase)
 		m.closePicker()
 		m.showError(fmt.Sprintf("apply decision failed: %s", err))
 		return
@@ -141,6 +135,9 @@ func (m *model) onTypeSelected(index int, typeName, secondaryText string, shortc
 	m.buildGrid(m.selectedTable)
 	m.grid.Select(0, selectedColumn)
 	m.gridSelectionChanged(0, selectedColumn)
+	if emptyRowsBecomeNull(columnSampleCells(tv, m.pickerColumn), transform) {
+		m.status.SetText(m.status.GetText(false) + " | " + tview.Escape(emptyNullStatus))
+	}
 	// Keeps the table list's needs-review/auto-approved counts and title
 	// in sync with the decision just applied (issue #93's audit, finding
 	// L7) — without this, they showed whatever they were when the TUI
@@ -159,8 +156,61 @@ func (m *model) closePicker() {
 // about: esc closes it without applying anything.
 func (m *model) pickerKeyCapture(event *tcell.EventKey) *tcell.EventKey {
 	if event.Key() == tcell.KeyEscape {
+		m.status.SetText(m.pickerStatusBase)
 		m.closePicker()
 		return nil
 	}
 	return event
+}
+
+// refusalMessage returns "" if typeName can be saved, else one of five messages:
+// text numbers mixed with REAL infinities; samples that disagree on a transform;
+// a value that does not fit the type; with "" rows, an empty string that becomes
+// NULL on a NOT NULL column; or with "" rows, an empty string that does not load.
+func refusalMessage(column, typeName, targetType string, cells []sampleCell, declaredType string, rejectNull bool) string {
+	if isFloatType(typeName) && hasTextCell(cells) && hasInfinityReal(cells) && allSamplesValidate(cells, typeName, declaredType) {
+		return fmt.Sprintf("%s: text numbers and infinities can't share a float transform; leave the column as %s", column, targetType)
+	}
+	if _, ok := commonTransformForType(cells, typeName, declaredType); !ok {
+		if allSamplesValidate(cells, typeName, declaredType) {
+			return fmt.Sprintf("%s: sample rows need different %s transforms (e.g. ISO 8601 and YYYYMMDD dates); a single transform can't cover them — leave the column as %s or split it", column, typeName, targetType)
+		}
+		return fmt.Sprintf("%s: samples can't load as %s; leave the column as %s", column, typeName, targetType)
+	}
+	if !typeLoadsSamples(cells, typeName, declaredType, hasEmptyCell(cells), rejectNull) {
+		transform, _ := commonTransformForType(cells, typeName, declaredType)
+		if rejectNull && emptyRowsBecomeNull(cells, transform) {
+			return fmt.Sprintf("%s: samples can't load as %s (an empty string would become NULL on this NOT NULL column); leave the column as %s", column, typeName, targetType)
+		}
+		return fmt.Sprintf("%s: samples can't load as %s (empty strings don't load as %s); leave the column as %s", column, typeName, typeName, targetType)
+	}
+	return ""
+}
+
+// allSamplesValidate reports whether every non-NULL, non-empty sample validates
+// as typeName, ignoring whether they agree on a transform.
+func allSamplesValidate(cells []sampleCell, typeName, declaredType string) bool {
+	for _, c := range cells {
+		if c.isNull() || c.value == "" {
+			continue
+		}
+		if _, _, valid := previewValueForType(c.value, typeName, declaredType, c.isText); !valid {
+			return false
+		}
+	}
+	return true
+}
+
+// showPickerWarning shows the full empty-row note in the status bar while typ
+// is highlighted, and clears it when the highlight moves to a type without one.
+func (m *model) showPickerWarning(typ string) {
+	tv := findTable(m.summary, m.selectedTable)
+	col := columnByName(tv, m.pickerColumn)
+	cells := columnSampleCells(tv, m.pickerColumn)
+	transform, _ := commonTransformForType(cells, typ, col.DeclaredType)
+	text := m.pickerStatusBase
+	if emptyRowsBecomeNull(cells, transform) {
+		text += " | " + tview.Escape(emptyNullStatus)
+	}
+	m.status.SetText(text)
 }

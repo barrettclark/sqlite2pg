@@ -75,6 +75,7 @@ func (m *model) dismissPage(name string) {
 // string (e.g. a file path) that could contain literal brackets, which
 // tview would otherwise interpret as a tag.
 func (m *model) showError(msg string) {
+	m.lastError = msg
 	modal := tview.NewModal()
 	modal.SetText(tview.Escape(msg))
 	modal.AddButtons([]string{"OK"})

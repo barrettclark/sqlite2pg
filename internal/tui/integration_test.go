@@ -143,7 +143,7 @@ func TestTypePicker_ShortcutKeySelectsTypeWithoutArrowingOrEnter(t *testing.T) {
 	step(tcell.KeyEnter, 0)  // open the bikes table -> grid, lands on bike_id
 	step(tcell.KeyRight, 0)  // move to is_installed (currently boolean)
 	step(tcell.KeyEnter, 0)  // open the picker
-	step(tcell.KeyRune, 'i') // shortcut for "integer" — should apply immediately
+	step(tcell.KeyRune, 't') // shortcut for "text" — should apply immediately
 
 	m.app.Stop()
 	select {
@@ -160,8 +160,8 @@ func TestTypePicker_ShortcutKeySelectsTypeWithoutArrowingOrEnter(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	col := loaded.Tables["bikes"].Columns["is_installed"]
-	if col.TargetType != "integer" {
-		t.Errorf("expected the 'i' shortcut to set is_installed to integer, got %q", col.TargetType)
+	if col.TargetType != "text" {
+		t.Errorf("expected the 't' shortcut to set is_installed to text, got %q", col.TargetType)
 	}
 	if m.pages.HasPage("picker") {
 		t.Error("expected the picker to have closed after the shortcut applied the decision")

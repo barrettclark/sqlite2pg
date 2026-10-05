@@ -161,9 +161,22 @@ func findTable(summary review.ReviewSummary, name string) review.TableView {
 	return review.TableView{}
 }
 
-// columnSampleValues extracts one column's sample values (in row order)
+// sampleCell is one sampled value as shown in the preview grid, plus
+// whether SQLite stored it as TEXT (the grid's string is ambiguous: a REAL
+// +Inf and the text "+Inf" both render as "+Inf").
+type sampleCell struct {
+	value  string
+	isText bool
+}
+
+// isNull reports a SQL NULL: the grid shows NULL for nil, and a TEXT "NULL" is a value.
+func (c sampleCell) isNull() bool {
+	return c.value == "NULL" && !c.isText
+}
+
+// columnSampleCells extracts one column's sample cells (in row order)
 // from tv's preview grid, for display and validity checking.
-func columnSampleValues(tv review.TableView, columnName string) []string {
+func columnSampleCells(tv review.TableView, columnName string) []sampleCell {
 	idx := -1
 	for i, c := range tv.Columns {
 		if c.Column == columnName {
@@ -174,13 +187,19 @@ func columnSampleValues(tv review.TableView, columnName string) []string {
 	if idx == -1 {
 		return nil
 	}
-	values := make([]string, 0, len(tv.Rows))
-	for _, row := range tv.Rows {
+	// Fail closed: without a matching IsText, every cell is treated as text.
+	textKnown := len(tv.IsText) == len(tv.Rows)
+	cells := make([]sampleCell, 0, len(tv.Rows))
+	for r, row := range tv.Rows {
 		if idx < len(row) {
-			values = append(values, row[idx])
+			cell := sampleCell{value: row[idx], isText: true}
+			if textKnown && idx < len(tv.IsText[r]) {
+				cell.isText = tv.IsText[r][idx]
+			}
+			cells = append(cells, cell)
 		}
 	}
-	return values
+	return cells
 }
 
 // sqliteNumericAffinity reports whether declaredType gives the column
@@ -243,8 +262,10 @@ func sqliteNumericAffinity(declaredType string) bool {
 // tell a float64 the driver returned (rendered by %v, possibly in
 // scientific notation) from a string the row literally stores that
 // happens to look the same — see the integer arm (issue #156).
-func previewValueForType(value, targetType, declaredType string) (display, transform string, valid bool) {
-	if value == "NULL" {
+// isText is the sample's SQLite storage class; the float arms refuse a TEXT
+// non-finite spelling.
+func previewValueForType(value, targetType, declaredType string, isText bool) (display, transform string, valid bool) {
+	if value == "NULL" && !isText {
 		return value, "", true
 	}
 	switch targetType {
@@ -302,13 +323,30 @@ func previewValueForType(value, targetType, declaredType string) (display, trans
 		}
 		return strconv.FormatInt(n, 10), "numeric_text_to_integer", true
 	case "real", "double precision", "numeric":
+		// numeric would round a TEXT decimal through float64; a precision-preserving
+		// transform is a follow-up.
+		if targetType == "numeric" && isText {
+			return value, "", false
+		}
 		f, err := strconv.ParseFloat(value, 64)
 		if err != nil {
 			return value, "", false
 		}
+		// A REAL ±Inf is a valid float8 (and numeric on PG14+), so only a
+		// text token's infinity is refused.
+		if math.IsNaN(f) || (math.IsInf(f, 0) && isText) {
+			return value, "", false
+		}
+		if math.IsInf(f, 0) {
+			return strconv.FormatFloat(f, 'f', -1, 64), "", true
+		}
 		formatted := strconv.FormatFloat(f, 'f', -1, 64)
 		if !strings.Contains(formatted, ".") {
 			formatted += ".0"
+		}
+		// pgx cannot encode a TEXT number as float8; numeric_text_to_double parses it.
+		if isText {
+			return formatted, "numeric_text_to_double", true
 		}
 		return formatted, "", true
 	case "boolean":
@@ -395,47 +433,62 @@ func previewValueForType(value, targetType, declaredType string) (display, trans
 	}
 }
 
-// firstNonNullValue returns the first value in values that isn't the
-// preview grid's "NULL" placeholder or empty, or "" if none qualify — used
+// firstNonNullCell returns the first cell in cells that isn't the preview
+// grid's "NULL" placeholder or empty, or a zero cell if none qualify — used
 // to pick one representative sample to preview under each candidate type
 // in the picker.
-func firstNonNullValue(values []string) string {
-	for _, v := range values {
-		if v != "NULL" && v != "" {
-			return v
+func firstNonNullCell(cells []sampleCell) sampleCell {
+	for _, c := range cells {
+		if !c.isNull() && c.value != "" {
+			return c
 		}
 	}
-	return ""
+	return sampleCell{}
 }
 
-// commonTransformForType derives the transform previewValueForType would
-// attach for typeName across EVERY non-NULL sample, returning it only if
-// they all agree (issue #64).
-//
-// validTypesForColumn offers date/timestamptz whenever every sample
-// converts to it — but different rows can need different transforms
-// ("2021-06-01" via iso8601_to_date, "20210704" via yyyymmdd_to_date;
-// "1712345678" via unix_epoch_seconds, "40000" via
-// excel_serial_to_timestamptz). config.ColumnConfig.Transform is a single
-// value, so onTypeSelected can't honour a per-row choice; deriving it from
-// one sample (the old firstNonNullValue behaviour) attached a transform
-// that then failed the real COPY on every row of the other format.
-//
-// ok is false when the non-NULL samples disagree on a transform, OR when
-// any non-NULL sample doesn't validate for typeName at all — either way
-// the caller should refuse the type rather than persist a config that can
-// break the load. When ok is true, transform is the shared one (or "" when
-// no non-NULL sample needs a transform, e.g. text, or the column is all
-// NULL). Non-date types are unaffected: previewValueForType returns a
-// fixed transform per type ("" for text/integer, uuid_format for uuid), so
-// those always agree.
-func commonTransformForType(values []string, typeName, declaredType string) (transform string, ok bool) {
+// representativeValue is one value of each type; standardTransform derives the
+// transform a type needs from it, so a column with no sample still gets one.
+var representativeValue = map[string]string{
+	"text": "x", "bytea": "x",
+	"integer": "1", "bigint": "1", "smallint": "1", "boolean": "1",
+	"real": "1.5", "double precision": "1.5", "numeric": "1.5",
+	"date": "2021-01-01", "timestamptz": "2021-01-01T00:00:00Z",
+	"jsonb":  "{}",
+	"uuid":   "00000000-0000-0000-0000-000000000000",
+	"uuid[]": "00000000-0000-0000-0000-000000000000",
+}
+
+// standardTransform returns the transform previewValueForType attaches to the
+// type's representative value; ok is false if that value does not validate.
+// A TEXT-affinity column holds numbers as strings, so float targets get the text transform.
+func standardTransform(typeName, declaredType string) (transform string, ok bool) {
+	_, transform, ok = previewValueForType(representativeValue[typeName], typeName, declaredType, !sqliteNumericAffinity(declaredType))
+	return transform, ok
+}
+
+// hasEmptyCell reports whether any sample is the empty string.
+func hasEmptyCell(cells []sampleCell) bool {
+	for _, c := range cells {
+		if c.value == "" {
+			return true
+		}
+	}
+	return false
+}
+
+// commonTransformForType returns the transform all samples agree on, or the standard
+// transform when there is no non-empty sample. ok is false when a sample does not
+// validate as typeName or the samples disagree on a transform (issue #64).
+func commonTransformForType(cells []sampleCell, typeName, declaredType string) (transform string, ok bool) {
+	if isFloatType(typeName) {
+		return floatTransform(cells, typeName, declaredType)
+	}
 	seen := false
-	for _, v := range values {
-		if v == "NULL" || v == "" {
+	for _, c := range cells {
+		if c.isNull() || c.value == "" {
 			continue
 		}
-		_, t, valid := previewValueForType(v, typeName, declaredType)
+		_, t, valid := previewValueForType(c.value, typeName, declaredType, c.isText)
 		if !valid {
 			return "", false
 		}
@@ -446,6 +499,9 @@ func commonTransformForType(values []string, typeName, declaredType string) (tra
 		if t != transform {
 			return "", false
 		}
+	}
+	if !seen {
+		return standardTransform(typeName, declaredType)
 	}
 	return transform, true
 }
@@ -539,24 +595,118 @@ func nextFlaggedColumn(flagged []flaggedColumn, current flaggedColumn, forward b
 	return flagged[next], true
 }
 
-// validTypesForColumn returns the subset of review.TypeOptions that every
-// one of values would load successfully as (per previewValueForType),
-// always including currentType even if it fails that check — so the type
-// picker is never empty and never forces a human off their column's
-// current assignment.
-func validTypesForColumn(values []string, currentType, declaredType string) []string {
+// validTypesForColumn returns the types the samples can be saved as. A type needs
+// the shared transform (commonTransformForType) and, with "" rows, a transform
+// that accepts "" (transformAcceptsEmpty), so the list matches onTypeSelected.
+func validTypesForColumn(cells []sampleCell, declaredType string, rejectNull bool) []string {
+	emptyRows := false
+	for _, c := range cells {
+		if c.value == "" {
+			emptyRows = true
+		}
+	}
 	var result []string
 	for _, t := range review.TypeOptions {
-		ok := true
-		for _, v := range values {
-			if _, _, valueValid := previewValueForType(v, t, declaredType); !valueValid {
-				ok = false
-				break
-			}
-		}
-		if ok || t == currentType {
+		if typeLoadsSamples(cells, t, declaredType, emptyRows, rejectNull) {
 			result = append(result, t)
 		}
 	}
 	return result
+}
+
+// typeLoadsSamples reports whether the samples can be saved as typeName. It is
+// gated on commonTransformForType (ok is false for invalid or disagreeing
+// samples), and when emptyRows its transform must also accept "".
+func typeLoadsSamples(cells []sampleCell, typeName, declaredType string, emptyRows, rejectNull bool) bool {
+	transform, ok := commonTransformForType(cells, typeName, declaredType)
+	if !ok {
+		return false
+	}
+	return !emptyRows || transformAcceptsEmpty(typeName, transform, rejectNull)
+}
+
+// transformAcceptsEmpty reports whether a "" row loads under transform for
+// typeName. An empty transform passes "" through, which only text and bytea
+// accept. A transform that turns "" into NULL is refused when rejectNull, since
+// the PRIMARY KEY or NOT NULL column then aborts COPY.
+func transformAcceptsEmpty(typeName, transform string, rejectNull bool) bool {
+	if transform == "" {
+		return typeName == "text" || typeName == "bytea"
+	}
+	out, err := copywriter.Transform(transform, "")
+	if err != nil {
+		return false
+	}
+	return out != nil || !rejectNull
+}
+
+// emptyNullMarker is the picker row note; emptyNullStatus is the full status-bar line.
+const (
+	emptyNullMarker = `SQLite "" is not NULL; "" rows load as NULL`
+	emptyNullStatus = `empty-string rows load as NULL (SQLite "" is not NULL)`
+)
+
+// emptyRowsBecomeNull reports whether transform stores a "" sample as NULL. It
+// only sees "" rows inside the preview sample, so rows past it can be missed.
+func emptyRowsBecomeNull(cells []sampleCell, transform string) bool {
+	if transform == "" || !hasEmptyCell(cells) {
+		return false
+	}
+	out, err := copywriter.Transform(transform, "")
+	return err == nil && out == nil
+}
+
+// isFloatType reports whether typeName is a float column type.
+func isFloatType(typeName string) bool {
+	return typeName == "real" || typeName == "double precision" || typeName == "numeric"
+}
+
+// floatTransform returns the one transform for a float target. All-REAL samples
+// get "". Any TEXT sample, including a REAL-declared column whose samples are all
+// TEXT, gets numeric_text_to_double for every row, which parses both float64 and
+// string values. That transform rejects a REAL infinity, so that mix is refused.
+func floatTransform(cells []sampleCell, typeName, declaredType string) (string, bool) {
+	anyText, seen := false, false
+	for _, c := range cells {
+		if c.isNull() || c.value == "" {
+			continue
+		}
+		if _, _, valid := previewValueForType(c.value, typeName, declaredType, c.isText); !valid {
+			return "", false
+		}
+		seen = true
+		anyText = anyText || c.isText
+	}
+	switch {
+	case !seen:
+		return standardTransform(typeName, declaredType)
+	case anyText && hasInfinityReal(cells):
+		return "", false
+	case anyText:
+		return "numeric_text_to_double", true
+	}
+	return "", true
+}
+
+// hasInfinityReal reports whether a non-TEXT sample is ±Inf.
+func hasInfinityReal(cells []sampleCell) bool {
+	for _, c := range cells {
+		if c.isText {
+			continue
+		}
+		if f, err := strconv.ParseFloat(c.value, 64); err == nil && math.IsInf(f, 0) {
+			return true
+		}
+	}
+	return false
+}
+
+// hasTextCell reports whether any non-NULL, non-empty sample is TEXT.
+func hasTextCell(cells []sampleCell) bool {
+	for _, c := range cells {
+		if c.isText && !c.isNull() && c.value != "" {
+			return true
+		}
+	}
+	return false
 }

@@ -44,12 +44,16 @@ func sampleGridData(cfg *config.MigrationConfig, limit int) GridData {
 			continue
 		}
 		rows := make([][]string, len(rawRows))
+		isText := make([][]bool, len(rawRows))
 		for i, raw := range rawRows {
 			formatted := make([]string, len(raw))
+			text := make([]bool, len(raw))
 			for j, v := range raw {
 				formatted[j] = formatSampleValue(v)
+				_, text[j] = v.(string)
 			}
 			rows[i] = formatted
+			isText[i] = text
 		}
 
 		rowCount, err := sqlitereader.CountRows(db, tableName)
@@ -57,7 +61,7 @@ func sampleGridData(cfg *config.MigrationConfig, limit int) GridData {
 			rowCount = len(rows)
 		}
 
-		grid[tableName] = TablePreview{Rows: rows, RowCount: rowCount}
+		grid[tableName] = TablePreview{Rows: rows, IsText: isText, RowCount: rowCount}
 	}
 
 	return grid
